@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Direction B — Pathways</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* =====================================================================
+   DIRECTION B — "PATHWAYS"
+   A diagrammatic decision room. Space encodes the buyer journey:
+   left = learning, right = choosing. Every gap is a left-to-right
+   chain (question → engines → shown instead → evidence → action), and
+   the evidence drawer draws the provenance lines from cited pages to
+   the brands they support. Motion = lines drawing, never decoration.
+   ===================================================================== */
+:root{
+  --bg:#F6F6F3; --surface:#FFFFFF; --surface-2:#EFEFEB; --line:#E2E2DC; --line-2:#CBCBC3; --scrim:rgba(18,20,23,.42);
+  --ink:#121417; --ink-2:#3F444B; --ink-3:#62676F;
+  --you:#E8661A; --you-ink:#A94508; --you-wash:#FDEBDD;
+  --rival:#2B3138;
+  --decision:#B4232A; --decision-wash:#FBE7E6;
+  --consider:#A35A07; --consider-wash:#FBEEDC;
+  --discover:#4B5B78; --discover-wash:#E7EBF2;
+  --work:#2450B8; --work-wash:#E5ECFB;
+  --progress:#1E7A4C; --progress-wash:#E1F2E8;
+  --observed:#0B6B70; --observed-wash:#DDF0F0;
+  --unsure:#62676F; --unsure-wash:#EEEFF0;
+  --fault:#4A4F57; --fault-wash:#E6E7E9;
+  --f-ui:"Geist",ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --f-mono:"Geist Mono",ui-monospace,Menlo,Consolas,monospace;
+  --s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:20px;--s6:28px;--s7:40px;--s8:56px;
+  --r1:6px;--r2:10px;--r3:16px;
+  --e1:0 1px 2px rgba(18,20,23,.05),0 0 0 1px var(--line);
+  --e2:0 1px 2px rgba(18,20,23,.06),0 12px 32px -16px rgba(18,20,23,.22),0 0 0 1px var(--line);
+  --e3:0 -20px 60px -20px rgba(18,20,23,.35);
+  --focus:0 0 0 2px var(--surface),0 0 0 4px var(--work);
+  --ease:cubic-bezier(.2,.8,.2,1); --d1:160ms; --d2:280ms; --d3:640ms;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:400 14px/1.5 var(--f-ui);-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit}
+a{color:inherit}
+:focus-visible{outline:none;box-shadow:var(--focus);border-radius:var(--r1)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.mono{font-family:var(--f-mono);font-size:12px}
+.lbl{font:500 11px/1.2 var(--f-mono);letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3)}
+.tnum{font-variant-numeric:tabular-nums}
+svg.i{width:14px;height:14px;flex:none}
+
+.shell{display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh}
+.shell>div{min-width:0}
+.nav{background:var(--surface);border-right:1px solid var(--line);padding:16px 12px;display:flex;flex-direction:column;gap:1px;position:sticky;top:0;height:100vh}
+.logo{display:flex;gap:8px;align-items:center;font-weight:600;padding:2px 8px 16px}
+.logo svg{width:28px;height:15px}
+.bsw{display:flex;align-items:center;gap:8px;padding:8px;border-radius:var(--r2);background:var(--surface-2);border:0;text-align:left;margin-bottom:10px;cursor:pointer}
+.bsw .m{width:24px;height:24px;border-radius:7px;background:var(--you);color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px}
+.bsw b{display:block;font-size:13px}.bsw span span{display:block;font-size:11px;color:var(--ink-3)}
+.nav .h{font:500 10.5px/1 var(--f-mono);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding:14px 8px 6px;display:flex;align-items:center;gap:6px}
+.nav .h i{width:5px;height:5px;border-radius:50%;background:var(--line-2)}
+.nav a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r1);text-decoration:none;color:var(--ink-2);font-size:13.5px}
+.nav a:hover{background:var(--surface-2)}
+.nav a[aria-current]{background:var(--ink);color:#fff}
+.nav a[aria-current] .ct{color:#C9CCD1}
+.nav .ct{margin-left:auto;font:500 11px var(--f-mono);color:var(--ink-3)}
+.nav .sp{flex:1}
+.acct{display:flex;gap:8px;align-items:center;padding:8px;border-radius:var(--r2);border:1px solid var(--line);background:var(--surface);cursor:pointer;text-align:left}
+.acct .av{width:26px;height:26px;border-radius:50%;background:var(--surface-2);display:grid;place-items:center;font-size:11px;font-weight:600}
+.acct b{display:block;font-size:12.5px}.acct span span{display:block;font-size:11px;color:var(--ink-3)}
+.main{padding:20px 32px 64px}
+
+.top{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.top .sp{flex:1}
+.crumb{font-size:13px;color:var(--ink-3)}.crumb b{color:var(--ink);font-weight:600}
+.btn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 13px;border-radius:var(--r1);border:0;background:var(--ink);color:#fff;font-weight:500;font-size:13px;cursor:pointer;white-space:nowrap;text-decoration:none}
+.btn.ghost{background:var(--surface);color:var(--ink);box-shadow:inset 0 0 0 1px var(--line-2)}
+.btn.sm{height:28px;padding:0 10px;font-size:12.5px}
+.btn.you{background:var(--you);color:#1a0d03}
+.lnk{background:none;border:0;padding:0;color:var(--work);font-weight:500;cursor:pointer;text-decoration:none;font-size:13px}
+.lnk:hover{text-decoration:underline}
+
+/* hero: statement + pathway map */
+.hero{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:20px;align-items:stretch}
+.stmt{background:var(--surface);border-radius:var(--r3);box-shadow:var(--e1);padding:24px 26px;display:flex;flex-direction:column;gap:14px}
+.stmt h1{margin:0;font:600 28px/1.18 var(--f-ui);letter-spacing:-.025em;text-wrap:balance}
+.stmt h1 .d{color:var(--decision)}
+.stmt p{margin:0;color:var(--ink-2)}
+.scope{display:flex;flex-wrap:wrap;gap:6px;margin-top:auto}
+.scope span{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 9px;border-radius:999px;background:var(--surface-2);font:500 11.5px var(--f-mono);color:var(--ink-2)}
+.scope span b{font-weight:500;color:var(--ink-3)}
+.scope .f{background:var(--fault-wash);background-image:repeating-linear-gradient(-45deg,transparent 0 4px,rgba(74,79,87,.09) 4px 8px)}
+
+.map{background:var(--surface);border-radius:var(--r3);box-shadow:var(--e1);padding:16px 18px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.map .mh{display:flex;align-items:center;gap:10px}
+.map .mh .sp{flex:1}
+.legend{display:flex;gap:12px;font-size:11.5px;color:var(--ink-3)}
+.legend span{display:inline-flex;gap:5px;align-items:center}
+.lanes{display:grid;grid-template-columns:1fr 1fr 1.15fr;gap:0;position:relative}
+.lane{padding:10px 10px 8px;border-left:1px dashed var(--line-2);display:flex;flex-direction:column;gap:5px;min-width:0}
+.lane:first-child{border-left:0;padding-left:0}
+.lane.decision{background:linear-gradient(90deg,transparent,var(--decision-wash) 30%);border-radius:0 var(--r2) var(--r2) 0;border-left-style:solid;border-left-color:var(--decision)}
+.lane .lh{display:flex;align-items:center;gap:6px;font-weight:600;font-size:12.5px;margin-bottom:4px}
+.lane .lh .n{margin-left:auto;font:500 11px var(--f-mono);color:var(--ink-2)}
+.lane.decision .lh{color:var(--decision)}
+.lane.consideration .lh{color:var(--consider)}
+.lane.discovery .lh{color:var(--discover)}
+.qn{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px;align-items:center;font-size:11.5px;color:var(--ink-2);padding:3px 5px;border-radius:5px;border:0;background:none;text-align:left;cursor:pointer;animation:pop var(--d2) var(--ease) both}
+.qn:hover{background:var(--surface-2)}
+.qn span:last-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qn.hot{color:var(--ink);font-weight:500}
+@keyframes pop{from{opacity:0;transform:translateX(-6px)}}
+.tri{display:inline-flex;gap:2px}
+.e{width:9px;height:9px;border-radius:2px;display:inline-block}
+.e.n{background:var(--you)}
+.e.a{box-shadow:inset 0 0 0 1.5px var(--ink-2);background:var(--surface)}
+.e.f{background:repeating-linear-gradient(-45deg,var(--fault) 0 1.5px,transparent 1.5px 3.5px);box-shadow:inset 0 0 0 1px var(--fault)}
+.dir{display:flex;align-items:center;gap:8px;font:500 11px var(--f-mono);color:var(--ink-3)}
+.dir::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line-2),var(--decision))}
+.dir b{order:2;color:var(--decision);font-weight:500}
+
+/* decision cards — a connected chain */
+.chain{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:0;margin:20px 0 0;background:var(--surface);border-radius:var(--r3);box-shadow:var(--e1);overflow:hidden}
+.ck{padding:16px 22px 16px 20px;position:relative;display:flex;flex-direction:column;gap:4px;text-decoration:none;min-width:0}
+.ck+.ck{border-left:1px solid var(--line)}
+.ck+.ck::before{content:"";position:absolute;left:-7px;top:50%;width:12px;height:12px;background:var(--surface);border-top:1px solid var(--line);border-right:1px solid var(--line);transform:translateY(-50%) rotate(45deg)}
+.ck .v{font:600 30px/1.1 var(--f-ui);letter-spacing:-.03em}
+.ck .v small{font-size:15px;color:var(--ink-3);font-weight:500}
+.ck p{margin:0;font-size:12.5px;color:var(--ink-2)}
+.ck .step{font:500 10.5px var(--f-mono);color:var(--ink-3);letter-spacing:.05em}
+.ck.k2{background:var(--decision-wash)}
+.ck.k2 .v{color:var(--decision)}
+.ck.k2+.ck::before{background:var(--decision-wash)}
+.ck.k4 .v{color:var(--work)}
+.bar{height:6px;border-radius:3px;background:var(--surface-2);overflow:hidden;margin-top:4px}
+.bar i{display:block;height:100%;width:23.5%;background:var(--you);border-radius:3px;animation:grow var(--d3) var(--ease) both}
+@keyframes grow{from{width:0}}
+
+/* sections */
+.sec{display:flex;align-items:baseline;gap:12px;margin:30px 0 10px}
+.sec h2{margin:0;font:600 17px/1.2 var(--f-ui);letter-spacing:-.01em}
+.sec .sp{flex:1}
+.sec .meta{font-size:12.5px;color:var(--ink-3)}
+
+/* gap chain rows */
+.rows{display:flex;flex-direction:column;gap:8px}
+.row{display:grid;grid-template-columns:minmax(0,2.1fr) 170px minmax(0,1.2fr) minmax(0,1.35fr) minmax(0,1.5fr);background:var(--surface);border-radius:var(--r2);box-shadow:var(--e1);position:relative;overflow:hidden;animation:pop var(--d2) var(--ease) both}
+.row:nth-child(2){animation-delay:50ms}.row:nth-child(3){animation-delay:100ms}.row:nth-child(4){animation-delay:150ms}.row:nth-child(5){animation-delay:200ms}
+.row>div{padding:14px 16px;min-width:0;position:relative}
+.row>div+div::before{content:"";position:absolute;left:0;top:50%;width:14px;height:1.5px;background:var(--line-2);transform:translateX(-50%)}
+.row>div+div::after{content:"";position:absolute;left:5px;top:calc(50% - 3px);border-left:5px solid var(--line-2);border-top:3.5px solid transparent;border-bottom:3.5px solid transparent}
+.row.decision{box-shadow:inset 4px 0 0 var(--decision),var(--e1)}
+.row.consideration{box-shadow:inset 4px 0 0 var(--consider),var(--e1)}
+.row.discovery{box-shadow:inset 4px 0 0 var(--discover),var(--e1)}
+.row.low{background:repeating-linear-gradient(135deg,var(--surface) 0 10px,#FAFAF8 10px 20px)}
+.row .q{font-weight:600;font-size:14px;line-height:1.35;margin-top:6px}
+.row .colh{font:500 10.5px var(--f-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--ink-3);margin-bottom:6px;display:block}
+.tag{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:5px;font-size:11.5px;font-weight:600}
+.tag.decision{color:var(--decision);background:var(--decision-wash)}
+.tag.consideration{color:var(--consider);background:var(--consider-wash)}
+.tag.discovery{color:var(--discover);background:var(--discover-wash)}
+.engs{display:flex;flex-direction:column;gap:3px;font-size:12px}
+.engs div{display:flex;gap:6px;align-items:center}
+.engs .f{color:var(--fault);font-style:italic}
+.cp{display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+.cp div{display:flex;gap:6px;align-items:center}
+.cp .dot{width:8px;height:8px;border-radius:50%;background:var(--rival)}
+.cp .ct{margin-left:auto;font:500 11px var(--f-mono);color:var(--ink-3)}
+.ev{font-size:12.5px;color:var(--ink-2)}
+.ev b{color:var(--ink);font-size:20px;font-weight:600;letter-spacing:-.02em;display:block;line-height:1.1}
+.srcbar{display:flex;gap:2px;margin:6px 0 4px}.srcbar i{width:10px;height:10px;border-radius:2px;background:var(--rival)}.srcbar i.o{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--line-2)}
+.act{display:flex;flex-direction:column;gap:8px;font-size:12.5px}
+.state{display:inline-flex;gap:5px;align-items:center;font-size:12px;font-weight:600}
+.state.work{color:var(--work)}.state.progress{color:var(--progress)}.state.observed{color:var(--observed)}.state.archive{color:var(--ink-3)}
+.conf{display:inline-flex;gap:5px;align-items:center;font-size:11.5px;font-weight:500;color:var(--ink-2)}
+.conf .pips{display:inline-flex;gap:2px}.conf .pips i{width:6px;height:6px;border-radius:50%;background:var(--ink-2)}.conf .pips i.o{background:none;box-shadow:inset 0 0 0 1px var(--ink-3)}
+.conf.low{color:var(--unsure);padding:1px 7px;border:1px dashed var(--line-2);border-radius:999px;background:var(--unsure-wash)}
+
+/* recovery pipeline summary */
+.pipe{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));background:var(--surface);border-radius:var(--r3);box-shadow:var(--e1);padding:18px 18px 16px;position:relative}
+.ps{display:flex;flex-direction:column;gap:6px;position:relative;padding-right:8px}
+.ps .node{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;background:var(--surface);position:relative;z-index:1;box-shadow:inset 0 0 0 2px var(--line-2)}
+.ps::before{content:"";position:absolute;left:26px;right:0;top:12px;height:2px;background:var(--line)}
+.ps:last-child::before{display:none}
+.ps.work .node{box-shadow:inset 0 0 0 2px var(--work);color:var(--work)}
+.ps.progress .node{background:var(--progress);box-shadow:none;color:#fff}
+.ps.observed .node{background:var(--observed);box-shadow:0 0 0 3px var(--observed-wash);color:#fff}
+.ps.archive .node{box-shadow:inset 0 0 0 1.5px var(--ink-3);color:var(--ink-3);border:1px dashed transparent}
+.ps.work::before{background:var(--work);opacity:.35}
+.ps.progress::before{background:var(--progress);opacity:.5}
+.ps b{font:600 20px/1 var(--f-ui)}
+.ps span{font-size:12px;color:var(--ink-2);line-height:1.25}
+.ps.hl span{font-weight:600;color:var(--ink)}
+.ps.hl .node{outline:3px solid var(--work-wash)}
+.pipenote{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:10px}
+.note{display:flex;gap:10px;padding:12px 14px;border-radius:var(--r2);font-size:12.5px;align-items:flex-start;background:var(--surface);box-shadow:var(--e1)}
+.note.obs{background:var(--observed-wash);box-shadow:none}
+.note.obs svg{color:var(--observed)}
+.cmp{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.cmp div{background:var(--surface);box-shadow:var(--e1);border-radius:var(--r2);padding:12px 14px;font-size:12.5px;color:var(--ink-2)}
+.cmp b{display:block;font:600 20px/1.1 var(--f-ui);color:var(--ink)}
+
+/* ---------- evidence bottom sheet with provenance lines ---------- */
+.scrim{position:fixed;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity var(--d2)}
+.sheet{position:fixed;left:224px;right:0;bottom:0;height:86vh;background:var(--surface);border-radius:var(--r3) var(--r3) 0 0;box-shadow:var(--e3);transform:translateY(102%);transition:transform var(--d2) var(--ease);display:flex;flex-direction:column;z-index:20}
+body.open .scrim{opacity:1;pointer-events:auto}
+body.open .sheet{transform:none}
+.grab{width:40px;height:4px;border-radius:2px;background:var(--line-2);margin:8px auto 0}
+.shd{display:flex;align-items:flex-start;gap:14px;padding:12px 24px 14px;border-bottom:1px solid var(--line)}
+.shd h2{margin:6px 0 4px;font:600 20px/1.25 var(--f-ui);letter-spacing:-.015em}
+.shd .sp{flex:1}
+.x{width:32px;height:32px;border-radius:var(--r1);border:0;background:var(--surface-2);display:grid;place-items:center;cursor:pointer}
+.prov{flex:1;overflow:auto;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) 300px;gap:0}
+.pcol.bcol{padding-left:84px;border-left:0}
+.pcol{padding:16px 22px;min-width:0}
+.pcol+.pcol{border-left:1px solid var(--line)}
+.pcol h3{display:flex;align-items:center;gap:8px;margin:0 0 12px;font:600 13px var(--f-ui)}
+.kind{font:500 10.5px var(--f-mono);letter-spacing:.06em;text-transform:uppercase;padding:2px 6px;border-radius:4px}
+.kind.obs{background:var(--ink);color:#fff}
+.kind.inf{background:var(--work-wash);color:var(--work)}
+.etabs{display:flex;gap:4px;margin-bottom:12px}
+.etabs button{height:28px;padding:0 10px;border-radius:999px;border:0;background:var(--surface-2);font-size:12px;font-weight:500;cursor:pointer;display:inline-flex;gap:6px;align-items:center}
+.etabs button[aria-selected="true"]{background:var(--ink);color:#fff}
+.ans{font-size:13.5px;line-height:1.6;color:var(--ink);background:var(--bg);border-radius:var(--r2);padding:12px 14px;border:1px solid var(--line)}
+.ans p{margin:0 0 8px}
+.ans m{background:#E9EAEC;border-radius:3px;padding:0 3px;font-weight:600;box-shadow:inset 0 -2px 0 var(--rival)}
+.absent{display:flex;gap:8px;align-items:center;margin-top:10px;padding:8px 10px;border-radius:var(--r1);border:1.5px dashed var(--you);color:var(--you-ink);font-weight:600;font-size:12.5px}
+.facts{margin-top:14px}
+.facts div{display:flex;gap:8px;font-size:12.5px;padding:3px 0}
+.srow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:9px 12px;border-radius:var(--r1);border:1px solid var(--line);margin-bottom:8px;position:relative;background:var(--surface);z-index:1}
+.srow .u{font:500 11.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .k{font-size:11.5px;color:var(--ink-3)}
+.srow .m{grid-column:1/-1;font-size:11.5px;color:var(--ink-2);display:flex;gap:8px}
+.srow .m .f{color:var(--fault)}
+.srow::after{content:"";position:absolute;right:-5px;top:50%;width:8px;height:8px;border-radius:50%;background:var(--ink-2);transform:translateY(-50%)}
+.srow.blocked{border-style:dashed;background:repeating-linear-gradient(-45deg,var(--surface) 0 6px,#F6F6F4 6px 12px)}
+.brands{display:flex;flex-direction:column;gap:18px;padding-top:30px}
+.bn{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:var(--r2);border:1px solid var(--line);font-weight:600;position:relative;z-index:1;background:var(--surface)}
+.bn::before{content:"";position:absolute;left:-5px;top:50%;width:8px;height:8px;border-radius:50%;background:var(--ink-2);transform:translateY(-50%)}
+.bn .ct{margin-left:auto;font:500 11px var(--f-mono);color:var(--ink-3)}
+.bn.you{border:1.5px dashed var(--you);color:var(--you-ink);background:var(--you-wash)}
+.bn.you::before{background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--you)}
+.bn small{display:block;font-weight:400;font-size:11.5px;color:var(--ink-2)}
+svg.wires{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:0;overflow:visible}
+svg.wires path{fill:none;stroke:#2B3138;stroke-width:1.5;stroke-opacity:.6}
+@media (prefers-reduced-motion:no-preference){body.animate svg.wires:not(.drawn) path:not(.weak){stroke-dasharray:var(--len);animation:draw var(--d3) var(--ease) backwards}}
+svg.wires.drawn path{animation:none;stroke-dashoffset:0}
+svg.wires path.weak{stroke-dasharray:3 4;animation:none;opacity:.6;stroke:var(--you)}
+@keyframes draw{from{stroke-dashoffset:var(--len)}}
+.inf{margin-top:18px;padding:12px;border-radius:var(--r2);background:var(--work-wash);font-size:12.5px;color:var(--ink)}
+.inf p{margin:6px 0 0}
+.sft{display:flex;gap:8px;align-items:center;padding:12px 24px;border-top:1px solid var(--line)}
+.sft .sp{flex:1}
+.sft .rat{font-size:12px;color:var(--ink-2);max-width:60ch}
+
+/* ---------- recovery matrix ---------- */
+.mx{background:var(--surface);border-radius:var(--r3);box-shadow:var(--e1);overflow:hidden}
+.mxh,.mxr{display:grid;grid-template-columns:minmax(0,340px) repeat(8,minmax(0,1fr))}
+.mxh{background:var(--surface-2);border-bottom:1px solid var(--line)}
+.mxh div{padding:10px 8px;font:500 10.5px/1.25 var(--f-mono);letter-spacing:.03em;text-transform:uppercase;color:var(--ink-3);display:flex;gap:5px;align-items:flex-start}
+.mxh div:first-child{padding-left:16px}
+.mxh .ct{color:var(--ink);margin-left:auto}
+.grph{grid-column:1/-1;padding:8px 16px;font:600 12px var(--f-ui);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line);background:linear-gradient(90deg,var(--bg),transparent)}
+.mxr{border-bottom:1px solid var(--line);cursor:pointer;position:relative;background:none;border-left:0;border-right:0;border-top:0;width:100%;text-align:left;padding:0}
+.mxr:hover{background:#FBFBF9}
+.mxr[aria-expanded="true"]{background:var(--work-wash)}
+.mxr .lab{padding:10px 16px;display:flex;flex-direction:column;gap:3px;min-width:0}
+.mxr .lab b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mxr .lab span .mono{flex:none}
+.mxr .lab span{font-size:11.5px;color:var(--ink-3);display:flex;gap:6px;align-items:center;white-space:nowrap;overflow:hidden}
+.cellx{position:relative;display:flex;align-items:center;justify-content:center}
+.cellx::before{content:"";position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);background:transparent}
+.cellx.pass::before{background:var(--ink-2)}
+.cellx.first::before{left:50%}
+.cellx.cur::before{right:50%}
+.cellx.first.cur::before{display:none}
+.cellx .mk{width:10px;height:10px;border-radius:50%;background:var(--ink-2);position:relative;z-index:1}
+.cellx .cur{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;position:relative;z-index:1;color:#fff}
+.cellx .cur.work{background:var(--surface);box-shadow:inset 0 0 0 2px var(--work);color:var(--work)}
+.cellx .cur.progress{background:var(--progress)}
+.cellx .cur.observed{background:var(--observed);box-shadow:0 0 0 3px var(--observed-wash)}
+.cellx .cur.archive{background:var(--surface);box-shadow:inset 0 0 0 1.5px var(--ink-3);color:var(--ink-3)}
+.cellx.dash::before{background:repeating-linear-gradient(90deg,var(--ink-3) 0 4px,transparent 4px 8px)}
+.cellx .when{position:absolute;top:calc(50% + 14px);font:500 10px var(--f-mono);color:var(--ink-3);white-space:nowrap}
+.detail{grid-column:1/-1;display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:0;background:var(--surface);border-bottom:1px solid var(--line);border-top:2px solid var(--work)}
+.detail>div{padding:16px 18px;font-size:12.5px;display:flex;flex-direction:column;gap:10px}
+.detail>div+div{border-left:1px solid var(--line)}
+.detail dl{margin:0;display:grid;grid-template-columns:100px 1fr;gap:6px 10px}
+.detail dt{color:var(--ink-3)}
+.detail dd{margin:0}
+.draftc{border:1px dashed var(--line-2);border-radius:var(--r2);padding:10px 12px;display:flex;gap:10px;background:var(--bg)}
+.draftc b{display:block}
+.tbtns{display:flex;gap:6px;flex-wrap:wrap}
+
+/* ---------- mobile ---------- */
+.mbar,.mtabs{display:none}
+@media (min-width:1680px){
+  .main{padding:24px 40px 72px}
+  .main>*{max-width:1560px;margin-left:auto;margin-right:auto}
+  .hero{grid-template-columns:minmax(0,4fr) minmax(0,8fr)}
+  .stmt h1{font-size:32px}
+}
+@media (max-width:1100px){
+  .hero{grid-template-columns:1fr}
+  .row{grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr)}
+  .row>div:nth-child(4)::before,.row>div:nth-child(4)::after{display:none}
+  .row>div:nth-child(4),.row>div:nth-child(5){border-top:1px solid var(--line)}
+  .row>div:nth-child(4){grid-column:1/3}
+  .prov{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+  .pcol.bcol{grid-column:1/-1;padding-left:22px;border-top:1px solid var(--line)}
+  .pcol.bcol .brands{flex-direction:row;padding-top:0}
+  .pcol.bcol .bn{flex:1}
+  svg.wires,.srow::after,.bn::before{display:none}
+}
+@media (max-width:1024px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .nav{display:none}
+  .mbar{display:flex;align-items:center;gap:10px;padding:10px 20px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  .mbar .m{width:26px;height:26px;border-radius:7px;background:var(--you);color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px}
+  .mbar b{font-size:14px}.mbar .sub{font-size:11px;color:var(--ink-3)}.mbar .sp{flex:1}
+  .main{padding:16px 20px 64px}
+  .sheet{left:0}
+  .chain{grid-template-columns:1fr 1fr}
+  .ck:nth-child(3){border-left:0}
+  .ck:nth-child(n+3){border-top:1px solid var(--line)}
+  .ck+.ck::before{display:none}
+  .pipe{grid-template-columns:repeat(4,minmax(0,1fr));row-gap:16px}
+  .ps:nth-child(4)::before{display:none}
+  .mxh,.mxr{grid-template-columns:minmax(0,220px) repeat(8,minmax(0,1fr))}
+  .mxh div{font-size:9.5px}
+  .detail{grid-template-columns:1fr 1fr}.detail>div:first-child{grid-column:1/-1}
+}
+@media (max-width:760px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .nav,.top{display:none}
+  .mbar{display:flex;align-items:center;gap:10px;padding:10px 16px;background:var(--surface);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  .mbar .m{width:26px;height:26px;border-radius:7px;background:var(--you);color:#fff;display:grid;place-items:center;font-weight:700;font-size:12px}
+  .mbar b{font-size:14px}.mbar .sub{font-size:11px;color:var(--ink-3)}.mbar .sp{flex:1}
+  .main{padding:12px 16px 84px}
+  .hero{grid-template-columns:1fr;gap:12px}
+  .stmt{padding:18px}
+  .stmt h1{font-size:22px}
+  .lanes{grid-template-columns:1fr;gap:10px}
+  .lane{border-left:0;padding:10px;border-radius:var(--r2);background:var(--bg)}
+  .lane.decision{order:-1;background:var(--decision-wash);border-left:3px solid var(--decision)}
+  .lane.consideration{order:0}
+  .lane .qn:nth-child(n+5){display:none}
+  .lane.discovery{order:1}
+  .hide-m,.legend span:nth-child(3){display:none}
+  .map .mh{flex-wrap:wrap}
+  section.stmt[style]{flex-direction:column!important;align-items:flex-start!important}
+  section.stmt .legend{display:none}
+  .shd>div>div{flex-wrap:wrap}
+  .shd .mono{flex-basis:100%}
+  .dir{display:none}
+  .chain{grid-template-columns:1fr 1fr}
+  .ck:nth-child(3){border-left:0}
+  .ck:nth-child(n+3){border-top:1px solid var(--line)}
+  .ck+.ck::before{display:none}
+  .ck .v{font-size:24px}
+  .row{grid-template-columns:1fr;padding-left:6px}
+  .row>div{padding:8px 14px 8px 22px}
+  .row>div:first-child{padding-top:14px}.row>div:last-child{padding-bottom:14px}
+  .row>div+div::before{left:14px;top:0;bottom:0;width:1.5px;height:auto;transform:none}
+  .row>div+div::after{display:none}
+  .row .engs{flex-direction:row;flex-wrap:wrap;gap:10px}
+  .pipe{grid-template-columns:repeat(4,minmax(0,1fr));row-gap:16px}
+  .ps:nth-child(4)::before{display:none}
+  .pipenote,.cmp{grid-template-columns:1fr 1fr}
+  .pipenote{grid-template-columns:1fr}
+  .sheet{left:0;height:94vh}
+  .shd{padding:8px 16px 12px}.shd h2{font-size:17px}
+  .prov{grid-template-columns:1fr;display:block}
+  .pcol{padding:14px 16px}
+  .pcol+.pcol{border-left:0;border-top:1px solid var(--line)}
+  .pcol.bcol{padding-left:16px}
+  .srow::after,.bn::before,svg.wires{display:none}
+  .brands{flex-direction:row;flex-wrap:wrap;gap:8px;padding-top:0}
+  .bn{flex:1 1 140px}
+  .sft{padding:10px 16px;flex-wrap:wrap}.sft .rat{display:none}
+  .mx{background:none;box-shadow:none}
+  .mxh{display:none}
+  .mxr{grid-template-columns:repeat(8,minmax(0,1fr));background:var(--surface);border-radius:var(--r2);box-shadow:var(--e1);margin-bottom:8px;padding-bottom:10px}
+  .mxr .lab{grid-column:1/-1}
+  .cellx{height:28px}
+  .cellx .when{display:none}
+  .grph{background:none;border:0;padding:12px 2px 6px}
+  .detail{display:none}
+  .mxr .lab .sr{position:static;width:auto;height:auto;clip:auto;overflow:visible;font-weight:600;color:var(--ink-2)}
+  .mtabs{display:flex;position:fixed;left:12px;right:12px;bottom:12px;background:var(--ink);border-radius:14px;padding:6px;z-index:6;box-shadow:0 10px 30px -10px rgba(0,0,0,.5)}
+  .mtabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;font-size:10.5px;font-weight:500;color:#AEB3BA;text-decoration:none;border-radius:9px}
+  .mtabs a[aria-current]{background:rgba(255,255,255,.12);color:#fff}
+  .mtabs svg{width:16px;height:16px}
+}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:1ms!important;animation-delay:0ms!important;transition-duration:1ms!important}
+  svg.wires path{stroke-dashoffset:0}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="i-decision" viewBox="0 0 16 16"><path d="M8 2 14.5 13.5H1.5Z" fill="currentColor"/></symbol>
+  <symbol id="i-consideration" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="5.5" y="5.5" width="5" height="5" fill="currentColor"/></symbol>
+  <symbol id="i-discovery" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+  <symbol id="i-work" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="2.6 2"/><circle cx="8" cy="8" r="2" fill="currentColor"/></symbol>
+  <symbol id="i-progress" viewBox="0 0 16 16"><path d="m3.5 8.4 3 3 6-6.6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-observed" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.6" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="2.2" fill="currentColor"/></symbol>
+  <symbol id="i-low" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.4 2"/><text x="8" y="11.2" text-anchor="middle" font-size="9" font-weight="700" fill="currentColor" font-family="Geist,Arial">?</text></symbol>
+  <symbol id="i-fault" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m4.5 11.5 7-7" stroke="currentColor" stroke-width="1.6"/></symbol>
+  <symbol id="i-archive" viewBox="0 0 16 16"><path d="M3 5h10v8H3zM2 3h12v2H2zM6.5 8h3" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 16 16"><path d="M4 1.8h5.5L12.5 5v9.2H4Z M9.3 1.8V5h3.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 16 16"><path d="M3 8h9.5M9 4.5 12.5 8 9 11.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-path" viewBox="0 0 16 16"><circle cx="3" cy="12" r="1.8" fill="currentColor"/><circle cx="13" cy="4" r="1.8" fill="currentColor"/><path d="M3 12C7 12 7 4 13 4" fill="none" stroke="currentColor" stroke-width="1.5"/></symbol>
+</defs></svg>
+
+<div class="shell">
+  <nav class="nav" aria-label="Main">
+    <div class="logo"><svg viewBox="0 0 56 30" aria-hidden="true"><rect width="16" height="30" rx="4.5" fill="currentColor" opacity=".3"/><rect x="20" width="16" height="30" rx="4.5" fill="#E8661A"/><rect x="40" width="16" height="30" rx="4.5" fill="currentColor" opacity=".3"/></svg>White Petal</div>
+    <button class="bsw" type="button" aria-label="Switch brand. Current: Saarvi Skin"><span class="m">S</span><span><b>Saarvi Skin</b><span>India · 18 buyer questions</span></span></button>
+    <div class="h"><i></i>Home</div>
+    <a href="#" data-v="risk">Recommendation risk</a><a href="#">Evidence readiness</a>
+    <div class="h"><i></i>Gaps</div>
+    <a href="#">Buyer questions<span class="ct">18</span></a><a href="#">Recommendation gaps<span class="ct">39</span></a><a href="#">AI answers<span class="ct">51</span></a>
+    <div class="h"><i></i>Why they win</div>
+    <a href="#">Evidence sources</a><a href="#">Competitor advantages</a><a href="#">Search influence</a>
+    <div class="h"><i></i>Recovery</div>
+    <a href="#" data-v="recovery">Recovery plan<span class="ct">11</span></a><a href="#">Drafts<span class="ct">4</span></a>
+    <div class="h"><i></i>Progress</div>
+    <a href="#">Competitive landscape</a><a href="#">Change over time</a>
+    <span class="sp"></span>
+    <button class="acct" type="button" aria-haspopup="menu" aria-label="Account menu: settings, team, integrations, billing"><span class="av">RM</span><span><b>Rohan Mehta</b><span>Editor · Settings, team, billing</span></span></button>
+  </nav>
+  <div>
+    <header class="mbar"><span class="m">S</span><span><b id="mt">Recommendation risk</b><span class="sub" style="display:block">Saarvi Skin · 9 Oct · India</span></span><span class="sp"></span><button class="x" type="button" aria-label="Account menu">RM</button></header>
+    <main class="main" id="page"></main>
+  </div>
+</div>
+<div class="scrim" id="scrim"></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="stitle"></section>
+<nav class="mtabs" aria-label="Sections"><a href="#" id="m1" aria-current="page"><svg><use href="#i-decision"/></svg>Risk</a><a href="#"><svg><use href="#i-consideration"/></svg>Gaps</a><a href="#"><svg><use href="#i-path"/></svg>Why</a><a href="#" id="m2"><svg><use href="#i-work"/></svg>Recovery</a><a href="#"><svg><use href="#i-observed"/></svg>Progress</a></nav>
+
+<script>
+/* Shared sample data — fictional Indian D2C skincare brand. All figures internally consistent:
+   18 buyer questions x 3 engines = 54 answers; 51 completed, 3 not collected (Gemini).
+   Saarvi named in 12 of 51 completed answers -> 39 gap answers: 9 decision, 16 consideration, 14 discovery. */
+var WP = {
+  brand: "Saarvi Skin", site: "saarviskin.com", market: "India",
+  check: "9 Oct 2026", checkTime: "9 Oct 2026, 10:42 IST", prior: "25 Sep 2026",
+  engines: ["ChatGPT", "Gemini", "Perplexity"],
+  questions: 18, attempted: 54, completed: 51, failed: 3, named: 12,
+  gaps: { total: 39, decision: 9, consideration: 16, discovery: 14 },
+  alt: { name: "Dermaroot", inGaps: 27, inDecision: 7 },
+  actions: { ready: 6, suggested: 4, review: 2 },
+  changed: { recovered: 2, newGaps: 3, regressed: 1, unchanged: 36 },
+  priority: [
+    { id: "g1", type: "decision", q: "Best vitamin C serum for oily skin under ₹800",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "3/3"], ["Clearlab", "2/3"]], sources: 7, srcComp: "5 mention Dermaroot", srcYou: 0,
+      why: "All three answers drew their shortlist from roundups that list price and skin type. None of the 7 cited pages mention Saarvi.",
+      conf: "high", action: { id: "A-104", title: "Draft evidence for this buyer question", state: "review" } },
+    { id: "g2", type: "decision", q: "Where to buy a fragrance-free sunscreen for sensitive skin online",
+      cov: { ChatGPT: "absent", Gemini: "failed", Perplexity: "absent" }, completed: 2, namedN: 0,
+      comps: [["Vedara", "2/2"], ["Dermaroot", "1/2"]], sources: 4, srcComp: "3 mention Vedara", srcYou: 0,
+      why: "Both collected answers point to one marketplace roundup that lists Vedara. Gemini’s answer could not be collected, so this gap rests on 2 answers.",
+      conf: "medium", action: { id: "A-101", title: "Pursue inclusion on skinroutine.in sunscreen roundup", state: "suggested" } },
+    { id: "g3", type: "consideration", q: "Which niacinamide serum is best for acne marks in India?",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "3/3"], ["Clearlab", "3/3"], ["Glowpath", "1/3"]], sources: 9, srcComp: "6 mention Dermaroot", srcYou: 0,
+      why: "Answers compare concentration and dermatologist testing. Saarvi’s serum page states neither in text.",
+      conf: "high", action: { id: "A-105", title: "Publish a niacinamide comparison page", state: "drafting" } },
+    { id: "g4", type: "consideration", q: "Best Indian skincare brands for hyperpigmentation",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "named" }, completed: 3, namedN: 1,
+      comps: [["Dermaroot", "3/3"], ["Glowpath", "2/3"]], sources: 6, srcComp: "4 mention Dermaroot", srcYou: 1,
+      why: "Perplexity named Saarvi 4th, citing one blog. ChatGPT and Gemini cited brand directories where Saarvi has no structured entry.",
+      conf: "medium", action: { id: "A-109", title: "Add Organization and Product schema", state: "published" } },
+    { id: "g5", type: "discovery", q: "What does niacinamide actually do for skin?",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "1/3"]], sources: 8, srcComp: "1 mentions Dermaroot", srcYou: 0,
+      why: "Answers are mostly educational and cite encyclopaedic sources. Too little brand signal to explain the gap.",
+      conf: "low", action: null }
+  ],
+  answer: {
+    engine: "ChatGPT", time: "9 Oct 2026, 10:42 IST", sample: "Answer 1 of 1 for this engine",
+    paras: [
+      "For oily, acne-prone skin on a budget in India, these serums are commonly recommended:",
+      "1. <m>Dermaroot</m> 15% Vitamin C + Ferulic Serum (₹649) — a lightweight, water-based gel that suits oily skin and is widely reviewed for fading marks.",
+      "2. <m>Clearlab</m> C-Bright 10% Serum (₹599) — uses a stable vitamin C derivative, a good starting point if your skin is sensitive.",
+      "3. Glowpath Daily C (₹749) — a gentler formula with niacinamide, often suggested for beginners.",
+      "Look for a stable form such as ethyl ascorbic acid, and always pair it with sunscreen during the day."
+    ]
+  },
+  srcRows: [
+    { url: "skinroutine.in/best-vitamin-c-serums-oily-skin", kind: "Roundup", cited: "3/3", d: "yes", c: "yes", you: "no", insp: "Inspected 9 Oct" },
+    { url: "reddit.com/r/IndianSkincareAddicts/…/budget_vit_c", kind: "Forum thread", cited: "2/3", d: "yes", c: "yes", you: "once", insp: "Inspected 9 Oct" },
+    { url: "dermaroot.in/products/vitamin-c-15-ferulic", kind: "Competitor page", cited: "2/3", d: "owner", c: "no", you: "no", insp: "Inspected 9 Oct" },
+    { url: "beautyedit.co.in/vitamin-c-under-1000", kind: "Roundup", cited: "1/3", d: "yes", c: "no", you: "no", insp: "Inspected 9 Oct" },
+    { url: "clearlab.co/c-bright-serum", kind: "Competitor page", cited: "1/3", d: "no", c: "owner", you: "no", insp: "Could not inspect (blocked)" }
+  ],
+  facts: [
+    ["Price ₹699 is stated on the product page", "ok"],
+    ["Skin-type suitability (oily / combination) is not stated in text", "miss"],
+    ["12% ethyl ascorbic acid appears only inside a product image", "miss"],
+    ["No Product structured data found", "miss"]
+  ],
+  lifecycle: [
+    ["suggested", "Suggested", 4], ["drafting", "Drafting", 1], ["review", "Ready for review", 2], ["approved", "Approved", 1],
+    ["published", "Published / sent", 1], ["recheck", "Recheck scheduled", 1], ["observed", "Result observed", 1], ["archived", "Archived", 1]
+  ],
+  board: [
+    { id: "A-101", st: "suggested", kind: "Outreach", t: "Pursue inclusion on skinroutine.in sunscreen roundup", gap: "decision", q: "Fragrance-free sunscreen for sensitive skin", conf: "medium" },
+    { id: "A-102", st: "suggested", kind: "Page fix", t: "State ‘fragrance-free’ and test results in text on the sunscreen page", gap: "decision", q: "Fragrance-free sunscreen for sensitive skin", conf: "medium" },
+    { id: "A-103", st: "suggested", kind: "Page fix", t: "Add skin-type facts in text to 6 serum pages", gap: "consideration", q: "Niacinamide serum for acne marks", conf: "high" },
+    { id: "A-108", st: "suggested", kind: "Pitch", t: "Pitch beautyedit.co.in to review their ‘under ₹1000’ list", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "medium" },
+    { id: "A-105", st: "drafting", kind: "Page", t: "Niacinamide serum comparison page", gap: "consideration", q: "Niacinamide serum for acne marks", conf: "high", owner: "Ananya", due: "15 Oct" },
+    { id: "A-104", st: "review", kind: "Page", t: "Vitamin C serum evidence page — draft v2", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "high", owner: "Rohan", due: "13 Oct" },
+    { id: "A-106", st: "review", kind: "Pitch", t: "Pitch to skinroutine.in vitamin C roundup", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "medium", owner: "Rohan", due: "14 Oct" },
+    { id: "A-107", st: "approved", kind: "llms.txt", t: "Add product facts to llms.txt", gap: "discovery", q: "What does niacinamide do for skin?", conf: "low", owner: "Ananya", note: "Approved 8 Oct" },
+    { id: "A-109", st: "published", kind: "Schema", t: "Organization + Product schema on 14 pages", gap: "consideration", q: "Brands for hyperpigmentation", conf: "medium", note: "Published 2 Oct · saarviskin.com" },
+    { id: "A-110", st: "recheck", kind: "Pitch", t: "Pitch sent to glowguide.in ‘sunscreen for oily skin’", gap: "decision", q: "Sunscreen for oily skin", conf: "medium", note: "Sent 30 Sep · recheck 16 Oct" },
+    { id: "A-111", st: "observed", kind: "Page", t: "FAQ page: ‘Is Saarvi sunscreen safe for oily skin?’", gap: "consideration", q: "Sunscreen for oily skin", conf: "medium", note: "0/3 → 1/3 · 25 Sep vs 9 Oct" },
+    { id: "A-112", st: "archived", kind: "Outreach", t: "Reddit reply campaign", gap: "consideration", q: "Budget serums", conf: "low", note: "Archived 5 Oct · community rules" }
+  ],
+  /* all 18 questions; cov order ChatGPT, Gemini, Perplexity: n named, a absent (gap), f not collected */
+  all: [
+    {lane:"decision", q:"Best vitamin C serum for oily skin under ₹800", c:"aaa", g:"g1"},
+    {lane:"decision", q:"Where to buy fragrance-free sunscreen for sensitive skin online", c:"afa", g:"g2"},
+    {lane:"decision", q:"Best sunscreen for oily skin in India", c:"aan"},
+    {lane:"decision", q:"Best moisturiser for acne-prone skin under ₹500", c:"naa"},
+    {lane:"decision", q:"Saarvi or Dermaroot vitamin C — which should I buy?", c:"nnn"},
+    {lane:"consideration", q:"Which niacinamide serum is best for acne marks in India?", c:"aaa", g:"g3"},
+    {lane:"consideration", q:"Best Indian skincare brands for hyperpigmentation", c:"aan", g:"g4"},
+    {lane:"consideration", q:"Dermaroot alternatives for sensitive skin", c:"aaa"},
+    {lane:"consideration", q:"Most trusted clean skincare brands in India", c:"aaa"},
+    {lane:"consideration", q:"Best ceramide moisturiser brands in India", c:"ana"},
+    {lane:"consideration", q:"Budget skincare brands for teenagers", c:"aaa"},
+    {lane:"consideration", q:"Is Clearlab or Saarvi better for dull skin?", c:"nfn"},
+    {lane:"discovery", q:"What does niacinamide actually do for skin?", c:"aaa", g:"g5"},
+    {lane:"discovery", q:"Is vitamin C safe to use with retinol?", c:"aaa"},
+    {lane:"discovery", q:"What is a skin barrier?", c:"aaa"},
+    {lane:"discovery", q:"What SPF do I need in Indian summers?", c:"afa"},
+    {lane:"discovery", q:"How to fade acne marks at home", c:"ana"},
+    {lane:"discovery", q:"Are Indian skincare brands as good as Korean ones?", c:"nan"}
+  ]
+};
+
+(function(){
+  var D=WP,$=function(s){return document.querySelector(s)};
+  var ic=function(n,st){return '<svg class="i" aria-hidden="true"'+(st?' style="'+st+'"':'')+'><use href="#i-'+n+'"/></svg>'};
+  var SEV={decision:"Decision gap",consideration:"Consideration gap",discovery:"Discovery gap"};
+  var tag=function(t){return '<span class="tag '+t+'">'+ic(t)+SEV[t]+'</span>'};
+  var ST={suggested:["Suggested","work"],drafting:["Drafting","work"],review:["Ready for review","work"],approved:["Approved","progress"],published:["Published / sent","progress"],recheck:["Recheck scheduled","progress"],observed:["Result observed","observed"],archived:["Archived","archive"]};
+  var state=function(s){var k=ST[s][1];return '<span class="state '+k+'">'+ic(k==='archive'?'archive':k)+ST[s][0]+'</span>'};
+  var conf=function(c){if(c==='low')return '<span class="conf low">'+ic('low')+'Low confidence</span>';var n=c==='high'?3:2;return '<span class="conf"><span class="pips" aria-hidden="true">'+[1,2,3].map(function(k){return '<i class="'+(k>n?'o':'')+'"></i>'}).join('')+'</span>'+(c==='high'?'High':'Medium')+' confidence</span>'};
+  var E={n:'Named',a:'Not named',f:'Not collected'};
+  var tri=function(c){return '<span class="tri" role="img" aria-label="'+D.engines.map(function(e,i){return e+': '+E[c[i]]}).join(', ')+'">'+c.split('').map(function(x){return '<i class="e '+x+'"></i>'}).join('')+'</span>'};
+  var covMap={absent:'a',named:'n',failed:'f'};
+
+  function lane(l){
+    var qs=D.all.filter(function(q){return q.lane===l});
+    var gaps=qs.reduce(function(s,q){return s+q.c.split('a').length-1},0);
+    var comp=qs.reduce(function(s,q){return s+q.c.replace(/f/g,'').length},0);
+    return '<div class="lane '+l+'"><div class="lh">'+ic(l)+SEV[l].replace(' gap','')+'<span class="n" title="gaps / completed answers">'+gaps+'/'+comp+'</span></div>'+
+      qs.map(function(q,i){return '<button class="qn'+(q.g?' hot':'')+'" type="button" style="animation-delay:'+(i*40)+'ms" '+(q.g==='g1'?'data-open':'')+'>'+tri(q.c)+'<span>'+q.q+'</span></button>'}).join('')+'</div>';
+  }
+
+  function risk(){
+    var rows=D.priority.map(function(g){
+      var srcbar=''; for(var k=0;k<g.sources;k++) srcbar+='<i class="'+(k<parseInt(g.srcComp)?'':'o')+'"></i>';
+      return '<article class="row '+g.type+(g.conf==='low'?' low':'')+'">'+
+        '<div>'+tag(g.type)+'<div class="q">“'+g.q+'”</div></div>'+
+        '<div><span class="colh">Engines</span><div class="engs">'+D.engines.map(function(e){var s=covMap[g.cov[e]];return '<div><i class="e '+s+'"></i><span class="'+(s==='f'?'f':'')+'">'+e+(s==='f'?' · not collected':s==='n'?' · named':'')+'</span></div>'}).join('')+'</div></div>'+
+        '<div><span class="colh">Shown instead</span><div class="cp">'+g.comps.map(function(c){return '<div><i class="dot"></i>'+c[0]+'<span class="ct">'+c[1]+'</span></div>'}).join('')+'</div></div>'+
+        '<div><span class="colh">Evidence</span><div class="ev"><b class="tnum">'+g.sources+' pages</b><span class="srcbar" aria-hidden="true">'+srcbar+'</span>'+g.srcComp+' · '+(g.srcYou?g.srcYou+' mentions Saarvi':'0 mention Saarvi')+'<div style="margin-top:4px">'+conf(g.conf)+'</div></div></div>'+
+        '<div><span class="colh">Recovery</span><div class="act">'+(g.action?'<b style="font-weight:600">'+g.action.title+'</b>'+state(g.action.state):'<span style="color:var(--ink-2)">Too little evidence to suggest work. Review the answers first.</span>')+
+          '<span style="display:flex;gap:10px"><button class="btn sm" data-open>Inspect evidence</button>'+(g.action?'':'')+'</span></div></div>'+
+      '</article>';
+    }).join('');
+    var pipe=D.lifecycle.map(function(s){var k=ST[s[0]][1];return '<div class="ps '+k+(s[0]==='review'?' hl':'')+'"><span class="node">'+ic(k==='archive'?'archive':k)+'</span><b class="tnum">'+s[2]+'</b><span>'+s[1]+'</span></div>'}).join('');
+    return '<div class="top"><span class="crumb">Home / <b>Recommendation risk</b></span><span class="mono" style="color:var(--ink-3)">· compared with 25 Sep (comparable)</span><span class="sp"></span><button class="lnk">Methodology</button><button class="btn ghost">Share with client</button><button class="btn">Recheck recommendations</button></div>'+
+      '<section class="hero"><div class="stmt"><span class="lbl">Observed in this check</span><h1>Saarvi Skin was left out of <span class="d">9 decision-stage answers</span>. Dermaroot was recommended in 7 of them.</h1>'+
+        '<p>Saarvi appeared in 12 of 51 completed answers overall. Most of the leakage sits on the right of the map — where buyers are choosing, not just learning.</p>'+
+        '<div><button class="btn you" data-open>Inspect the strongest gap '+ic('arrow')+'</button></div>'+
+        '<div class="scope" aria-label="Scope"><span><b>ENGINES</b>ChatGPT · Gemini · Perplexity</span><span><b>CHECKED</b>9 Oct 2026</span><span><b>MARKET</b>India</span><span><b>QUESTIONS</b>18</span><span><b>ANSWERS</b>51/54</span><span class="f">'+ic('fault')+'3 Gemini not collected</span></div></div>'+
+      '<div class="map" aria-label="Recommendation pathway map"><div class="mh"><span class="lbl">Where AI leaves Saarvi out<span class="hide-m"> · 18 questions × 3 engines · gaps/answers</span></span><span class="sp"></span><span class="legend"><span><i class="e n"></i>Named</span><span><i class="e a"></i>Not named</span><span><i class="e f"></i>Not collected</span></span></div>'+
+        '<div class="lanes">'+lane('discovery')+lane('consideration')+lane('decision')+'</div><div class="dir">Learning <b>Choosing</b></div></div></section>'+
+      '<section class="chain" aria-label="Decision summary">'+
+        '<a class="ck" href="#"><span class="step">01 · COVERAGE</span><span class="v tnum">12<small> / 51 answers</small></span><div class="bar"><i></i></div><p>Recommendation coverage. ↑ from 9/51 on 25 Sep.</p></a>'+
+        '<a class="ck k2" href="#"><span class="step">02 · HIGH-INTENT GAPS</span><span class="v tnum">25</span><p>'+ic('decision','color:var(--decision);width:11px')+' 9 decision · '+ic('consideration','color:var(--consider);width:11px')+' 16 consideration</p></a>'+
+        '<a class="ck" href="#"><span class="step">03 · SHOWN INSTEAD MOST</span><span class="v">Dermaroot</span><p>In 27 of 39 answers where Saarvi was absent.</p></a>'+
+        '<a class="ck k4" href="#"><span class="step">04 · RECOVERY ACTIONS READY</span><span class="v tnum">6</span><p>4 suggested · 2 drafts awaiting review.</p></a></section>'+
+      '<div class="sec"><h2>Priority gaps</h2><span class="meta">5 of 39 · decision first, then how often a competitor was shown instead</span><span class="sp"></span><a class="lnk" href="#">All recommendation gaps →</a></div>'+
+      '<div class="rows">'+rows+'</div>'+
+      '<div class="sec"><h2>Recovery path</h2><span class="meta">12 actions · nothing counts as recovered until a later comparable check observes it</span><span class="sp"></span><a class="lnk" href="#" data-v="recovery">Open recovery plan →</a></div>'+
+      '<div class="pipe" role="list" aria-label="Recovery lifecycle">'+pipe+'</div>'+
+      '<div class="pipenote"><div class="note">'+ic('work','color:var(--work)')+'<span><b>2 drafts await your review</b> — both target decision gaps for vitamin C serum. Approving does not publish.</span></div><div class="note obs">'+ic('observed')+'<span><b>1 result observed.</b> Sunscreen FAQ page: 0/3 → 1/3 between 25 Sep and 9 Oct. Observed association, not proof of cause.</span></div></div>'+
+      '<div class="sec"><h2>What changed since 25 Sep</h2><span class="meta">Comparable scope · same questions, engines, market</span></div>'+
+      '<div class="cmp"><div><b>2</b>gaps recovered</div><div><b>3</b>new gaps</div><div><b>1</b>regressed</div><div><b>36</b>unchanged</div></div>';
+  }
+
+  function sheet(){
+    var g=D.priority[0], a=D.answer;
+    var srcs=D.srcRows.map(function(s,i){
+      var who=[]; if(s.d==='yes'||s.d==='owner')who.push('Dermaroot'+(s.d==='owner'?' (own)':'')); if(s.c==='yes'||s.c==='owner')who.push('Clearlab'+(s.c==='owner'?' (own)':'')); if(s.you==='once')who.push('Saarvi (one reply)');
+      var bl=s.insp.indexOf('Could')===0;
+      return '<div class="srow'+(bl?' blocked':'')+'" data-s="'+i+'" data-to="'+[s.d!=='no'?'d':'',s.c!=='no'?'c':'',s.you==='once'?'y':''].join('')+'"><span class="u">'+s.url+'</span><span class="k">'+s.kind+' · '+s.cited+'</span><span class="m">'+who.join(' · ')+(bl?'<span class="f">'+ic('fault')+'Could not inspect — technical, not a gap</span>':'<span style="color:var(--ink-3)">· '+s.insp+'</span>')+'</span></div>'}).join('');
+    return '<div class="grab" aria-hidden="true"></div><header class="shd"><div><div style="display:flex;gap:8px;align-items:center">'+tag('decision')+conf('high')+'<span class="mono" style="color:var(--ink-3)">ChatGPT · Gemini · Perplexity · 9 Oct 2026 · India · 3/3 completed</span></div><h2 id="stitle">“'+g.q+'”</h2></div><span class="sp"></span><button class="x" data-close aria-label="Close evidence">'+ic('x')+'</button></header>'+
+      '<div class="prov" id="prov">'+
+        '<div class="pcol"><h3><span class="kind obs">Observed</span>The answer</h3><div class="etabs" role="tablist"><button role="tab" aria-selected="true"><i class="e a"></i>ChatGPT</button><button role="tab" aria-selected="false"><i class="e a"></i>Gemini</button><button role="tab" aria-selected="false"><i class="e a"></i>Perplexity</button></div>'+
+          '<div class="mono" style="color:var(--ink-3);margin-bottom:6px">'+a.time+' · India · '+a.sample+'</div><div class="ans">'+a.paras.map(function(p){return '<p>'+p+'</p>'}).join('')+'</div>'+
+          '<div class="absent">'+ic('discovery')+'Saarvi Skin is not in this answer</div>'+
+          '<div class="facts"><h3 style="margin:16px 0 6px"><span class="kind obs">Observed</span>Your page · saarviskin.com/products/vitamin-c-serum</h3>'+D.facts.map(function(f){return '<div>'+(f[1]==='ok'?ic('progress','color:var(--progress)'):ic('x','color:var(--decision)'))+'<span>'+f[0]+'</span></div>'}).join('')+'</div></div>'+
+        '<div class="pcol" style="position:relative"><h3><span class="kind obs">Observed</span>Cited sources <span class="mono" style="color:var(--ink-3);font-weight:400">5 of 7 shown</span></h3><div id="srcs">'+srcs+'</div>'+
+          '<div class="inf"><span class="kind inf">Inference · high confidence</span><p>The answers appear to build their shortlist from roundups that state price and skin type. Saarvi’s ₹699 serum fits the question but is absent from those roundups, and its own page doesn’t state skin-type suitability in text.</p></div></div>'+
+        '<div class="pcol bcol" style="position:relative"><h3>Who the evidence supports</h3><div class="brands"><div class="bn" data-b="d">Dermaroot<span class="ct">4 pages</span></div><div class="bn" data-b="c">Clearlab<span class="ct">3 pages</span></div><div class="bn you" data-b="y"><span>Saarvi Skin<small>1 forum reply · 0 roundups</small></span></div></div>'+
+          '<p style="font-size:12px;color:var(--ink-2);margin-top:22px">Lines connect each cited page to the brands it mentions. A brand with no lines has no cited evidence in these answers.</p></div>'+
+      '</div>'+
+      '<footer class="sft"><button class="btn">Open draft A-104 for review</button><button class="btn ghost">Pursue inclusion on skinroutine.in</button><span class="rat">This action addresses an observed evidence gap. It may strengthen the information available to AI systems; it does not guarantee inclusion.</span><span class="sp"></span><button class="lnk">Methodology</button></footer>';
+  }
+  function wires(){
+    var prov=$('#prov'); if(!prov||innerWidth<=760) return;
+    prov.querySelectorAll('svg.wires').forEach(function(o){o.remove()});
+    var pr=prov.getBoundingClientRect();
+    var svg='<svg class="wires" aria-hidden="true">';
+    document.querySelectorAll('.srow').forEach(function(r){
+      var to=r.getAttribute('data-to'); var rr=r.getBoundingClientRect();
+      to.split('').forEach(function(b){
+        var bn=document.querySelector('.bn[data-b="'+b+'"]'); if(!bn) return; var br=bn.getBoundingClientRect();
+        var x1=rr.right-pr.left, y1=rr.top+rr.height/2-pr.top+prov.scrollTop, x2=br.left-pr.left, y2=br.top+br.height/2-pr.top+prov.scrollTop, mx=(x1+x2)/2;
+        var len=Math.round(Math.hypot(x2-x1,y2-y1)*1.3);
+        svg+='<path class="'+(b==='y'?'weak':'')+'" style="--len:'+len+'" d="M'+x1+' '+y1+' C'+mx+' '+y1+' '+mx+' '+y2+' '+x2+' '+y2+'"/>';
+      });
+    });
+    prov.insertAdjacentHTML('afterbegin',svg+'</svg>'); prov.style.position='relative';
+    setTimeout(function(){var w=prov.querySelector('svg.wires');w&&w.classList.add('drawn')},900);
+  }
+
+  function recovery(){
+    var order=['suggested','drafting','review','approved','published','recheck','observed','archived'];
+    var head='<div class="mxh"><div>Recovery action</div>'+D.lifecycle.map(function(s){return '<div>'+s[1]+'<span class="ct">'+s[2]+'</span></div>'}).join('')+'</div>';
+    var groups=[['decision','Decision gaps'],['consideration','Consideration gaps'],['discovery','Discovery gaps']];
+    var body=groups.map(function(gr){
+      var items=D.board.filter(function(b){return b.gap===gr[0]});
+      return '<div class="grph" style="color:var(--'+(gr[0]==='consideration'?'consider':gr[0]==='discovery'?'discover':'decision')+')">'+ic(gr[0])+gr[1]+' <span class="mono" style="color:var(--ink-3)">'+items.length+'</span></div>'+items.map(function(b){
+        var idx=order.indexOf(b.st), arch=b.st==='archived';
+        var cells=order.map(function(o,k){
+          var cls='cellx', inner='';
+          if(arch){ if(k===7){cls+=' cur';inner='<span class="cur archive">'+ic('archive')+'</span>'} }
+          else if(k<idx){cls+=' pass'+(k===0?' first':'');inner='<span class="mk"></span>'}
+          else if(k===idx){cls+=' pass cur'+(k===0?' first':'');var kk=ST[b.st][1];inner='<span class="cur '+kk+'">'+ic(kk)+'</span>'+(b.note||b.due?'<span class="when">'+(b.due?'due '+b.due:b.note.split(' · ')[0])+'</span>':'')}
+          return '<span class="'+cls+'">'+inner+'</span>';
+        }).join('');
+        var sel=b.id==='A-104';
+        return '<button class="mxr" type="button" aria-expanded="'+sel+'"><span class="lab"><b>'+b.t+'</b><span><span class="mono">'+b.id+'</span>· '+b.kind+' · “'+b.q+'”'+(b.conf==='low'?' '+conf('low'):'')+'</span><span class="sr">State: '+ST[b.st][0]+'</span></span>'+cells+'</button>'+
+          (sel?'<div class="detail" role="region" aria-label="A-104 detail"><div><span class="lbl">Observed problem</span><span>Saarvi named in <b>0 of 3</b> answers for “Best vitamin C serum for oily skin under ₹800” (ChatGPT, Gemini, Perplexity · 9 Oct · India). Dermaroot named in 3 of 3; 5 of 7 cited pages mention Dermaroot.</span><span class="lbl">Proposed intervention</span><span>A product evidence page stating concentration, price, skin-type suitability and test results in text, with Product schema.</span><span style="color:var(--ink-2)">May strengthen the information available to AI systems; does not guarantee inclusion.</span></div>'+
+            '<div><dl><dt>State</dt><dd>'+state('review')+'</dd><dt>Owner</dt><dd>Rohan Mehta</dd><dt>Due</dt><dd>13 Oct</dd><dt>Approval</dt><dd>Awaiting an editor</dd><dt>Published</dt><dd style="color:var(--ink-3)">Not yet — add live URL</dd><dt>Recheck</dt><dd style="color:var(--ink-3)">Set on publish</dd><dt>Result</dt><dd style="color:var(--ink-3)">Needs a later comparable check</dd><dt>Confidence</dt><dd>'+conf('high')+'</dd></dl></div>'+
+            '<div><div class="draftc">'+ic('doc')+'<span><b>Draft v2 — review before publishing</b>1,140 words · 3 [TODO] claims to verify</span></div><span><a class="lnk" href="#">7 cited sources</a> · <a class="lnk" href="#">3 answer excerpts</a></span><div class="tbtns"><button class="btn sm">Approve</button><button class="btn sm ghost">Back to drafting</button><button class="btn sm ghost">'+ic('archive')+'Archive</button></div></div></div>':'');
+      }).join('');
+    }).join('');
+    return '<div class="top"><span class="crumb">Recovery / <b>Recovery plan</b></span><span class="sp"></span><button class="btn ghost">Priority list</button><button class="btn">New recovery action</button></div>'+
+      '<section class="stmt" style="margin-bottom:16px;flex-direction:row;align-items:center;gap:24px"><div style="flex:1"><span class="lbl">Actions from checks of 12 Sep – 9 Oct 2026 · India</span><h1 style="margin-top:6px">2 drafts for decision gaps are waiting on review.</h1><p style="margin-top:6px">Each line runs from Suggested to where the work is now. A line only reaches “Result observed” when a later comparable check measures it.</p></div><div class="legend" style="flex-direction:column;gap:6px"><span>'+ic('work','color:var(--work)')+'Recommended work</span><span>'+ic('progress','color:var(--progress)')+'Approved / shipped</span><span>'+ic('observed','color:var(--observed)')+'Result observed</span><span>'+ic('archive')+'Archived</span></div></section>'+
+      '<div class="mx">'+head+body+'</div>';
+  }
+
+  var params=new URLSearchParams(location.search), initial=params.get('view')||'risk';
+  function render(v){
+    $('#page').innerHTML=v==='recovery'?recovery():risk();
+    $('#mt').textContent=v==='recovery'?'Recovery plan':'Recommendation risk';
+    document.querySelectorAll('.nav a').forEach(function(a){a.toggleAttribute('aria-current',a.getAttribute('data-v')===(v==='recovery'?'recovery':'risk'))});
+    $('#m1').toggleAttribute('aria-current',v!=='recovery');$('#m2').toggleAttribute('aria-current',v==='recovery');
+  }
+  var lf;
+  function openS(anim){document.body.classList.toggle('animate',!!anim);lf=document.activeElement;$('#sheet').innerHTML=sheet();document.body.classList.add('open');setTimeout(function(){wires();var x=$('[data-close]');x&&x.focus()},320)}
+  function closeS(){document.body.classList.remove('open');lf&&lf.focus()}
+  document.addEventListener('click',function(e){
+    if(e.target.closest('[data-open]')){e.preventDefault();openS(true);return}
+    if(e.target.closest('[data-close]')||e.target.id==='scrim'){closeS();return}
+    var n=e.target.closest('[data-v]');if(n){e.preventDefault();render(n.getAttribute('data-v'))}
+    if(e.target.closest('#m2')){e.preventDefault();render('recovery')} if(e.target.closest('#m1')){e.preventDefault();render('risk')}
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeS()});
+  addEventListener('resize',wires);
+  render(initial==='drawer'?'risk':initial);
+  if(initial==='drawer') openS();
+})();
+</script>
+</body>
+</html>

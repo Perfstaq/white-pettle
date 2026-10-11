@@ -53,7 +53,7 @@ export default async function handler(req) {
     send("step", { id: "pages", text: `Scoring ${picks.length + 1} pages for AI-readiness`, why: "AI quotes pages that answer fast, show numbers and sources, and use question headings." });
     const pages = [];
     const hs = scorePage(hp, null);
-    pages.push({ url: home.url, title: hp.title, score: hs.score, fails: hs.checks.filter((c) => !c.pass).map((c) => c.label), checks: hs.checks, words: hp.words, schema: hp.schema });
+    pages.push({ url: home.url, title: hp.title, score: hs.score, fails: hs.checks.filter((c) => !c.pass).map((c) => c.label), checks: hs.checks, words: hp.words, schema: hp.schema, jsOnly: hp.jsOnly, author: hp.author });
     send("page", pages[0]);
     const parsed = [hp];
     await Promise.all(picks.map(async (u) => {
@@ -61,7 +61,7 @@ export default async function handler(req) {
       if (!r.ok || !/<html|<body/i.test(r.body.slice(0, 4000))) return;
       const p = parsePage(r.url, r.body); parsed.push(p);
       const s = scorePage(p, null);
-      const row = { url: r.url, title: p.title, score: s.score, fails: s.checks.filter((c) => !c.pass).map((c) => c.label), checks: s.checks, words: p.words, schema: p.schema };
+      const row = { url: r.url, title: p.title, score: s.score, fails: s.checks.filter((c) => !c.pass).map((c) => c.label), checks: s.checks, words: p.words, schema: p.schema, jsOnly: p.jsOnly, author: p.author };
       pages.push(row); send("page", row);
     }));
     const avg = Math.round(pages.reduce((s, p) => s + p.score, 0) / pages.length);
@@ -69,14 +69,16 @@ export default async function handler(req) {
 
     send("step", { id: "profile", text: "Working out what you sell, who buys it, and who you compete with", why: "I need this to ask AI the same questions your buyers ask." });
     const summary = parsed.slice(0, 9).map((p) => `## ${p.title} (${p.url})\n${p.description}\n${p.text.slice(0, 1200)}`).join("\n\n");
-    const info = await llmJSON(`Read this company's website and describe it for an AI-visibility tracker.\n\n${summary.slice(0, 12000)}\n\nJSON: {"name":"brand name as customers say it","category":"ONE phrase buyers type to find this kind of company, 2-6 words, lowercase, no commas","offer":"one sentence: what they sell and the promise","audience":"who buys it, short","market":"main country or region","competitors":["6-8 real companies whose product does the SAME job for the SAME buyer, i.e. what a buyer would shortlist instead of this company. Prefer direct, category-specific rivals over big generic platforms or tools from adjacent categories (e.g. for an engineering-metrics tool list LinearB, Jellyfish, Swarmia, not Jira or Asana)"],"facts":["5 key facts the site states about the company"]}`);
+    const info = await llmJSON(`Read this company's website and describe it for an AI-visibility tracker.\n\n${summary.slice(0, 12000)}\n\nJSON: {"name":"brand name as customers say it","category":"ONE phrase buyers type to find this kind of company, 2-6 words, lowercase, no commas","offer":"one sentence: what they sell and the promise","audience":"who buys it, short","market":"main country or region","competitors":["6-8 real companies whose product does the SAME job for the SAME buyer, i.e. what a buyer would shortlist instead of this company. Prefer direct, category-specific rivals over big generic platforms or tools from adjacent categories (e.g. for an engineering-metrics tool list LinearB, Jellyfish, Swarmia, not Jira or Asana)"],"facts":["5 key facts the site states about the company"],"identity":["4-6 adjectives or short phrases that describe the brand"],"products":["4-8 products or services they sell, short names"],"personas":["4-6 job titles or customer types who buy, short"]}`);
     const profile = { name: String(info.name || hp.title.split(/[|–-]/)[0]).trim().slice(0, 80), site: origin, category: String(info.category || "").split(/[,;|/]/)[0].trim().slice(0, 80), offer: String(info.offer || "").slice(0, 240),
-      audience: String(info.audience || "").slice(0, 120), market: String(info.market || "").slice(0, 60), competitors: (info.competitors || []).map(String).slice(0, 9), facts: (info.facts || []).map(String).slice(0, 6) };
+      audience: String(info.audience || "").slice(0, 120), market: String(info.market || "").slice(0, 60), competitors: (info.competitors || []).map(String).slice(0, 9), facts: (info.facts || []).map(String).slice(0, 6),
+      identity: (info.identity || []).map(String).slice(0, 6), products: (info.products || []).map(String).slice(0, 8), personas: (info.personas || []).map(String).slice(0, 6) };
     send("done", { id: "profile", text: `${profile.name}: ${profile.category}. Rivals to watch: ${profile.competitors.slice(0, 4).join(", ")}` });
 
     const homeSchema = hp.schema;
     send("result", { profile, audit: { origin, bots, llms: hasLlms, sitemap: locs.length, pages: pages.sort((a, b) => a.score - b.score), avg, homeSchema,
-      orgSchema: homeSchema.some((t) => /Organization|Corporation|ProfessionalService|LocalBusiness/.test(t)), faqSchema: pages.some((p) => p.schema.includes("FAQPage")) },
+      orgSchema: homeSchema.some((t) => /Organization|Corporation|ProfessionalService|LocalBusiness/.test(t)), faqSchema: pages.some((p) => p.schema.includes("FAQPage")),
+      articleSchema: pages.some((p) => p.schema.some((t) => /Article|BlogPosting|NewsArticle/.test(t))), org: hp.org, jsOnly: pages.filter((p) => p.jsOnly).length, authors: pages.filter((p) => p.author).length },
       siteText: parsed.slice(0, 6).map((p) => `${p.title}: ${p.text.slice(0, 1500)}`).join("\n\n").slice(0, 9000) });
   });
 }
