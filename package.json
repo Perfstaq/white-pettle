@@ -2,7 +2,8 @@
   "name": "white-petal",
   "version": "2.0.0",
   "private": true,
-  "description": "White Petal by Perfstaq: an AI agent that gets your brand recommended by ChatGPT, Perplexity, Gemini and Google AI Overviews.",
+  "description": "White Petal by Perfstaq: AI recommendation intelligence and recovery. Find the recommendation gaps. Fix the evidence. Track the recovery.",
+  "keywords": ["ai recommendation intelligence", "recommendation gaps", "chatgpt", "perplexity", "gemini", "ai overviews"],
   "type": "module",
   "scripts": {
     "start": "node server/index.mjs",

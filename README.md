@@ -1,6 +1,10 @@
 # White Petal by Perfstaq
 
-**Will AI recommend you?** Paste a website. A short setup, modelled on Peec AI's onboarding, shows a live preview of your workspace filling in as you answer one question at a time:
+**AI recommendation intelligence and recovery.** *Find the recommendation gaps. Fix the evidence. Track the recovery.*
+
+When buyers ask AI what to choose, does your brand make the answer? White Petal checks the buyer questions people ask ChatGPT, Gemini, Perplexity and Google's AI answers, shows where competitors are recommended instead of you (a **recommendation gap**: a discovery, consideration or decision gap depending on how close the question is to a purchase), traces the cited evidence behind those answers, and drafts the recovery work for your team to review. Every finding is scoped to the engine, check date, market and answer sample it was observed in. White Petal does not promise rankings, mentions or revenue; a later comparable check reports what changed, without claiming one action caused it. The product vocabulary and the claims it may and may not make live in `public/product-language.js`.
+
+Paste a website. A short setup, modelled on Peec AI's onboarding, shows a live preview of your workspace filling in as you answer one question at a time:
 
 1. **Brand profile.** The agent reads the site the way GPTBot and PerplexityBot do, then drafts your description, category, brand identity, products, personas and facts for you to review.
 2. **Where you sell.** This is the market AI should answer for.
@@ -9,7 +13,7 @@
 5. **Prompt focus.** Research, compare options, or take action. This sets the intent mix, prompts per topic, and AI engines.
 6. **Prompt set.** The questions arrive grouped by topic, tagged with intent and persona. Review them with coverage by persona, intent and engine. Your name is left out on purpose.
 
-**Run analysis** starts the live agent. It asks ChatGPT, Perplexity, Gemini, Groq and Google's AI Overviews / AI Mode every prompt (1–3 times each, to average out run-to-run noise) with web search on, opens every page they cite, fact-checks what AI says about you, explains why you win or lose, and drafts the fixes (robots.txt lines, llms.txt, company schema, personalised pitches, articles, page rewrites). It also draws a live map you can drag, zoom and click.
+**Run analysis** starts the live agent. It asks ChatGPT, Perplexity, Gemini, Groq and Google's AI Overviews / AI Mode every prompt (1–3 times each, to average out run-to-run noise) with web search on, opens every page they cite, fact-checks how each engine describes you, shows which competitors and cited pages appear instead of you, and drafts recovery work for review (robots.txt lines, llms.txt, company schema, personalised pitches, articles, page rewrites). It also draws a live map you can drag, zoom and click.
 
 Then **"your workspace is ready"** reveals the first results. The **results dashboard** has these pages:
 
