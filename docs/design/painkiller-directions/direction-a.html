@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Direction A — The Brief</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* =====================================================================
+   DIRECTION A — "THE BRIEF"
+   An editorial decision room. The page reads like a briefing memo:
+   one serif conclusion, a ruled scope line, a numbered ledger of gaps
+   with evidence in the margin, and a recovery track that runs like a
+   timeline. Spatial system: 12-col text grid with a 4-col margin rail.
+   ===================================================================== */
+:root{
+  /* surfaces */
+  --paper:#F4F1EA; --paper-2:#ECE7DC; --sheet:#FFFDF8; --rule:#DDD5C6; --rule-2:#C6BCA8; --scrim:rgba(29,27,22,.38);
+  /* ink */
+  --ink:#1D1B16; --ink-2:#47423A; --ink-3:#6A6458;
+  /* brand */
+  --petal:#E8661A; --petal-ink:#A8430A; --petal-wash:#FBE6D6;
+  /* semantic (each paired with glyph + label) */
+  --sev-decision:#8C2B17; --sev-decision-wash:#F6E1D9;
+  --sev-consider:#9A5B00; --sev-consider-wash:#F6EAD3;
+  --sev-discover:#5B5A2E; --sev-discover-wash:#ECEBD9;
+  --work:#1E4F94; --work-wash:#E2EAF6;
+  --progress:#2D6A43; --progress-wash:#DFEDE3;
+  --observed:#0D5C58; --observed-wash:#D9ECEA;
+  --unsure:#6A6458; --unsure-wash:#ECE8E0;
+  --fault:#3B3833; --fault-wash:#E5E1DA;
+  /* type */
+  --f-display:"Newsreader",Georgia,"Times New Roman",serif;
+  --f-ui:"Instrument Sans",ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --f-mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
+  --t-hero:clamp(2rem,1.2rem + 2.4vw,3.05rem); --t-h2:1.7rem; --t-h3:1.32rem; --t-body:.95rem; --t-sm:.84rem; --t-xs:.74rem;
+  /* space (4px base) */
+  --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px; --s7:48px; --s8:64px;
+  --r-1:3px; --r-2:6px;
+  --shadow-sheet:0 1px 0 rgba(29,27,22,.04),-24px 0 60px -30px rgba(29,27,22,.45);
+  --focus:0 0 0 2px var(--paper),0 0 0 4px var(--ink);
+  --ease-out:cubic-bezier(.2,.7,.2,1); --d-fast:140ms; --d-med:240ms; --d-slow:420ms;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--paper);color:var(--ink);font:400 var(--t-body)/1.55 var(--f-ui);-webkit-font-smoothing:antialiased}
+a{color:inherit}
+button{font:inherit;color:inherit}
+:focus-visible{outline:none;box-shadow:var(--focus);border-radius:var(--r-1)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.mono{font-family:var(--f-mono);font-size:.78rem;letter-spacing:-.01em}
+.caps{font:600 var(--t-xs)/1.2 var(--f-ui);letter-spacing:.11em;text-transform:uppercase;color:var(--ink-3)}
+.tnum{font-variant-numeric:tabular-nums lining-nums}
+svg.i{width:14px;height:14px;flex:none;vertical-align:-2px}
+
+/* ---------- shell ---------- */
+.shell{display:grid;grid-template-columns:236px minmax(0,1fr);min-height:100vh}
+.shell>div{min-width:0}
+.nav{border-right:1px solid var(--rule);padding:20px 14px 16px;display:flex;flex-direction:column;gap:2px;position:sticky;top:0;height:100vh;background:var(--paper)}
+.logo{display:flex;align-items:center;gap:9px;font:600 1rem/1 var(--f-ui);padding:0 8px 18px}
+.logo svg{width:30px;height:16px}
+.brandsw{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--rule);border-radius:var(--r-2);background:var(--sheet);margin-bottom:14px;text-align:left;cursor:pointer}
+.brandsw b{display:block;font-weight:600;font-size:.9rem}.brandsw span{display:block;font-size:var(--t-xs);color:var(--ink-3)}
+.brandsw .mk{width:26px;height:26px;border-radius:50%;background:#E9D9C9;display:grid;place-items:center;font:600 .78rem var(--f-display);color:#6B3B12;flex:none}
+.nav h4{margin:14px 8px 4px}
+.nav a{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:var(--r-2);text-decoration:none;font-size:.9rem;color:var(--ink-2)}
+.nav a:hover{background:var(--paper-2);color:var(--ink)}
+.nav a[aria-current]{background:var(--sheet);color:var(--ink);font-weight:600;box-shadow:inset 2px 0 0 var(--petal),0 0 0 1px var(--rule)}
+.nav a .ct{margin-left:auto;font:500 .72rem var(--f-mono);color:var(--ink-3)}
+.nav a .ct.hot{color:var(--sev-decision)}
+.nav .sp{flex:1}
+.acct{display:flex;align-items:center;gap:10px;padding:10px 8px;border-top:1px solid var(--rule);margin-top:10px;background:none;border-left:0;border-right:0;border-bottom:0;cursor:pointer;text-align:left;width:100%}
+.acct .av{width:28px;height:28px;border-radius:50%;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-size:.72rem;font-weight:600}
+.acct b{display:block;font-size:.86rem}.acct span{display:block;font-size:var(--t-xs);color:var(--ink-3)}
+.main{min-width:0;padding:28px 48px 80px}
+.page{max-width:1180px;margin:0 auto}
+
+/* ---------- masthead ---------- */
+.mast{display:flex;align-items:center;gap:16px;padding-bottom:14px;border-bottom:2px solid var(--ink)}
+.mast .sp{flex:1}
+.btn{display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:var(--r-2);border:1px solid var(--ink);background:var(--ink);color:var(--sheet);font-weight:600;font-size:.86rem;cursor:pointer;text-decoration:none;white-space:nowrap}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--rule-2)}
+.btn.ghost:hover{border-color:var(--ink)}
+.btn.sm{padding:6px 10px;font-size:.8rem}
+.lnk{font-weight:600;font-size:.86rem;text-decoration:underline;text-underline-offset:3px;text-decoration-color:var(--rule-2);cursor:pointer;background:none;border:0;padding:0}
+.lnk:hover{text-decoration-color:var(--ink)}
+
+.lede{display:grid;grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:48px;padding:36px 0 26px}
+.lede h1{font:400 var(--t-hero)/1.1 var(--f-display);letter-spacing:-.018em;margin:0;text-wrap:balance}
+.lede h1 b{font-weight:600}
+.lede h1 em{font-style:italic;color:var(--sev-decision)}
+.lede .sub{margin-top:14px;font-size:1.02rem;color:var(--ink-2);max-width:60ch}
+.lede aside{border-left:1px solid var(--rule);padding-left:24px;display:flex;flex-direction:column;gap:10px;align-self:end;font-size:var(--t-sm);color:var(--ink-2)}
+.lede aside p{margin:0}
+
+/* scope line */
+.scope{display:flex;flex-wrap:wrap;border-top:1px solid var(--rule-2);border-bottom:1px solid var(--rule-2)}
+.scope div{padding:10px 18px 10px 0;margin-right:18px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:2px}
+.scope div:last-child{border-right:0;margin-right:0}
+.scope dt{font:600 .66rem/1 var(--f-ui);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3)}
+.scope dd{margin:0;font:500 .82rem/1.3 var(--f-mono)}
+.scope .warn{display:inline-flex;align-items:center;gap:5px;color:var(--fault)}
+
+/* decision cards — ruled columns, not tiles */
+.decide{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:30px 0 8px;border-bottom:1px solid var(--rule)}
+.dc{padding:16px 22px 22px;border-left:1px solid var(--rule);display:flex;flex-direction:column;gap:6px;text-decoration:none;position:relative}
+.dc:first-child{border-left:0;padding-left:0}
+.dc .n{font:500 2.6rem/1 var(--f-display);letter-spacing:-.02em;margin-top:8px}
+.dc .n small{font-size:1.2rem;color:var(--ink-3);font-weight:400}
+.dc p{margin:0;font-size:var(--t-sm);color:var(--ink-2);max-width:30ch}
+.dc .go{margin-top:auto;padding-top:8px;font-size:.8rem;font-weight:600;color:var(--ink);display:inline-flex;gap:6px;align-items:center}
+.dc.lead .n{color:var(--sev-decision)}
+.dc.lead{background:linear-gradient(180deg,var(--sev-decision-wash),transparent 75%);box-shadow:inset 0 3px 0 var(--sev-decision);padding-top:16px}
+.cov{display:flex;gap:2px;margin-top:4px;max-width:220px}.cov i{flex:1 1 0;min-width:1px;height:12px;background:var(--rule)}.cov i.y{background:var(--ink)}
+.sevmix{display:flex;gap:12px;font-size:var(--t-sm);color:var(--ink-2)}
+.sevmix span{display:inline-flex;align-items:center;gap:5px}
+.delta{font:500 .76rem var(--f-mono);color:var(--progress)}
+
+/* section heads */
+.sh{display:flex;align-items:baseline;gap:14px;margin:46px 0 4px}
+.sh h2{font:500 var(--t-h2)/1.1 var(--f-display);margin:0;letter-spacing:-.01em}
+.sh .sp{flex:1}
+.sh .meta{font-size:var(--t-sm);color:var(--ink-3)}
+
+/* severity tag */
+.sev{display:inline-flex;align-items:center;gap:6px;font:700 .7rem/1 var(--f-ui);letter-spacing:.1em;text-transform:uppercase;padding:5px 8px 5px 6px;border-radius:var(--r-1)}
+.sev.decision{color:var(--sev-decision);background:var(--sev-decision-wash)}
+.sev.consideration{color:var(--sev-consider);background:var(--sev-consider-wash)}
+.sev.discovery{color:var(--sev-discover);background:var(--sev-discover-wash)}
+.meter{display:inline-flex;gap:2px;margin-left:2px}.meter i{width:3px;height:9px;border-radius:1px;background:currentColor;opacity:.22}.meter i.on{opacity:1}
+.conf{display:inline-flex;align-items:center;gap:5px;font-size:.78rem;font-weight:600}
+.conf.high{color:var(--ink)}
+.conf.medium{color:var(--ink-2)}
+.conf.low{color:var(--unsure);border:1px dashed var(--rule-2);padding:2px 7px;border-radius:999px;background:var(--unsure-wash)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:.78rem;font-weight:600;white-space:nowrap}
+.state.suggested,.state.drafting,.state.review{color:var(--work)}
+.state.approved,.state.published,.state.recheck{color:var(--progress)}
+.state.observed{color:var(--observed)}
+.state.archived{color:var(--ink-3)}
+
+/* gap ledger */
+.ledger{border-top:1px solid var(--ink)}
+.gap{display:grid;grid-template-columns:56px minmax(0,1fr) 300px;gap:0 28px;padding:24px 0 26px;border-bottom:1px solid var(--rule);animation:inkin var(--d-slow) var(--ease-out) both}
+.gap:nth-child(2){animation-delay:60ms}.gap:nth-child(3){animation-delay:120ms}.gap:nth-child(4){animation-delay:180ms}.gap:nth-child(5){animation-delay:240ms}
+@keyframes inkin{from{opacity:0;transform:translateY(6px)}}
+.gap .no{font:400 2rem/1 var(--f-display);color:var(--ink-3)}
+.gap h3{font:500 var(--t-h3)/1.25 var(--f-display);margin:10px 0 10px;letter-spacing:-.005em;max-width:46ch}
+.gap .facts{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:var(--t-sm);margin:0}
+.gap .facts dt{color:var(--ink-3)}
+.gap .facts dd{margin:0;color:var(--ink)}
+.chip{display:inline-flex;align-items:center;gap:6px;margin-right:10px;font-weight:600}
+.chip .ct{font:500 .74rem var(--f-mono);color:var(--ink-3);font-weight:500}
+.gap .why{margin:12px 0 0;color:var(--ink-2);font-size:.9rem;max-width:62ch}
+.gap .acts{display:flex;align-items:center;gap:14px;margin-top:16px;flex-wrap:wrap}
+.gap.is-low h3{color:var(--ink-2)}
+.margin{border-left:1px solid var(--rule);padding-left:20px;display:flex;flex-direction:column;gap:10px;font-size:var(--t-sm)}
+.eng{display:grid;grid-template-columns:86px 18px 1fr;align-items:center;gap:8px}
+.eng b{font-weight:600}
+.cell{width:16px;height:16px;border-radius:2px;display:grid;place-items:center}
+.cell.named{background:var(--ink);color:var(--sheet)}
+.cell.absent{border:1.5px solid var(--ink)}
+.cell.absent::after{content:"";width:8px;height:1.5px;background:var(--ink)}
+.cell.failed{border:1.5px dashed var(--fault);background:repeating-linear-gradient(-45deg,var(--fault-wash) 0 3px,transparent 3px 6px)}
+.eng .lab{color:var(--ink-2)}
+.eng .lab.f{color:var(--fault);font-style:italic}
+.margin .tot{padding-top:8px;border-top:1px dotted var(--rule-2);color:var(--ink-2)}
+
+/* recovery track */
+.track{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));margin-top:18px;position:relative}
+.track::before{content:"";position:absolute;left:8px;right:8px;top:9px;height:2px;background:var(--rule-2)}
+.stn{position:relative;display:flex;flex-direction:column;gap:6px;padding-right:10px;background:none;border:0;text-align:left;cursor:pointer;padding-left:0}
+.stn .dot{width:20px;height:20px;border-radius:50%;background:var(--paper);border:2px solid var(--rule-2);display:grid;place-items:center;position:relative;z-index:1}
+.stn .dot svg{width:11px;height:11px}
+.stn.work .dot{border-color:var(--work);color:var(--work)}
+.stn.prog .dot{border-color:var(--progress);background:var(--progress);color:var(--sheet)}
+.stn.obs .dot{border-color:var(--observed);background:var(--observed);color:var(--sheet)}
+.stn.arch .dot{border-style:dashed}
+.stn b{font:500 1.5rem/1 var(--f-display)}
+.stn span{font-size:.78rem;color:var(--ink-2);line-height:1.25}
+.stn[aria-pressed="true"] span{color:var(--ink);font-weight:600}
+.stn[aria-pressed="true"] .dot{box-shadow:0 0 0 4px var(--petal-wash)}
+.recnote{display:grid;grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:48px;margin-top:22px;align-items:start}
+.recnote p{margin:0;color:var(--ink-2);max-width:64ch}
+.observed-note{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;background:var(--observed-wash);border-left:3px solid var(--observed);font-size:var(--t-sm);color:var(--ink)}
+
+.changed{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid var(--ink);margin-top:14px}
+.changed div{padding:14px 18px 0 0}
+.changed b{font:500 1.6rem/1 var(--f-display)}
+.changed span{display:block;font-size:var(--t-sm);color:var(--ink-2);margin-top:4px}
+details.adv{margin-top:40px;border-top:1px solid var(--rule);padding-top:14px;color:var(--ink-2);font-size:var(--t-sm)}
+details.adv summary{cursor:pointer;font-weight:600;color:var(--ink)}
+
+/* ---------- evidence drawer ---------- */
+.scrim{position:fixed;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity var(--d-med)}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(640px,100%);background:var(--sheet);box-shadow:var(--shadow-sheet);transform:translateX(102%);transition:transform var(--d-slow) var(--ease-out);display:flex;flex-direction:column;z-index:20}
+body.drawer-open .scrim{opacity:1;pointer-events:auto}
+body.drawer-open .drawer{transform:none}
+.dh{padding:22px 28px 16px;border-bottom:1px solid var(--rule)}
+.dh .top{display:flex;align-items:center;gap:10px}
+.dh .top .sp{flex:1}
+.dh h2{font:500 1.55rem/1.2 var(--f-display);margin:12px 0 10px;letter-spacing:-.01em}
+.x{width:32px;height:32px;border-radius:var(--r-2);border:1px solid var(--rule);background:var(--sheet);display:grid;place-items:center;cursor:pointer}
+.tabs{display:flex;gap:2px;margin-top:14px;border-bottom:1px solid var(--rule);margin-bottom:-17px}
+.tab{padding:8px 12px;border:0;background:none;font-size:.86rem;font-weight:600;color:var(--ink-3);border-bottom:2px solid transparent;cursor:pointer;display:inline-flex;align-items:center;gap:7px}
+.tab[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--ink)}
+.db{flex:1;overflow:auto;padding:4px 28px 24px}
+.blk{display:grid;grid-template-columns:96px minmax(0,1fr);gap:16px;padding:20px 0;border-bottom:1px solid var(--rule)}
+.blk>.caps{padding-top:3px}
+.blk .kind{display:inline-flex;gap:6px;align-items:center}
+.obs-k{color:var(--ink)}
+.inf-k{color:var(--work)}
+.quote{margin:0;font:400 1.04rem/1.6 var(--f-display);color:var(--ink);border-left:2px solid var(--rule-2);padding-left:16px}
+.quote p{margin:0 0 8px}
+.quote m{background:linear-gradient(transparent 58%,var(--petal-wash) 58%);background-size:0 100%;background-repeat:no-repeat;animation:mark 700ms var(--ease-out) 380ms forwards;font-weight:500}
+@keyframes mark{to{background-size:100% 100%}}
+.absent-note{display:flex;align-items:center;gap:8px;margin-top:10px;font-size:var(--t-sm);font-weight:600}
+.src{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;padding:10px 0;border-top:1px dotted var(--rule-2);font-size:var(--t-sm)}
+.src:first-of-type{border-top:0;padding-top:0}
+.src a{font:500 .8rem var(--f-mono);text-decoration:none;overflow-wrap:anywhere}
+.src a:hover{text-decoration:underline}
+.src .k{color:var(--ink-3);font-size:.78rem}
+.who{display:flex;gap:10px;flex-wrap:wrap;grid-column:1/-1;font-size:.78rem;color:var(--ink-2)}
+.who span{display:inline-flex;align-items:center;gap:4px}
+.who .no-you{font-weight:600;color:var(--sev-decision)}
+.fact{display:flex;gap:8px;align-items:flex-start;font-size:var(--t-sm);padding:4px 0}
+.fact svg{margin-top:3px}
+.inf{font-size:.92rem;color:var(--ink);margin:0}
+.lim{font-size:var(--t-sm);color:var(--ink-2);margin:8px 0 0}
+.df{padding:16px 28px;border-top:1px solid var(--rule);display:flex;gap:10px;align-items:center;background:var(--paper)}
+.df .sp{flex:1}
+
+/* ---------- recovery plan view ---------- */
+.rp{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:36px;margin-top:26px;align-items:start}
+.grp{margin-bottom:22px}
+.grp h3{display:flex;align-items:center;gap:8px;font:600 .74rem/1 var(--f-ui);letter-spacing:.11em;text-transform:uppercase;color:var(--ink-2);padding:0 0 8px;border-bottom:1px solid var(--ink);margin:0}
+.grp h3 .ct{font-family:var(--f-mono);color:var(--ink-3)}
+.act{display:grid;grid-template-columns:62px minmax(0,1fr) auto;gap:4px 16px;padding:13px 0;border-bottom:1px solid var(--rule);cursor:pointer;background:none;border-left:0;border-right:0;border-top:0;width:100%;text-align:left}
+.act:hover{background:linear-gradient(90deg,var(--paper-2),transparent)}
+.act[aria-selected="true"]{background:linear-gradient(90deg,var(--petal-wash),transparent 70%);box-shadow:inset 3px 0 0 var(--petal)}
+.act .id{font:500 .74rem var(--f-mono);color:var(--ink-3);padding-left:8px;padding-top:2px}
+.act .t{font-weight:600;font-size:.92rem}
+.act .s{grid-column:2;font-size:.8rem;color:var(--ink-3);display:flex;gap:10px;align-items:center;min-width:0;white-space:nowrap}
+.act .s .qq{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.act .r{grid-row:1/3;grid-column:3;display:flex;flex-direction:column;align-items:flex-end;gap:4px;font-size:.78rem;color:var(--ink-2)}
+.act.archived .t{color:var(--ink-3);text-decoration:line-through;text-decoration-color:var(--rule-2)}
+.steps{display:flex;gap:3px}.steps i{width:10px;height:4px;background:var(--rule)}.steps i.on{background:var(--ink)}
+.panel{position:sticky;top:20px;background:var(--sheet);border:1px solid var(--rule);border-top:3px solid var(--ink);padding:20px 22px}
+.panel h3{font:500 1.3rem/1.25 var(--f-display);margin:10px 0 6px}
+.kv{display:grid;grid-template-columns:118px minmax(0,1fr);gap:8px 12px;font-size:var(--t-sm);margin:14px 0 0;padding-top:14px;border-top:1px solid var(--rule)}
+.kv dt{color:var(--ink-3)}
+.kv dd{margin:0}
+.draft{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px dashed var(--rule-2);border-radius:var(--r-2);background:var(--paper);font-size:var(--t-sm)}
+.draft b{display:block}
+.trans{display:flex;gap:8px;margin-top:16px;flex-wrap:wrap}
+
+/* ---------- mobile chrome ---------- */
+.mbar{display:none}
+@media (max-width:760px){
+  .shell{grid-template-columns:minmax(0,1fr)}
+  .nav{display:none}
+  .mbar{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--rule);position:sticky;top:0;background:var(--paper);z-index:5}
+  .mbar b{font-size:.92rem}.mbar .sp{flex:1}
+  .mbar .av{width:28px;height:28px;border-radius:50%;background:var(--ink);color:var(--paper);display:grid;place-items:center;font-size:.7rem;font-weight:600}
+  .main{padding:16px 16px 72px}
+  .mast{display:none}
+  .lede{grid-template-columns:1fr;gap:14px;padding:12px 0 18px}
+  .lede h1{font-size:1.85rem}
+  .lede aside{border-left:0;padding-left:0;border-top:1px solid var(--rule);padding-top:12px}
+  .scope{display:grid;grid-template-columns:1fr 1fr;gap:0}
+  .scope div{border-right:0;margin:0;padding:8px 0;border-bottom:1px solid var(--rule)}
+  .scope div:last-child{grid-column:1/-1;border-bottom:0}
+  .decide{grid-template-columns:1fr 1fr;margin-top:18px}
+  .dc{padding:14px 12px 16px;border-left:0;border-top:1px solid var(--rule)}
+  .dc:nth-child(2n){border-left:1px solid var(--rule)}
+  .dc:first-child{padding-left:0}.dc:nth-child(3){padding-left:0}
+  .dc .n{font-size:2rem}
+  .sevmix{flex-direction:column;gap:4px}
+  .sh{margin-top:30px;flex-wrap:wrap}.sh h2{font-size:1.4rem}
+  .gap{grid-template-columns:28px minmax(0,1fr);gap:0 10px;padding:18px 0}
+  .gap .no{font-size:1.3rem}
+  .gap h3{font-size:1.12rem}
+  .margin{grid-column:2;border-left:0;padding-left:0;margin-top:12px;flex-direction:row;flex-wrap:wrap;gap:6px 12px}
+  .margin .caps,.margin .tot{display:none}
+  .eng{grid-template-columns:auto auto;gap:5px}.eng .lab{display:none}
+  .gap .facts{grid-template-columns:1fr}.gap .facts dt{margin-top:6px}
+  .track{grid-template-columns:repeat(8,104px);overflow-x:auto;padding-bottom:8px;scroll-snap-type:x mandatory}
+  .track::before{right:auto;width:820px}
+  .stn{scroll-snap-align:start}
+  .recnote,.rp{grid-template-columns:1fr;gap:16px}
+  .changed{grid-template-columns:1fr 1fr}
+  .drawer{width:100%}
+  .dh{padding:16px}.dh h2{font-size:1.25rem}
+  .db{padding:0 16px 16px}
+  .blk{grid-template-columns:1fr;gap:8px}
+  .df{padding:12px 16px;flex-wrap:wrap}
+  .panel{display:none}
+  .act{grid-template-columns:minmax(0,1fr) auto}
+  .act .id{display:none}.act .s{grid-column:1}.act .r{grid-column:2}
+  .mtabs[hidden]{display:flex}
+  .act .steps,.act .r>span:last-child{display:none}
+}
+.mtabs{position:fixed;left:0;right:0;bottom:0;background:var(--sheet);border-top:1px solid var(--rule);z-index:6}
+.mtabs a{flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0 10px;font-size:.68rem;font-weight:600;color:var(--ink-3);text-decoration:none}
+.mtabs a[aria-current]{color:var(--ink)}
+.mtabs a[aria-current] svg{color:var(--petal-ink)}
+.mtabs svg{width:18px;height:18px}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:1ms!important;animation-delay:0ms!important;transition-duration:1ms!important}
+  .quote m{background-size:100% 100%}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-decision" viewBox="0 0 16 16"><path d="M8 1.5 14.5 8 8 14.5 1.5 8Z" fill="currentColor"/></symbol>
+    <symbol id="i-consideration" viewBox="0 0 16 16"><path d="M8 1.5 14.5 8 8 14.5 1.5 8Z" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 2.6V13.4L2.6 8Z" fill="currentColor"/></symbol>
+    <symbol id="i-discovery" viewBox="0 0 16 16"><path d="M8 2.2 13.8 8 8 13.8 2.2 8Z" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-work" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-dasharray="3 2.2"/><path d="M6.5 5.5 9 8l-2.5 2.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-progress" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="m5 8.2 2 2 4-4.3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-observed" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="8" cy="8" r="2.6" fill="currentColor"/></symbol>
+    <symbol id="i-low" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="1.6 2"/><path d="M5 8.6c1-1.2 2-1.2 3 0s2 1.2 3 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-fault" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.6 12.4 12.4 3.6" stroke="currentColor" stroke-width="1.6"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="3" rx="1" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3 6v7h10V6M6.5 9h3" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+    <symbol id="i-miss" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 8h5" stroke="currentColor" stroke-width="1.7"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 16 16"><path d="M3 8h9.5M9 4.5 12.5 8 9 11.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-x" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+    <symbol id="i-doc" viewBox="0 0 16 16"><path d="M4 1.8h5.5L12.5 5v9.2H4Z M9.3 1.8V5h3.2" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="shell">
+  <nav class="nav" aria-label="Main">
+    <div class="logo"><svg viewBox="0 0 56 30" aria-hidden="true"><rect x="0" y="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".3"/><rect x="20" y="0" width="16" height="30" rx="4.5" fill="#E8661A"/><rect x="40" y="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".3"/></svg>White Petal</div>
+    <button class="brandsw" type="button" aria-label="Switch brand. Current: Saarvi Skin"><span class="mk">S</span><span><b>Saarvi Skin</b><span>saarviskin.com · India</span></span></button>
+    <h4 class="caps">Home</h4>
+    <a href="#" data-v="risk">Recommendation risk</a>
+    <a href="#">Evidence readiness</a>
+    <h4 class="caps">Gaps</h4>
+    <a href="#">Buyer questions <span class="ct">18</span></a>
+    <a href="#">Recommendation gaps <span class="ct hot">39</span></a>
+    <a href="#">AI answers <span class="ct">51</span></a>
+    <h4 class="caps">Why they win</h4>
+    <a href="#">Evidence sources</a>
+    <a href="#">Competitor advantages</a>
+    <a href="#">Search influence</a>
+    <h4 class="caps">Recovery</h4>
+    <a href="#" data-v="recovery">Recovery plan <span class="ct">11</span></a>
+    <a href="#">Drafts <span class="ct">4</span></a>
+    <h4 class="caps">Progress</h4>
+    <a href="#">Competitive landscape</a>
+    <a href="#">Change over time</a>
+    <span class="sp"></span>
+    <button class="acct" type="button" aria-haspopup="menu" aria-label="Account menu: settings, team, integrations, billing"><span class="av">RM</span><span><b>Rohan Mehta</b><span>Editor · Saarvi Labs</span></span></button>
+  </nav>
+
+  <div>
+    <header class="mbar"><button class="x" type="button" aria-label="Open navigation"><svg class="i"><use href="#i-menu"/></svg></button><b id="mtitle">Recommendation risk</b><span class="sp"></span><span class="av" aria-label="Account">RM</span></header>
+    <main class="main"><div class="page" id="page"></div></main>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="dtitle"></aside>
+
+<nav class="mtabs" hidden aria-label="Sections">
+  <a href="#" id="mt-risk" aria-current="page"><svg><use href="#i-decision"/></svg>Risk</a>
+  <a href="#"><svg><use href="#i-consideration"/></svg>Gaps</a>
+  <a href="#"><svg><use href="#i-doc"/></svg>Evidence</a>
+  <a href="#" id="mt-rec"><svg><use href="#i-work"/></svg>Recovery</a>
+  <a href="#"><svg><use href="#i-observed"/></svg>Progress</a>
+</nav>
+
+<script>
+/* Shared sample data — fictional Indian D2C skincare brand. All figures internally consistent:
+   18 buyer questions x 3 engines = 54 answers; 51 completed, 3 not collected (Gemini).
+   Saarvi named in 12 of 51 completed answers -> 39 gap answers: 9 decision, 16 consideration, 14 discovery. */
+var WP = {
+  brand: "Saarvi Skin", site: "saarviskin.com", market: "India",
+  check: "9 Oct 2026", checkTime: "9 Oct 2026, 10:42 IST", prior: "25 Sep 2026",
+  engines: ["ChatGPT", "Gemini", "Perplexity"],
+  questions: 18, attempted: 54, completed: 51, failed: 3, named: 12,
+  gaps: { total: 39, decision: 9, consideration: 16, discovery: 14 },
+  alt: { name: "Dermaroot", inGaps: 27, inDecision: 7 },
+  actions: { ready: 6, suggested: 4, review: 2 },
+  changed: { recovered: 2, newGaps: 3, regressed: 1, unchanged: 36 },
+  priority: [
+    { id: "g1", type: "decision", q: "Best vitamin C serum for oily skin under ₹800",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "3/3"], ["Clearlab", "2/3"]], sources: 7, srcComp: "5 mention Dermaroot", srcYou: 0,
+      why: "All three answers drew their shortlist from roundups that list price and skin type. None of the 7 cited pages mention Saarvi.",
+      conf: "high", action: { id: "A-104", title: "Draft evidence for this buyer question", state: "review" } },
+    { id: "g2", type: "decision", q: "Where to buy a fragrance-free sunscreen for sensitive skin online",
+      cov: { ChatGPT: "absent", Gemini: "failed", Perplexity: "absent" }, completed: 2, namedN: 0,
+      comps: [["Vedara", "2/2"], ["Dermaroot", "1/2"]], sources: 4, srcComp: "3 mention Vedara", srcYou: 0,
+      why: "Both collected answers point to one marketplace roundup that lists Vedara. Gemini’s answer could not be collected, so this gap rests on 2 answers.",
+      conf: "medium", action: { id: "A-101", title: "Pursue inclusion on skinroutine.in sunscreen roundup", state: "suggested" } },
+    { id: "g3", type: "consideration", q: "Which niacinamide serum is best for acne marks in India?",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "3/3"], ["Clearlab", "3/3"], ["Glowpath", "1/3"]], sources: 9, srcComp: "6 mention Dermaroot", srcYou: 0,
+      why: "Answers compare concentration and dermatologist testing. Saarvi’s serum page states neither in text.",
+      conf: "high", action: { id: "A-105", title: "Publish a niacinamide comparison page", state: "drafting" } },
+    { id: "g4", type: "consideration", q: "Best Indian skincare brands for hyperpigmentation",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "named" }, completed: 3, namedN: 1,
+      comps: [["Dermaroot", "3/3"], ["Glowpath", "2/3"]], sources: 6, srcComp: "4 mention Dermaroot", srcYou: 1,
+      why: "Perplexity named Saarvi 4th, citing one blog. ChatGPT and Gemini cited brand directories where Saarvi has no structured entry.",
+      conf: "medium", action: { id: "A-109", title: "Add Organization and Product schema", state: "published" } },
+    { id: "g5", type: "discovery", q: "What does niacinamide actually do for skin?",
+      cov: { ChatGPT: "absent", Gemini: "absent", Perplexity: "absent" }, completed: 3, namedN: 0,
+      comps: [["Dermaroot", "1/3"]], sources: 8, srcComp: "1 mentions Dermaroot", srcYou: 0,
+      why: "Answers are mostly educational and cite encyclopaedic sources. Too little brand signal to explain the gap.",
+      conf: "low", action: null }
+  ],
+  answer: {
+    engine: "ChatGPT", time: "9 Oct 2026, 10:42 IST", sample: "Answer 1 of 1 for this engine",
+    paras: [
+      "For oily, acne-prone skin on a budget in India, these serums are commonly recommended:",
+      "1. <m>Dermaroot</m> 15% Vitamin C + Ferulic Serum (₹649) — a lightweight, water-based gel that suits oily skin and is widely reviewed for fading marks.",
+      "2. <m>Clearlab</m> C-Bright 10% Serum (₹599) — uses a stable vitamin C derivative, a good starting point if your skin is sensitive.",
+      "3. Glowpath Daily C (₹749) — a gentler formula with niacinamide, often suggested for beginners.",
+      "Look for a stable form such as ethyl ascorbic acid, and always pair it with sunscreen during the day."
+    ]
+  },
+  srcRows: [
+    { url: "skinroutine.in/best-vitamin-c-serums-oily-skin", kind: "Roundup", cited: "3/3", d: "yes", c: "yes", you: "no", insp: "Inspected 9 Oct" },
+    { url: "reddit.com/r/IndianSkincareAddicts/…/budget_vit_c", kind: "Forum thread", cited: "2/3", d: "yes", c: "yes", you: "once", insp: "Inspected 9 Oct" },
+    { url: "dermaroot.in/products/vitamin-c-15-ferulic", kind: "Competitor page", cited: "2/3", d: "owner", c: "no", you: "no", insp: "Inspected 9 Oct" },
+    { url: "beautyedit.co.in/vitamin-c-under-1000", kind: "Roundup", cited: "1/3", d: "yes", c: "no", you: "no", insp: "Inspected 9 Oct" },
+    { url: "clearlab.co/c-bright-serum", kind: "Competitor page", cited: "1/3", d: "no", c: "owner", you: "no", insp: "Could not inspect (blocked)" }
+  ],
+  facts: [
+    ["Price ₹699 is stated on the product page", "ok"],
+    ["Skin-type suitability (oily / combination) is not stated in text", "miss"],
+    ["12% ethyl ascorbic acid appears only inside a product image", "miss"],
+    ["No Product structured data found", "miss"]
+  ],
+  lifecycle: [
+    ["suggested", "Suggested", 4], ["drafting", "Drafting", 1], ["review", "Ready for review", 2], ["approved", "Approved", 1],
+    ["published", "Published / sent", 1], ["recheck", "Recheck scheduled", 1], ["observed", "Result observed", 1], ["archived", "Archived", 1]
+  ],
+  board: [
+    { id: "A-101", st: "suggested", kind: "Outreach", t: "Pursue inclusion on skinroutine.in sunscreen roundup", gap: "decision", q: "Fragrance-free sunscreen for sensitive skin", conf: "medium" },
+    { id: "A-102", st: "suggested", kind: "Page fix", t: "State ‘fragrance-free’ and test results in text on the sunscreen page", gap: "decision", q: "Fragrance-free sunscreen for sensitive skin", conf: "medium" },
+    { id: "A-103", st: "suggested", kind: "Page fix", t: "Add skin-type facts in text to 6 serum pages", gap: "consideration", q: "Niacinamide serum for acne marks", conf: "high" },
+    { id: "A-108", st: "suggested", kind: "Pitch", t: "Pitch beautyedit.co.in to review their ‘under ₹1000’ list", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "medium" },
+    { id: "A-105", st: "drafting", kind: "Page", t: "Niacinamide serum comparison page", gap: "consideration", q: "Niacinamide serum for acne marks", conf: "high", owner: "Ananya", due: "15 Oct" },
+    { id: "A-104", st: "review", kind: "Page", t: "Vitamin C serum evidence page — draft v2", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "high", owner: "Rohan", due: "13 Oct" },
+    { id: "A-106", st: "review", kind: "Pitch", t: "Pitch to skinroutine.in vitamin C roundup", gap: "decision", q: "Vitamin C serum for oily skin under ₹800", conf: "medium", owner: "Rohan", due: "14 Oct" },
+    { id: "A-107", st: "approved", kind: "llms.txt", t: "Add product facts to llms.txt", gap: "discovery", q: "What does niacinamide do for skin?", conf: "low", owner: "Ananya", note: "Approved 8 Oct" },
+    { id: "A-109", st: "published", kind: "Schema", t: "Organization + Product schema on 14 pages", gap: "consideration", q: "Brands for hyperpigmentation", conf: "medium", note: "Published 2 Oct · saarviskin.com" },
+    { id: "A-110", st: "recheck", kind: "Pitch", t: "Pitch sent to glowguide.in ‘sunscreen for oily skin’", gap: "decision", q: "Sunscreen for oily skin", conf: "medium", note: "Sent 30 Sep · recheck 16 Oct" },
+    { id: "A-111", st: "observed", kind: "Page", t: "FAQ page: ‘Is Saarvi sunscreen safe for oily skin?’", gap: "consideration", q: "Sunscreen for oily skin", conf: "medium", note: "0/3 → 1/3 · 25 Sep vs 9 Oct" },
+    { id: "A-112", st: "archived", kind: "Outreach", t: "Reddit reply campaign", gap: "consideration", q: "Budget serums", conf: "low", note: "Archived 5 Oct · community rules" }
+  ],
+  /* all 18 questions; cov order ChatGPT, Gemini, Perplexity: n named, a absent (gap), f not collected */
+  all: [
+    {lane:"decision", q:"Best vitamin C serum for oily skin under ₹800", c:"aaa", g:"g1"},
+    {lane:"decision", q:"Where to buy fragrance-free sunscreen for sensitive skin online", c:"afa", g:"g2"},
+    {lane:"decision", q:"Best sunscreen for oily skin in India", c:"aan"},
+    {lane:"decision", q:"Best moisturiser for acne-prone skin under ₹500", c:"naa"},
+    {lane:"decision", q:"Saarvi or Dermaroot vitamin C — which should I buy?", c:"nnn"},
+    {lane:"consideration", q:"Which niacinamide serum is best for acne marks in India?", c:"aaa", g:"g3"},
+    {lane:"consideration", q:"Best Indian skincare brands for hyperpigmentation", c:"aan", g:"g4"},
+    {lane:"consideration", q:"Dermaroot alternatives for sensitive skin", c:"aaa"},
+    {lane:"consideration", q:"Most trusted clean skincare brands in India", c:"aaa"},
+    {lane:"consideration", q:"Best ceramide moisturiser brands in India", c:"ana"},
+    {lane:"consideration", q:"Budget skincare brands for teenagers", c:"aaa"},
+    {lane:"consideration", q:"Is Clearlab or Saarvi better for dull skin?", c:"nfn"},
+    {lane:"discovery", q:"What does niacinamide actually do for skin?", c:"aaa", g:"g5"},
+    {lane:"discovery", q:"Is vitamin C safe to use with retinol?", c:"aaa"},
+    {lane:"discovery", q:"What is a skin barrier?", c:"aaa"},
+    {lane:"discovery", q:"What SPF do I need in Indian summers?", c:"afa"},
+    {lane:"discovery", q:"How to fade acne marks at home", c:"ana"},
+    {lane:"discovery", q:"Are Indian skincare brands as good as Korean ones?", c:"nan"}
+  ]
+};
+
+(function(){
+  var D = WP, $ = function(s){return document.querySelector(s)};
+  var ic = function(n, cls){return '<svg class="i '+(cls||'')+'" aria-hidden="true"><use href="#i-'+n+'"/></svg>'};
+  var SEV = {decision:["Decision gap",3],consideration:["Consideration gap",2],discovery:["Discovery gap",1]};
+  function sev(t){var s=SEV[t];return '<span class="sev '+t+'">'+ic(t)+s[0]+'<span class="meter" aria-hidden="true">'+[1,2,3].map(function(k){return '<i class="'+(k<=s[1]?'on':'')+'"></i>'}).join('')+'</span></span>'}
+  var STATE = {suggested:["Suggested","work"],drafting:["Drafting","work"],review:["Ready for review","work"],approved:["Approved","progress"],published:["Published / sent","progress"],recheck:["Recheck scheduled","progress"],observed:["Result observed","observed"],archived:["Archived","archive"]};
+  function state(s){return '<span class="state '+s+'">'+ic(STATE[s][1])+STATE[s][0]+'</span>'}
+  function conf(c){return c==='low'?'<span class="conf low">'+ic('low')+'Low confidence</span>':'<span class="conf '+c+'">'+(c==='high'?'High':'Medium')+' confidence</span>'}
+  function cell(st){return st==='named'?'<span class="cell named" aria-hidden="true">'+ic('progress').replace('class="i ','style="width:10px;height:10px" class="i ')+'</span>':'<span class="cell '+st+'" aria-hidden="true"></span>'}
+  var LAB = {named:"Named",absent:"Not named",failed:"Not collected"};
+  var scopeLine = '<dl class="scope" aria-label="Scope of this check">'+
+    '<div><dt>Engines</dt><dd>ChatGPT · Gemini · Perplexity</dd></div>'+
+    '<div><dt>Checked</dt><dd>'+D.check+'</dd></div>'+
+    '<div><dt>Market</dt><dd>'+D.market+'</dd></div>'+
+    '<div><dt>Buyer questions</dt><dd>'+D.questions+'</dd></div>'+
+    '<div><dt>Answers</dt><dd>'+D.completed+' of '+D.attempted+' completed · <span class="warn">'+ic('fault')+D.failed+' Gemini not collected</span></dd></div></dl>';
+
+  function risk(){
+    var cov=''; for(var k=0;k<51;k++) cov+='<i class="'+(k<12?'y':'')+'"></i>';
+    var gaps = D.priority.map(function(g,i){
+      var low = g.conf==='low';
+      return '<article class="gap'+(low?' is-low':'')+'">'+
+        '<div class="no tnum">'+String(i+1).padStart(2,'0')+'</div>'+
+        '<div>'+sev(g.type)+
+          '<h3>“'+g.q+'”</h3>'+
+          '<dl class="facts"><dt>Shown instead</dt><dd>'+g.comps.map(function(c){return '<span class="chip">'+c[0]+' <span class="ct">'+c[1]+'</span></span>'}).join('')+'</dd>'+
+          '<dt>Evidence</dt><dd>'+g.sources+' cited pages — '+g.srcComp+', '+(g.srcYou? g.srcYou+' mentions Saarvi':'none mention Saarvi')+'</dd></dl>'+
+          '<p class="why">'+g.why+' '+conf(g.conf)+'</p>'+
+          '<div class="acts"><button class="btn sm" data-open="'+g.id+'">Inspect evidence</button>'+
+            (g.action? '<a class="lnk" href="#">'+g.action.id+' · '+g.action.title+'</a>'+state(g.action.state)
+                     : '<span class="state archived">'+ic('low')+'Review the answers before creating an action</span>')+
+          '</div></div>'+
+        '<div class="margin"><span class="caps">Observed in this check</span>'+
+          D.engines.map(function(e){var st=g.cov[e];return '<div class="eng"><b>'+e+'</b>'+cell(st)+'<span class="lab'+(st==='failed'?' f':'')+'">'+LAB[st]+'</span><span class="sr">'+e+': '+LAB[st]+'</span></div>'}).join('')+
+          '<div class="tot">Saarvi named in '+g.namedN+' of '+g.completed+' completed answers'+(g.completed<3?' (1 not collected — not counted as a gap)':'')+'</div></div>'+
+      '</article>';
+    }).join('');
+    var track = D.lifecycle.map(function(s){
+      var cls = {suggested:'work',drafting:'work',review:'work',approved:'prog',published:'prog',recheck:'prog',observed:'obs',archived:'arch'}[s[0]];
+      var icon = {work:'work',prog:'progress',obs:'observed',arch:'archive'}[cls];
+      return '<button class="stn '+cls+'" type="button" aria-pressed="'+(s[0]==='review')+'"><span class="dot">'+ic(icon)+'</span><b class="tnum">'+s[2]+'</b><span>'+s[1]+'</span></button>';
+    }).join('');
+    return '<div class="mast"><span class="caps">Recommendation risk</span><span class="mono" style="color:var(--ink-3)">Check of '+D.check+' · compared with '+D.prior+'</span><span class="sp"></span><button class="lnk">Methodology</button><button class="btn ghost sm">Share brief</button><button class="btn sm">Recheck recommendations</button></div>'+
+      '<section class="lede"><div><h1>Saarvi Skin was left out of <b>9 answers closest to a purchase</b>. <em>Dermaroot</em> was recommended in 7 of them.</h1>'+
+        '<p class="sub">Across all tracked buyer questions, Saarvi appeared in 12 of 51 completed answers in this check. The gaps below are ordered by how close the buyer was to choosing.</p></div>'+
+        '<aside><p><b>Why it matters.</b> These are questions a buyer asks when they are ready to order. When the answer lists three serums and none is yours, you are not in the choice.</p><p><button class="lnk" data-open="g1">See the strongest evidence →</button></p></aside></section>'+
+      scopeLine+
+      '<section class="decide" aria-label="Decision summary">'+
+        '<a class="dc" href="#"><span class="caps">Recommendation coverage</span><span class="n tnum">12<small>/51</small></span><span class="cov" aria-hidden="true">'+cov+'</span><p>Saarvi was named in 24% of completed answers.</p><span class="delta">↑ from 9/51 on 25 Sep · comparable</span></a>'+
+        '<a class="dc lead" href="#"><span class="caps">High-intent gaps</span><span class="n tnum">25</span><span class="sevmix"><span>'+ic('decision')+'9 decision</span><span>'+ic('consideration')+'16 consideration</span></span><p>Answers where buyers compared or chose — and Saarvi was absent.</p><span class="go">Open gaps '+ic('arrow')+'</span></a>'+
+        '<a class="dc" href="#"><span class="caps">Most frequent alternative</span><span class="n" style="font-size:2.1rem">Dermaroot</span><p>Named in 27 of the 39 answers where Saarvi was absent.</p><span class="go">Compare evidence '+ic('arrow')+'</span></a>'+
+        '<a class="dc" href="#"><span class="caps">Recovery actions ready</span><span class="n tnum">6</span><p>4 suggested · 2 drafts awaiting your review.</p><span class="go">Review drafts '+ic('arrow')+'</span></a>'+
+      '</section>'+
+      '<div class="sh"><h2>Priority gaps</h2><span class="meta">5 of 39 · decision gaps first, then competitor frequency</span><span class="sp"></span><a class="lnk" href="#">All recommendation gaps</a></div>'+
+      '<div class="ledger">'+gaps+'</div>'+
+      '<div class="sh"><h2>Recovery path</h2><span class="meta">12 actions from this and earlier checks</span><span class="sp"></span><a class="lnk" href="#" data-v="recovery">Open recovery plan</a></div>'+
+      '<div class="track" role="group" aria-label="Recovery lifecycle">'+track+'</div>'+
+      '<div class="recnote"><p>Two drafts for decision gaps are waiting on review. Nothing is published until you add the live URL. Each published action gets a recheck date; only a later comparable check can record a result.</p>'+
+        '<div class="observed-note">'+ic('observed')+'<span><b>1 result observed.</b> After the sunscreen FAQ page went live, coverage for that question moved from 0/3 to 1/3 (25 Sep → 9 Oct). An observed association, not proof the page caused it.</span></div></div>'+
+      '<div class="sh"><h2>What changed since 25 Sep</h2><span class="meta">Comparable: same 18 questions, engines and market</span></div>'+
+      '<div class="changed"><div><b class="tnum">2</b><span>gaps recovered</span></div><div><b class="tnum">3</b><span>new gaps</span></div><div><b class="tnum">1</b><span>regressed — named before, not now</span></div><div><b class="tnum">36</b><span>unchanged gaps</span></div></div>'+
+      '<details class="adv"><summary>Advanced metrics — position, sentiment and share of answers</summary><p>Average position when named: 3.4 · Sentiment: neutral-positive · Share of answers among tracked brands: 11%. These describe the same 51 answers; they are context, not the headline.</p></details>';
+  }
+
+  function drawer(){
+    var g = D.priority[0], a = D.answer;
+    var yn = function(v,n){return v==='yes'?'<span>'+ic('progress')+n+'</span>':v==='owner'?'<span>'+ic('doc')+n+' (own page)</span>':v==='once'?'<span>'+ic('low')+n+' (one reply)</span>':'<span style="color:var(--ink-3)">'+ic('miss')+n+' absent</span>'};
+    return '<header class="dh"><div class="top">'+sev('decision')+conf('high')+'<span class="sp"></span><button class="x" type="button" aria-label="Close evidence" data-close>'+ic('x')+'</button></div>'+
+      '<h2 id="dtitle">“'+g.q+'”</h2>'+
+      '<div class="mono" style="color:var(--ink-2)">ChatGPT · Gemini · Perplexity — '+D.check+' — India — 3 of 3 answers completed</div>'+
+      '<div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">'+cell('absent')+'ChatGPT</button><button class="tab" role="tab" aria-selected="false">'+cell('absent')+'Gemini</button><button class="tab" role="tab" aria-selected="false">'+cell('absent')+'Perplexity</button></div></header>'+
+      '<div class="db">'+
+      '<section class="blk"><span class="caps obs-k">Observed<br>answer</span><div><div class="mono" style="color:var(--ink-3);margin-bottom:10px">'+a.engine+' · '+a.time+' · India · '+a.sample+'</div><blockquote class="quote">'+a.paras.map(function(p){return '<p>'+p+'</p>'}).join('')+'</blockquote>'+
+        '<div class="absent-note" style="color:var(--sev-decision)">'+ic('miss')+'Saarvi Skin is not named in this answer.</div></div></section>'+
+      '<section class="blk"><span class="caps obs-k">Cited<br>sources</span><div>'+D.srcRows.map(function(s){
+        return '<div class="src"><a href="#">'+s.url+'</a><span class="k">'+s.kind+' · cited in '+s.cited+'</span>'+
+          '<div class="who">'+yn(s.d,'Dermaroot')+yn(s.c,'Clearlab')+(s.you==='no'?'<span class="no-you">'+ic('miss')+'Saarvi absent</span>':yn(s.you,'Saarvi'))+'<span style="margin-left:auto;color:var(--ink-3)">'+(s.insp.indexOf('Could')===0?ic('fault'):'')+s.insp+'</span></div></div>'}).join('')+
+        '<p class="lim">+2 more cited pages · <a class="lnk" href="#">All 7 sources</a></p></div></section>'+
+      '<section class="blk"><span class="caps obs-k">Your page,<br>inspected</span><div><div class="mono" style="color:var(--ink-3);margin-bottom:6px">saarviskin.com/products/vitamin-c-serum · 9 Oct</div>'+D.facts.map(function(f){return '<div class="fact">'+(f[1]==='ok'?ic('progress'):ic('miss'))+'<span>'+f[0]+'</span></div>'}).join('')+'</div></section>'+
+      '<section class="blk"><span class="caps inf-k">Inference</span><div><p class="inf">The answers appear to build their shortlist from roundups that state price and skin type. Saarvi’s ₹699 serum fits the question but is absent from those roundups, and its own page doesn’t state skin-type suitability in text.</p><p class="lim">'+conf('high')+' — 3 of 3 answers and 5 of 7 sources agree. This is an interpretation of observed evidence; it is not a guarantee of what any engine will do next.</p></div></section>'+
+      '<section class="blk"><span class="caps" style="color:var(--work)">Recovery<br>action</span><div><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap"><b>A-104 · Draft evidence for this buyer question</b>'+state('review')+'</div><p class="lim">This action addresses an observed evidence gap for “'+g.q+'”. It may strengthen the information available to AI systems; it does not guarantee inclusion.</p></div></section>'+
+      '</div><footer class="df"><button class="btn">Open draft for review</button><button class="btn ghost">Pursue inclusion on skinroutine.in</button><span class="sp"></span><button class="lnk">Methodology</button></footer>';
+  }
+
+  function recovery(){
+    var groups = D.lifecycle.map(function(s){
+      var items = D.board.filter(function(b){return b.st===s[0]});
+      var order = ['suggested','drafting','review','approved','published','recheck','observed','archived'];
+      return '<section class="grp"><h3>'+ic(STATE[s[0]][1])+s[1]+' <span class="ct">'+items.length+'</span></h3>'+items.map(function(b){
+        var idx = order.indexOf(b.st);
+        return '<button class="act'+(b.st==='archived'?' archived':'')+'" type="button" aria-selected="'+(b.id==='A-104')+'"><span class="id">'+b.id+'</span><span class="t">'+b.t+'</span>'+
+          '<span class="s">'+sev(b.gap)+'<span>'+b.kind+'</span><span class="qq">“'+b.q+'”</span>'+(b.conf==='low'?conf('low'):'')+'</span>'+
+          '<span class="r">'+state(b.st)+'<span class="steps" aria-hidden="true">'+order.slice(0,7).map(function(_,k){return '<i class="'+(k<=idx&&b.st!=='archived'?'on':'')+'"></i>'}).join('')+'</span><span>'+(b.owner? b.owner+' · due '+b.due : (b.note||'Unassigned'))+'</span></span></button>';
+      }).join('')+'</section>';
+    }).join('');
+    var track = D.lifecycle.map(function(s){
+      var cls = {suggested:'work',drafting:'work',review:'work',approved:'prog',published:'prog',recheck:'prog',observed:'obs',archived:'arch'}[s[0]];
+      var icon = {work:'work',prog:'progress',obs:'observed',arch:'archive'}[cls];
+      return '<button class="stn '+cls+'" type="button" aria-pressed="'+(s[0]==='review')+'"><span class="dot">'+ic(icon)+'</span><b class="tnum">'+s[2]+'</b><span>'+s[1]+'</span></button>';
+    }).join('');
+    return '<div class="mast"><span class="caps">Recovery plan</span><span class="mono" style="color:var(--ink-3)">Actions from checks of 12 Sep – 9 Oct 2026 · India</span><span class="sp"></span><button class="btn ghost sm">Priority list</button><button class="btn sm">New recovery action</button></div>'+
+      '<section class="lede" style="padding-bottom:18px"><div><h1 style="font-size:2.3rem">Two drafts for <b>decision gaps</b> are waiting on your review.</h1><p class="sub">Approving a draft does not publish it. Add the live URL when it ships; WhitePetal schedules a recheck and records only what the next comparable check observes.</p></div>'+
+        '<aside><p><b>11 active · 1 archived.</b> 4 suggested, 3 in progress, 3 shipped and awaiting or showing a recheck.</p></aside></section>'+
+      '<div class="track" role="group" aria-label="Filter by lifecycle state">'+track+'</div>'+
+      '<div class="rp"><div>'+groups+'</div>'+
+      '<aside class="panel" aria-label="Action detail"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><span class="mono" style="color:var(--ink-3)">A-104</span>'+state('review')+sev('decision')+'</div>'+
+        '<h3>Vitamin C serum evidence page — draft v2</h3>'+
+        '<p style="margin:0;font-size:var(--t-sm);color:var(--ink-2)">For “Best vitamin C serum for oily skin under ₹800”.</p>'+
+        '<dl class="kv"><dt>Observed problem</dt><dd>Saarvi named in 0 of 3 answers (ChatGPT, Gemini, Perplexity · 9 Oct · India). Dermaroot named in 3 of 3.</dd>'+
+        '<dt>Intervention</dt><dd>A product evidence page stating concentration, price, skin-type suitability and test results in text, with Product schema.</dd>'+
+        '<dt>Rationale</dt><dd>Addresses an observed evidence gap. It may strengthen the information available to AI systems; it does not guarantee inclusion.</dd>'+
+        '<dt>Sources</dt><dd><a class="lnk" href="#">7 cited pages</a> · <a class="lnk" href="#">answer excerpts</a></dd>'+
+        '<dt>Owner · due</dt><dd>Rohan Mehta · 13 Oct</dd>'+
+        '<dt>Approval</dt><dd>Awaiting review by an editor</dd>'+
+        '<dt>Published URL</dt><dd style="color:var(--ink-3)">Not published — add the live URL after it ships</dd>'+
+        '<dt>Recheck</dt><dd style="color:var(--ink-3)">Scheduled after publication</dd>'+
+        '<dt>Observed result</dt><dd style="color:var(--ink-3)">None yet — needs a later comparable check</dd>'+
+        '<dt>Confidence</dt><dd>High · limited to 3 answers in one market</dd></dl>'+
+        '<div class="draft" style="margin-top:14px">'+ic('doc')+'<span><b>Draft v2 — review before publishing</b>1,140 words · 3 [TODO] claims to verify · generated 10 Oct</span></div>'+
+        '<div class="trans"><button class="btn">Approve</button><button class="btn ghost">Back to drafting</button><button class="btn ghost">'+ic('archive')+'Archive</button></div>'+
+      '</aside></div>';
+  }
+
+  var view = new URLSearchParams(location.search).get('view') || 'risk';
+  function render(v){
+    view=v;
+    $('#page').innerHTML = v==='recovery'? recovery() : risk();
+    $('#mtitle').textContent = v==='recovery'?'Recovery plan':'Recommendation risk';
+    document.querySelectorAll('.nav a').forEach(function(a){a.removeAttribute('aria-current')});
+    var cur=document.querySelector('.nav a[data-v="'+(v==='recovery'?'recovery':'risk')+'"]'); if(cur) cur.setAttribute('aria-current','page');
+    $('#mt-risk').toggleAttribute('aria-current', v!=='recovery'); $('#mt-rec').toggleAttribute('aria-current', v==='recovery');
+  }
+  var lastFocus;
+  function openD(){lastFocus=document.activeElement;$('#drawer').innerHTML=drawer();document.body.classList.add('drawer-open');setTimeout(function(){var x=$('#drawer [data-close]');x&&x.focus()},50)}
+  function closeD(){document.body.classList.remove('drawer-open');lastFocus&&lastFocus.focus()}
+  document.addEventListener('click',function(e){
+    var o=e.target.closest('[data-open]'); if(o){e.preventDefault();openD();return}
+    if(e.target.closest('[data-close]')||e.target.id==='scrim'){closeD();return}
+    var n=e.target.closest('[data-v]'); if(n){e.preventDefault();render(n.getAttribute('data-v'))}
+    var m=e.target.closest('#mt-rec'); if(m){e.preventDefault();render('recovery')}
+    var r=e.target.closest('#mt-risk'); if(r){e.preventDefault();render('risk')}
+  });
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closeD()});
+  var initial=view;
+  render(initial==='drawer'?'risk':initial);
+  if(initial==='drawer'){document.documentElement.style.scrollBehavior='auto';openD()}
+})();
+</script>
+</body>
+</html>

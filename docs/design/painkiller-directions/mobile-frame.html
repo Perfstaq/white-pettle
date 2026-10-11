@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mobile Frames</title>
+<style>
+  :root{--bg:#E9E7E2;--ink:#1B1A17;--muted:#5F5B53}
+  body{margin:0;background:var(--bg);font:13px/1.4 ui-sans-serif,-apple-system,"Helvetica Neue",Arial,sans-serif;color:var(--ink)}
+  .row{display:flex;gap:28px;padding:24px 28px;align-items:flex-start}
+  figure{margin:0;display:flex;flex-direction:column;gap:8px}
+  figcaption{font-weight:600;color:var(--muted);letter-spacing:.02em}
+  iframe{width:390px;height:844px;border:0;border-radius:22px;background:#fff;box-shadow:0 0 0 1px rgba(0,0,0,.12),0 18px 40px -18px rgba(0,0,0,.35)}
+</style>
+</head>
+<body>
+<div class="row" id="row"></div>
+<script>
+  // Usage: mobile-frame.html?src=direction-a.html  -> renders the three key views at 390x844
+  var p = new URLSearchParams(location.search);
+  var src = p.get('src') || 'direction-a.html';
+  var h = p.get('h'); if(h){document.write('<style>iframe{height:'+h+'px}</style>')}
+  var views = (p.get('views') || 'risk,drawer,recovery').split(',');
+  var labels = {risk:'Recommendation risk', drawer:'Gap evidence', recovery:'Recovery plan'};
+  var row = document.getElementById('row');
+  views.forEach(function(v){
+    var f = document.createElement('figure');
+    f.innerHTML = '<figcaption>390 × 844 — ' + (labels[v]||v) + '</figcaption><iframe title="' + (labels[v]||v) + ' mobile" src="' + src + '?view=' + v + '"></iframe>';
+    row.appendChild(f);
+  });
+</script>
+</body>
+</html>
