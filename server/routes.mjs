@@ -214,6 +214,74 @@ async function notifySlack(ws, s, prev) {
   await slack.notify(got.cfg, { title: `${ws.name}: weekly AI visibility`, lines: [`*Visibility* ${pct(s.visibility)}${d(s.visibility, prev?.visibility)}`, `*Score* ${s.score}/100 · *Share of voice* ${pct(s.sov)} · *Position* ${s.position ? "#" + s.position.toFixed(1) : "–"}`, s.leader ? `*Leader* ${s.leader.name} at ${pct(s.leader.vis)}` : ""].filter(Boolean), url: process.env.PUBLIC_ORIGIN || undefined });
 }
 
+// ── recovery plan ───────────────────────────────────────────────────────────
+// Durable recovery actions (06-DATA-STATE-CONTRACTS.md). The browser derives suggestions from a run and syncs them by
+// a deterministic source_key; people then move each one through the lifecycle below. A drafted or published action is
+// not a recovered recommendation: only a later finished check of the same brand can record a result.
+const RA_STATUSES = ["suggested", "drafting", "ready_for_review", "approved", "published", "recheck_scheduled", "result_observed", "archived"];
+const RA_NEXT = { suggested: ["drafting"], drafting: ["suggested", "ready_for_review"], ready_for_review: ["approved", "drafting"], approved: ["published", "drafting"],
+  published: ["recheck_scheduled"], recheck_scheduled: ["result_observed"], result_observed: [] };
+const RA_LIVE = ["published", "recheck_scheduled", "result_observed"]; // states that need publication evidence
+// Who may approve. Editors for now; raise it here when a stricter approval policy is wanted.
+const RA_APPROVE_ROLE = "editor";
+const GAP_TYPES = ["discovery", "consideration", "decision"], CONFIDENCE = ["low", "medium", "high"], DIRECTIONS = ["improved", "unchanged", "regressed", "incomparable"];
+const RESULT_NOTE = "Observed after publication; causality is not established.";
+const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/i;
+function isoDate(v, label) {
+  if (v == null || v === "") return null;
+  const s = String(v);
+  if (!ISO_DATE.test(s) || Number.isNaN(Date.parse(s))) fail(400, `${label} must be an ISO 8601 date, like 2026-10-11T10:30:00Z.`);
+  return new Date(s);
+}
+function httpUrl(v, label) {
+  let u; try { u = new URL(String(v)); } catch { u = null; }
+  if (!u || !["http:", "https:"].includes(u.protocol) || String(v).length > 2000) fail(400, `${label} must be a full http(s) URL.`);
+  return u.href;
+}
+function oneOf(v, list, label) {
+  if (v == null || v === "") return null;
+  if (!list.includes(v)) fail(400, `${label} must be one of: ${list.join(", ")}.`);
+  return v;
+}
+const clip = (v, max) => (v == null ? null : String(v).trim().slice(0, max) || null);
+const actionOut = (r) => ({ id: r.id, sourceKey: r.source_key, sourceRunId: r.source_run_id, questionId: r.question_id, engine: r.engine, gapType: r.gap_type, kind: r.kind,
+  title: r.title, problem: r.problem, rationale: r.rationale, evidence: r.evidence, output: r.output, status: r.status, ownerId: r.owner_id, dueAt: r.due_at,
+  approvedAt: r.approved_at, publishedUrl: r.published_url, publishedAt: r.published_at, recheckAt: r.recheck_at, result: r.result, confidence: r.confidence,
+  createdAt: r.created_at, updatedAt: r.updated_at });
+const listActions = async (wsId) => (await q(`select * from recovery_actions where workspace_id = $1 order by updated_at desc, created_at desc limit 1000`, [wsId])).map(actionOut);
+// One suggestion from the browser, checked. Only these fields are ever written by a sync.
+function suggestionIn(a, i) {
+  if (!isObj(a)) fail(400, `actions[${i}] must be an object.`);
+  const sourceKey = clip(a.sourceKey, 500), kind = clip(a.kind, 40), title = clip(a.title, 300), problem = clip(a.problem, 2000);
+  if (!sourceKey) fail(400, `actions[${i}] needs a sourceKey.`);
+  if (!kind || !title || !problem) fail(400, `actions[${i}] needs a kind, a title and a problem.`);
+  if (a.evidence != null && !isObj(a.evidence)) fail(400, `actions[${i}].evidence must be an object.`);
+  return { sourceKey, kind, title, problem, rationale: clip(a.rationale, 4000), evidence: a.evidence || {}, gapType: oneOf(a.gapType, GAP_TYPES, `actions[${i}].gapType`),
+    questionId: clip(a.questionId, 200), engine: clip(a.engine, 40), confidence: oneOf(a.confidence, CONFIDENCE, `actions[${i}].confidence`) };
+}
+function counts(v, label) {
+  if (v == null) return undefined;
+  const ok = isObj(v) && Number.isInteger(v.named) && Number.isInteger(v.total) && v.named >= 0 && v.total >= 0 && v.named <= v.total;
+  if (!ok) fail(400, `${label} must be { named, total } with whole numbers, named no more than total.`);
+  return { named: v.named, total: v.total };
+}
+// A result needs a later, finished check of the same brand that started after publication.
+async function observedResult(c, w, publishedAt, r) {
+  if (!isObj(r) || !r.comparisonRunId) fail(400, "Result observed needs a result with comparisonRunId: a later check of this brand.");
+  const run = (await c.query(`select id, status, started_at from runs where id = $1 and workspace_id = $2`, [String(r.comparisonRunId), w.id])).rows[0];
+  if (!run) fail(400, "comparisonRunId isn't one of this brand's checks.");
+  if (run.status !== "done") fail(400, "The comparison check hasn't finished.");
+  if (!publishedAt || new Date(run.started_at) <= new Date(publishedAt)) fail(400, "The comparison check must have started after the action was published.");
+  if (r.comparable != null && typeof r.comparable !== "boolean") fail(400, "result.comparable must be true or false.");
+  const comparable = r.comparable === true;
+  const direction = oneOf(r.direction, DIRECTIONS, "result.direction") || (comparable ? null : "incomparable");
+  if (!direction) fail(400, "A comparable result needs a direction: improved, unchanged or regressed.");
+  if (!comparable && direction !== "incomparable") fail(400, "Only a comparable result can say improved, unchanged or regressed.");
+  return { comparisonRunId: run.id, comparable, before: counts(r.before, "result.before"), after: counts(r.after, "result.after"), direction,
+    note: clip(r.note, 1000) || RESULT_NOTE, observedAt: (isoDate(r.observedAt, "result.observedAt") || new Date()).toISOString() };
+}
+
 const needDb = () => { if (!hasDb()) fail(400, "Accounts need a database (DATABASE_URL)."); };
 const roleOk = (r) => O.ROLES.includes(r);
 
@@ -582,6 +650,93 @@ export const ROUTES = [
       [p.id, w.id, status, data.startedAt || Date.now(), data.finishedAt ? new Date(data.finishedAt) : null, status === "done" ? summarize(data) : null, data, ctx.user.id]);
     if (status === "done") await q(`update workspaces set last_run_at = now(), updated_at = now(), next_run_at = case when schedule <> 'off' then now() + case schedule when 'daily' then interval '1 day' else interval '7 days' end else null end where id = $1`, [w.id]);
     sendJson(res, 200, { ok: true, status });
+  }],
+
+  // Recovery plan, per brand. Viewers read; editors sync suggestions and move actions along. No delete: archive.
+  ["GET", "/api/workspaces/:slug/recovery-actions", async (req, res, p) => {
+    const ctx = await needCtx(req, "viewer"); const w = await needWorkspace(ctx, p.slug);
+    sendJson(res, 200, { actions: await listActions(w.id) });
+  }],
+  // Upsert by (brand, source_key). A rerun refreshes the evidence and wording only; status, owner, dates, drafts,
+  // publication and result stay as people left them, and archived actions stay archived.
+  ["POST", "/api/workspaces/:slug/recovery-actions/sync", async (req, res, p) => {
+    const ctx = await needCtx(req, "editor"); const w = await needWorkspace(ctx, p.slug, "editor"); const b = await readJson(req, 4 * 1024 * 1024);
+    if (!Array.isArray(b.actions)) fail(400, "Send the suggestions as a list in `actions`.");
+    if (b.actions.length > 500) fail(400, "Sync at most 500 suggestions at a time.");
+    const items = b.actions.map(suggestionIn);
+    const runId = b.runId == null || b.runId === "" ? null : String(b.runId);
+    if (runId && !(await one(`select 1 from runs where id = $1 and workspace_id = $2`, [runId, w.id]))) fail(400, "runId isn't one of this brand's checks.");
+    const n = await tx(async (c) => {
+      let created = 0, updated = 0;
+      for (const a of items) {
+        const r = (await c.query(`insert into recovery_actions (workspace_id, source_key, source_run_id, question_id, engine, gap_type, kind, title, problem, rationale, evidence, confidence)
+            values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            on conflict (workspace_id, source_key) do update set source_run_id = coalesce(excluded.source_run_id, recovery_actions.source_run_id),
+              question_id = excluded.question_id, engine = excluded.engine, gap_type = excluded.gap_type, title = excluded.title, problem = excluded.problem,
+              rationale = excluded.rationale, evidence = excluded.evidence, confidence = excluded.confidence, updated_at = now()
+            returning (xmax = 0) as created`,
+          [w.id, a.sourceKey, runId, a.questionId, a.engine, a.gapType, a.kind, a.title, a.problem, a.rationale, a.evidence, a.confidence])).rows[0];
+        if (r.created) created++; else updated++;
+      }
+      return { created, updated };
+    });
+    await O.audit(ctx.org.id, ctx.user.id, "recovery.synced", w.name, { ...n, runId });
+    sendJson(res, 200, { ...n, actions: await listActions(w.id) });
+  }],
+  // Edit content and move through the lifecycle. Published needs explicit evidence (URL + date, or a sent time for
+  // outreach); a result needs a later finished check. Archive works from any state and remembers where it was.
+  ["PATCH", "/api/workspaces/:slug/recovery-actions/:id", async (req, res, p) => {
+    const ctx = await needCtx(req, "editor"); const w = await needWorkspace(ctx, p.slug, "editor"); const b = await readJson(req, 2 * 1024 * 1024);
+    const { row, from } = await tx(async (c) => {
+      const a = (await c.query(`select * from recovery_actions where id::text = $1 and workspace_id = $2 for update`, [p.id, w.id])).rows[0];
+      if (!a) fail(404, "That recovery action doesn't exist for this brand.");
+      const set = {};
+      for (const [k, max] of [["title", 300], ["problem", 2000]]) if (k in b) { set[k] = clip(b[k], max); if (!set[k]) fail(400, `${k} can't be empty.`); }
+      if ("rationale" in b) set.rationale = clip(b.rationale, 4000);
+      if ("output" in b) { if (!isObj(b.output)) fail(400, "output must be an object."); set.output = b.output; }
+      if ("confidence" in b) set.confidence = oneOf(b.confidence, CONFIDENCE, "confidence");
+      if ("ownerId" in b) {
+        const id = b.ownerId == null || b.ownerId === "" ? null : String(b.ownerId);
+        if (id && !(await c.query(`select 1 from memberships where org_id = $1 and user_id::text = $2`, [ctx.org.id, id])).rows.length) fail(400, "The owner must be a member of this organisation.");
+        set.owner_id = id;
+      }
+      if ("dueAt" in b) set.due_at = isoDate(b.dueAt, "dueAt");
+      if ("recheckAt" in b) set.recheck_at = isoDate(b.recheckAt, "recheckAt");
+      if ("approvedAt" in b) set.approved_at = isoDate(b.approvedAt, "approvedAt");
+      if ("publishedUrl" in b) set.published_url = b.publishedUrl == null || b.publishedUrl === "" ? null : httpUrl(b.publishedUrl, "publishedUrl");
+      if ("publishedAt" in b) set.published_at = isoDate(b.publishedAt, "publishedAt");
+      if ("sentAt" in b) { if (a.kind !== "outreach") fail(400, "sentAt is for outreach. Use publishedUrl and publishedAt."); set.published_at = isoDate(b.sentAt, "sentAt"); }
+
+      const to = b.status == null || b.status === a.status ? a.status : String(b.status);
+      if (to !== a.status) {
+        if (!RA_STATUSES.includes(to)) fail(400, `Unknown status "${to}". Use one of: ${RA_STATUSES.join(", ")}.`);
+        const result = { ...(a.result || {}) };
+        if (to === "archived") set.result = { ...result, previousStatus: a.status };
+        else if (a.status === "archived") {
+          if (to !== result.previousStatus) fail(400, result.previousStatus ? `An archived action can only be restored to ${result.previousStatus}.` : "This archived action has no previous status to restore.");
+          delete result.previousStatus; set.result = result;
+        } else {
+          const next = RA_NEXT[a.status] || [];
+          if (!next.includes(to)) fail(400, `Can't move from ${a.status} to ${to}. From ${a.status} the next step is ${next.join(" or ") || "none"} (or archived).`);
+          if (to === "approved") { O.needRole(ctx, RA_APPROVE_ROLE); if (!("approvedAt" in b)) set.approved_at = new Date(); }
+          if (to === "result_observed") set.result = await observedResult(c, w, "published_at" in set ? set.published_at : a.published_at, b.result);
+        }
+        set.status = to;
+      } else if ("result" in b) fail(400, "A result is recorded only when moving to result_observed.");
+
+      // Published (and everything after it) needs explicit publication evidence: never inferred from a copied draft.
+      const pubUrl = "published_url" in set ? set.published_url : a.published_url, pubAt = "published_at" in set ? set.published_at : a.published_at;
+      if (RA_LIVE.includes(to) && (!pubAt || (!pubUrl && a.kind !== "outreach")))
+        fail(400, a.kind === "outreach" ? "Published needs the time it was sent (sentAt)." : "Published needs the live URL (publishedUrl, http or https) and the date it went live (publishedAt).");
+
+      const keys = Object.keys(set);
+      if (!keys.length) return { row: a, from: a };
+      const row = (await c.query(`update recovery_actions set ${keys.map((k, i) => `${k} = $${i + 2}`).join(", ")}, updated_at = now() where id = $1 returning *`, [a.id, ...keys.map((k) => set[k])])).rows[0];
+      return { row, from: a };
+    });
+    if (row.status !== from.status) await O.audit(ctx.org.id, ctx.user.id, "recovery.status", `${w.name}: ${row.title}`, { id: row.id, from: from.status, to: row.status, publishedUrl: row.published_url || undefined });
+    if (row.owner_id !== from.owner_id) await O.audit(ctx.org.id, ctx.user.id, "recovery.assigned", `${w.name}: ${row.title}`, { id: row.id, owner: row.owner_id });
+    sendJson(res, 200, { action: actionOut(row) });
   }],
 
   // Integrations, per brand. Connecting and disconnecting is for admins; refreshing and submitting for editors.

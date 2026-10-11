@@ -223,3 +223,130 @@ test("passwords: forgot and reset by email", { skip: !DB && "set TEST_DATABASE_U
   assert.equal((await call("m1x", "POST", "/api/auth/login", { email: "m1@ax.co", password: "member-pass-1" })).status, 401);
   assert.equal((await call("m1x", "POST", "/api/auth/login", { email: "m1@ax.co", password: "brand-new-pass" })).status, 200);
 });
+
+// ── Recovery plan: durable recovery actions (06-DATA-STATE-CONTRACTS.md) ──
+test("recovery actions: roles, isolation, sync upsert, lifecycle", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const R = "/api/workspaces/rec/recovery-actions";
+  // An owner (personal organisation) with a brand, an editor and a viewer; and someone in another organisation.
+  assert.equal((await call("ra", "POST", "/api/auth/signup", { email: "ra@rec.co", password: "recovery-pass1" }, { "x-forwarded-for": "10.0.0.7" })).status, 200);
+  assert.equal((await call("ra", "PUT", "/api/workspaces/rec", { name: "Rec", site: "https://rec.co", setup: WS.setup })).status, 200);
+  for (const [who, role] of [["re", "editor"], ["rv", "viewer"]]) {
+    const inv = await call("ra", "POST", "/api/org/invitations", { email: `${who}@rec.co`, role });
+    assert.equal((await call(who, "POST", "/api/auth/signup", { email: `${who}@rec.co`, password: "member-pass-1", invite: tokenFrom(inv.data.invite.link) })).status, 200);
+  }
+  assert.equal((await call("rx", "POST", "/api/auth/signup", { email: "rx@other.co", password: "other-pass-12" }, { "x-forwarded-for": "10.0.0.7" })).status, 200);
+  assert.equal((await call("rx", "PUT", "/api/workspaces/rec", { name: "Other rec", setup: WS.setup })).status, 200); // same slug, other org
+
+  // Runs: r1 (the source check, two days ago), r0 (another org's), r2 later (after publication).
+  const at = (ms) => ({ startedAt: Date.now() - ms, finishedAt: Date.now() - ms + 1000, answers: {} });
+  assert.equal((await call("re", "PUT", "/api/runs/rec-r1", { slug: "rec", data: { id: "rec-r1", slug: "rec", ...at(2 * 864e5) } })).status, 200);
+  assert.equal((await call("rx", "PUT", "/api/runs/rec-x1", { slug: "rec", data: { id: "rec-x1", slug: "rec", ...at(1000) } })).status, 200);
+
+  const suggestion = (over = {}) => ({ sourceKey: "question:q1:chatgpt", kind: "article", title: "Answer the bank question", problem: "ChatGPT did not name you in 0 of 3 answers.",
+    rationale: "Competitors are cited on clutch.co.", evidence: { namedCount: 0, completedAnswerCount: 3 }, gapType: "decision", questionId: "q1", engine: "chatgpt", confidence: "high", ...over });
+
+  // Viewers read but cannot sync; nobody outside the organisation sees anything.
+  assert.equal((await call("rv", "GET", R)).status, 200);
+  assert.deepEqual((await call("rv", "GET", R)).data.actions, []);
+  const vs = await call("rv", "POST", R + "/sync", { runId: "rec-r1", actions: [suggestion()] });
+  assert.equal(vs.status, 403); assert.equal(vs.data.code, "role");
+  assert.equal((await call("nobody", "GET", R)).status, 401);
+
+  // Editor syncs two suggestions from r1.
+  let s = await call("re", "POST", R + "/sync", { runId: "rec-r1", actions: [suggestion(), suggestion({ sourceKey: "robots:GPTBot", kind: "fix", title: "Allow GPTBot", gapType: null, questionId: null, engine: null, confidence: "medium" })] });
+  assert.equal(s.status, 200, JSON.stringify(s.data)); assert.equal(s.data.created, 2); assert.equal(s.data.updated, 0);
+  assert.equal(s.data.actions.length, 2);
+  const a1 = s.data.actions.find((a) => a.sourceKey === "question:q1:chatgpt");
+  assert.equal(a1.status, "suggested"); assert.equal(a1.sourceRunId, "rec-r1"); assert.equal(a1.gapType, "decision"); assert.equal(a1.evidence.namedCount, 0);
+  // Sync validation: missing fields, bad enums, a run from another organisation.
+  assert.equal((await call("re", "POST", R + "/sync", { actions: [suggestion({ sourceKey: "" })] })).status, 400);
+  assert.equal((await call("re", "POST", R + "/sync", { actions: [suggestion({ gapType: "panic" })] })).status, 400);
+  assert.equal((await call("re", "POST", R + "/sync", { actions: [suggestion({ confidence: "certain" })] })).status, 400);
+  assert.equal((await call("re", "POST", R + "/sync", { runId: "rec-x1", actions: [suggestion()] })).status, 400);
+  assert.equal((await call("re", "POST", R + "/sync", { actions: "nope" })).status, 400);
+
+  // Organisation isolation: the other org's same-slug brand has none of these; patching by id from there is a 404.
+  assert.deepEqual((await call("rx", "GET", R)).data.actions, []);
+  assert.equal((await call("rx", "PATCH", `${R}/${a1.id}`, { status: "drafting" })).status, 404);
+  assert.equal((await call("re", "PATCH", `${R}/not-a-uuid`, { status: "drafting" })).status, 404);
+  assert.equal((await call("rv", "PATCH", `${R}/${a1.id}`, { status: "drafting" })).status, 403);
+
+  // Lifecycle: no skipping ahead; then suggested → drafting → ready_for_review → approved.
+  let p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "published" });
+  assert.equal(p.status, 400); assert.match(p.data.error, /suggested/i);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "done" })).status, 400);
+  const ids = Object.fromEntries((await call("ra", "GET", "/api/org")).data.members.map((m) => [m.email.split("@")[0], m.id]));
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { ownerId: "00000000-0000-0000-0000-000000000000" })).status, 400); // not a member
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "drafting", ownerId: ids.re, dueAt: "2026-11-01T00:00:00Z", output: { draft: "v1" } });
+  assert.equal(p.status, 200, JSON.stringify(p.data)); assert.equal(p.data.action.status, "drafting"); assert.equal(p.data.action.ownerId, ids.re);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { dueAt: "next tuesday" })).status, 400);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "approved" })).status, 400); // drafting → approved skips review
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "ready_for_review" })).data.action.status, "ready_for_review");
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "approved" });
+  assert.equal(p.data.action.status, "approved"); assert.ok(p.data.action.approvedAt);
+
+  // Published needs an explicit http(s) URL and an ISO date; never inferred.
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "published" });
+  assert.equal(p.status, 400); assert.match(p.data.error, /URL/);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "published", publishedUrl: "javascript:alert(1)", publishedAt: new Date().toISOString() })).status, 400);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "published", publishedUrl: "https://rec.co/guide" })).status, 400); // no date
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "published", publishedUrl: "https://rec.co/guide", publishedAt: "yesterday" })).status, 400);
+  const pubAt = new Date(Date.now() - 3600e3).toISOString();
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "published", publishedUrl: "https://rec.co/guide", publishedAt: pubAt });
+  assert.equal(p.status, 200, JSON.stringify(p.data)); assert.equal(p.data.action.publishedUrl, "https://rec.co/guide");
+  assert.equal(new Date(p.data.action.publishedAt).toISOString(), pubAt);
+
+  // A rerun's sync refreshes evidence (same row, no duplicate) but never the status, owner, dates or publication.
+  s = await call("re", "POST", R + "/sync", { runId: "rec-r1", actions: [suggestion({ title: "Answer the bank question (refreshed)", evidence: { namedCount: 1, completedAnswerCount: 3 }, confidence: "medium" })] });
+  assert.equal(s.data.created, 0); assert.equal(s.data.updated, 1);
+  let all = (await call("rv", "GET", R)).data.actions;
+  assert.equal(all.length, 2);
+  let got = all.find((a) => a.id === a1.id);
+  assert.equal(got.evidence.namedCount, 1); assert.equal(got.title, "Answer the bank question (refreshed)"); assert.equal(got.confidence, "medium");
+  assert.equal(got.status, "published"); assert.equal(got.ownerId, ids.re); assert.equal(got.publishedUrl, "https://rec.co/guide");
+  assert.ok(got.dueAt); assert.ok(got.approvedAt); assert.deepEqual(got.output, { draft: "v1" });
+  assert.equal((await sql(`select count(*)::int as n from recovery_actions where source_key = 'question:q1:chatgpt'`))[0].n, 1);
+
+  // Published → recheck scheduled → result observed, which needs a later comparable run in this workspace.
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "rec-r1" } })).status, 400); // skips recheck
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "recheck_scheduled", recheckAt: new Date(Date.now() + 864e5).toISOString() });
+  assert.equal(p.data.action.status, "recheck_scheduled"); assert.ok(p.data.action.recheckAt);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed" })).status, 400); // no result
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "rec-r1" } })).status, 400); // before publication
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "rec-x1" } })).status, 400); // other org's run
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "nope" } })).status, 400);
+  assert.equal((await call("re", "PUT", "/api/runs/rec-r2", { slug: "rec", data: { id: "rec-r2", slug: "rec", ...at(1000) } })).status, 200);
+  assert.equal((await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "rec-r2", direction: "skyrocketed" } })).status, 400);
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "result_observed", result: { comparisonRunId: "rec-r2", comparable: true, before: { named: 0, total: 3 }, after: { named: 1, total: 3 }, direction: "improved" } });
+  assert.equal(p.status, 200, JSON.stringify(p.data));
+  assert.equal(p.data.action.status, "result_observed"); assert.equal(p.data.action.result.comparisonRunId, "rec-r2"); assert.ok(p.data.action.result.observedAt);
+  assert.match(p.data.action.result.note, /causality/i);
+
+  // Archive from any state keeps the previous one; restoring returns to it. Sync leaves archived actions archived.
+  const a2 = all.find((a) => a.sourceKey === "robots:GPTBot");
+  p = await call("re", "PATCH", `${R}/${a2.id}`, { status: "archived" });
+  assert.equal(p.data.action.status, "archived"); assert.equal(p.data.action.result.previousStatus, "suggested");
+  await call("re", "POST", R + "/sync", { actions: [suggestion({ sourceKey: "robots:GPTBot", kind: "fix", title: "Allow GPTBot", evidence: { bot: "GPTBot", allowed: false } })] });
+  got = (await call("rv", "GET", R)).data.actions.find((a) => a.id === a2.id);
+  assert.equal(got.status, "archived"); assert.equal(got.evidence.bot, "GPTBot"); assert.equal(got.result.previousStatus, "suggested");
+  assert.equal((await call("re", "PATCH", `${R}/${a2.id}`, { status: "approved" })).status, 400); // only back to where it was
+  p = await call("re", "PATCH", `${R}/${a2.id}`, { status: "suggested" });
+  assert.equal(p.data.action.status, "suggested"); assert.equal(p.data.action.result.previousStatus, undefined);
+  p = await call("re", "PATCH", `${R}/${a1.id}`, { status: "archived" });
+  assert.equal(p.data.action.result.previousStatus, "result_observed"); assert.equal(p.data.action.result.comparisonRunId, "rec-r2");
+
+  // Outreach reaches "published" with an explicit sent timestamp instead of a URL.
+  s = await call("re", "POST", R + "/sync", { actions: [suggestion({ sourceKey: "source:https://clutch.co/ai", kind: "outreach", title: "Pitch clutch.co" })] });
+  const o = s.data.actions.find((a) => a.kind === "outreach");
+  for (const st of ["drafting", "ready_for_review", "approved"]) await call("re", "PATCH", `${R}/${o.id}`, { status: st });
+  assert.equal((await call("re", "PATCH", `${R}/${o.id}`, { status: "published" })).status, 400);
+  p = await call("re", "PATCH", `${R}/${o.id}`, { status: "published", sentAt: new Date().toISOString() });
+  assert.equal(p.status, 200, JSON.stringify(p.data)); assert.equal(p.data.action.status, "published"); assert.ok(p.data.action.publishedAt);
+
+  // No DELETE: archive instead. Material transitions are in the organisation's audit log.
+  assert.equal((await call("ra", "DELETE", `${R}/${a1.id}`)).status, 404);
+  const log = (await call("ra", "GET", "/api/org/audit")).data.log;
+  assert.ok(log.find((x) => x.action === "recovery.synced"));
+  assert.ok(log.find((x) => x.action === "recovery.status" && x.detail.to === "published"));
+  assert.ok(log.find((x) => x.action === "recovery.status" && x.detail.to === "archived" && x.detail.from === "result_observed"));
+});
