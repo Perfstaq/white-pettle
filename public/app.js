@@ -17,6 +17,8 @@ const ENGC = { chatgpt: "var(--e-chatgpt)", perplexity: "var(--e-perplexity)", g
 // Answers are keyed question|engine for the first sample and question|engine|n for repeats (sampling).
 const akey = (qid, e, s) => (s ? `${qid}|${e}|${s}` : `${qid}|${e}`);
 const answersOf = (M, qid, e) => Object.values(M.answers || {}).filter((a) => a.qid === qid && a.engine === e);
+// Recommendation-gap rules live in public/recommendation-model.js (tested); the copy contract in product-language.js.
+const RM = window.WP_RECOMMENDATION_MODEL;
 const store = {
   get(k, d) { try { const v = localStorage.getItem("wpetal:" + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem("wpetal:" + k, JSON.stringify(v)); } catch { try { for (let i = localStorage.length - 1; i >= 0; i--) { const kk = localStorage.key(i); if (kk && kk.startsWith("wpetal:prev:")) localStorage.removeItem(kk); } localStorage.setItem("wpetal:" + k, JSON.stringify(v)); } catch {} } },
@@ -936,7 +938,7 @@ function buildDeck() {
   if (!a.orgSchema && as.org_schema) out.push({ id: "org", kind: "5-minute fix", title: "Tell AI exactly who you are", why: "Your homepage has no Organization schema, so AI has to guess your name, URL and description.", code: '<script type="application/ld+json">\n' + JSON.stringify(as.org_schema, null, 2) + "\n</" + "script>", label: "Paste into your homepage <head>" });
   (M.perception?.claims || []).filter((c) => ["wrong", "outdated"].includes(c.verdict)).forEach((c, i) => out.push({ id: "claim" + i, kind: "Correct AI", title: `AI says: “${c.claim}”`, why: c.fix || "Publish a clear correction on your site." }));
   pitchTargets(M).slice(0, 8).forEach((t) => out.push({ id: "pitch:" + t.url, kind: "Get listed", title: `Get named on ${t.domain}`, why: `AI cited this page ${t.n}×${(t.rivals || []).length ? `. ${t.rivals.slice(0, 3).join(", ")} ${t.rivals.length > 1 ? "are" : "is"} already on it` : ""}.`, t }));
-  const missing = M.questions.filter((q) => M.engines.every((e) => !answersOf(M, q.id, e).some((a) => a.named)));
+  const missing = RM.questionGaps(M, { engines: M.engines, isYou: (b) => isYou(b, M), requireCompetitor: false }).map((g) => M.questions.find((q) => q.id === g.questionId));
   missing.slice(0, 2).forEach((q) => out.push({ id: "article:" + q.id, kind: "Publish a page", title: `Win “${q.text}”`, why: "No engine named you for this. A page built to answer it gives AI something to cite.", q }));
   const weak = (a.pages || [])[0]; if (weak && weak.score < 60) out.push({ id: "fix:" + weak.url, kind: "Improve a page", title: `Make “${weak.title || host(weak.url)}” quotable`, why: `Scores ${weak.score}/100. Missing: ${(weak.fails || []).slice(0, 3).join(", ")}.`, page: weak });
   DECK = out.filter((x) => !M.deck[x.id]); DI = 0; drawDeck();
@@ -1617,7 +1619,7 @@ function dashRender() {
   const M = APP.M; if (!M || $("#reportWrap").hidden) return;
   const [g, t] = PAGES[DASH.page] || PAGES.overview;
   $$("#side [data-page]").forEach((b) => b.classList.toggle("on", b.dataset.page === DASH.page));
-  const gapsN = M.questions.filter((q) => { const as = M.engines.flatMap((e) => answersOf(M, q.id, e)).filter(finished); return as.length && !as.some((a) => a.named) && as.some((a) => (a.brands || []).some((b) => !isYou(b, M))); }).length;
+  const gapsN = RM.questionGaps(M, { engines: M.engines, isYou: (b) => isYou(b, M) }).length;
   if ($("#navGaps")) $("#navGaps").textContent = gapsN || "";
   $("#crumb").innerHTML = `<span class="muted">${g}</span>${icon("chev", 13)}<b>${t}</b>`;
   $("#filters").innerHTML = filtersHtml(M);
@@ -1906,15 +1908,10 @@ function referralHtml(M) {
 Object.assign(PAGE, {
   gaps(M, m) {
     const engs = DASH.eng === "all" ? M.engines : [DASH.eng];
-    const rows = M.questions.map((q) => {
-      const as = engs.flatMap((e) => answersOf(M, q.id, e)).filter(finished);
-      if (!as.length || as.some((a) => a.named)) return null;
-      const rc = {}; as.forEach((a) => (a.brands || []).forEach((b) => { if (!isYou(b, M)) rc[b] = (rc[b] || 0) + 1; }));
-      const rivals = Object.entries(rc).sort((a, b) => b[1] - a[1]);
-      if (!rivals.length) return null;
-      const doms = {}; as.forEach((a) => (a.sources || []).forEach((s) => { const d = host(s.url); doms[d] = (doms[d] || 0) + 1; }));
-      return { q, as, rivals, doms: Object.entries(doms).sort((a, b) => b[1] - a[1]).slice(0, 4) };
-    }).filter(Boolean);
+    const rows = RM.questionGaps(M, { engines: engs, isYou: (b) => isYou(b, M) }).map((g) => ({
+      q: M.questions.find((q) => q.id === g.questionId), as: g.answers,
+      rivals: g.competitors.map((c) => [c.name, c.mentions]), doms: RM.sourceDomains(g.sources).slice(0, 4).map((d) => [d.domain, d.citedCount]),
+    }));
     const fill = {}; rows.forEach((r) => r.rivals.forEach(([n, c]) => (fill[n] = (fill[n] || 0) + c)));
     const top = Object.entries(fill).sort((a, b) => b[1] - a[1]).slice(0, 5);
     return head("Mention gaps", `Prompts where AI recommends a competitor and never you. ${rows.length} of ${M.questions.length} prompts. Each one is a page to publish or a list to get onto.`)

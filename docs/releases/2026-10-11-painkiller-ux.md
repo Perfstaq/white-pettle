@@ -50,3 +50,24 @@ The one failure is pre-existing and fails on untouched code:
 
 - `package.json` description/keywords and the README summary now state the category and promise.
 - Full suite after: `# tests 74 # pass 73 # fail 1` (same pre-existing organisations failure).
+
+## Task 4: recommendation-gap decision model
+
+- `public/recommendation-model.js`: immutable `window.WP_RECOMMENDATION_MODEL`, pure functions, loaded after
+  `product-language.js` and before `app.js`. `test/recommendation-model.test.mjs` loads both in one VM.
+  Red first (16/16 failing: file missing), then green.
+- API: `normalizeIntent`, `gapTypeFor` (informational→discovery, commercial→consideration, transactional→decision;
+  legacy intents best/alternatives/comparison→commercial, problem→informational, local→transactional, unknown→commercial
+  as onboarding does), `isCompleted` / `isFailed`, `competitorFrequency`, `citedSources`, `sourceDomains`,
+  `confidenceFor`, `assess(run, questionId, engine)` (the 06 gap object), `summarize(run)` → `{ gaps, included,
+  insufficient }`, `deriveGaps`, `sortGaps` (decision → consideration → discovery, then competitor frequency, then
+  confidence), `questionGaps(run, { engines, isYou, requireCompetitor })` (question-level, across engines),
+  `scopeOf`, `isComparable`, `coverageDirection`.
+- Completed = status yes/no, not `absent` (Google showed no AI answer), and not empty. Failed (`err`), unfinished
+  (`run`) and empty answers are excluded; zero completed answers is `insufficient`, never a gap.
+- Confidence: high = 3+ completed answers, none missing, a competing brand observed; low = 0–1 completed answers;
+  otherwise medium (partial evidence or no competitor caps at medium).
+- `app.js` now uses the model for the Recommendation (Mention) gaps page rows, the sidebar gap count, and the action
+  deck's "no engine named you" question list. Layout and labels unchanged. Behaviour changes, both per 06:
+  questions whose answers all failed no longer appear as deck "Win …" cards; competitor counts are once per answer.
+  `metrics()` and the advanced KPI calculations are untouched.
