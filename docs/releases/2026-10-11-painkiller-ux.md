@@ -76,3 +76,56 @@ The one failure is pre-existing and fails on untouched code:
   system Chrome: desktop 1440×900 full flow `ERRORS: none` (sign up → onboarding → run → every dashboard page →
   reload → sign out/in); mobile 390×844 (flow stops after the mission by design) `ERRORS: none`. The Mention gaps
   page renders 6 of 12 questions with the model, same layout. Worktree and scratch databases removed afterwards.
+
+## Task 7: durable Recovery Plan backend
+
+Server only; no UI. Built in a temporary worktree (so the founder's `npm run dev` on :3000 did not restart on every
+edit), tested against a scratch database `whitepetal_pk7` (dropped afterwards), never `whitepetal`.
+
+- `server/migrations/003_recovery_actions.sql`: the `recovery_actions` table and both indexes exactly as in 06.
+  Additive only. Conventions checked: migrations run inside the `whitepetal` schema (search_path set by `db.mjs`),
+  each file once under `schema_migrations` + an advisory lock; `gen_random_uuid()` is core in Postgres 13+ and
+  already used by 001; `runs.id` is `text`, matching `source_run_id text references runs(id)`.
+- Routes in `server/routes.mjs` (all through `needCtx`/`needWorkspace`, so scoped to the session's organisation and
+  brand; parameterized SQL; errors are `{ error }` like the rest of the API):
+
+  | Route | Role | Request | Response |
+  |---|---|---|---|
+  | `GET /api/workspaces/:slug/recovery-actions` | viewer+ | — | `200 { actions: Action[] }` (active and archived, `updated_at desc`) |
+  | `POST /api/workspaces/:slug/recovery-actions/sync` | editor+ | `{ runId?, actions: [{ sourceKey, kind, title, problem, rationale?, evidence?, gapType?, questionId?, engine?, confidence? }] }` (≤ 500) | `200 { created, updated, actions }` |
+  | `PATCH /api/workspaces/:slug/recovery-actions/:id` | editor+ | any of `status, title, problem, rationale, output, confidence, ownerId, dueAt, recheckAt, approvedAt, publishedUrl, publishedAt, sentAt, result` | `200 { action }` |
+
+  `Action` is the row in camelCase: `id, sourceKey, sourceRunId, questionId, engine, gapType, kind, title, problem,
+  rationale, evidence, output, status, ownerId, dueAt, approvedAt, publishedUrl, publishedAt, recheckAt, result,
+  confidence, createdAt, updatedAt`. No `DELETE` (falls through to `404`); archive instead.
+- Sync upserts on `(workspace_id, source_key)` and refreshes only `title, problem, rationale, evidence, confidence,
+  gap_type, question_id, engine, source_run_id` (the run id only when one is sent). `kind` is set on insert only.
+  Status, owner, dates, `output`, publication fields and `result` are never written by a sync; archived stays archived.
+  `runId` must be a run of this brand (`400` otherwise, so the FK can't point at another organisation's run).
+- Lifecycle (06 "Transition rules"): suggested ↔ drafting ↔ ready_for_review → approved | drafting;
+  approved → published | drafting; published → recheck_scheduled → result_observed. Any state → archived, storing
+  `result.previousStatus`; an archived action can be restored only to that status (which is then removed). Anything
+  else is `400` naming the allowed next step. Approving sets `approvedAt` (unless given) and checks
+  `RA_APPROVE_ROLE` (editor for now: the extension point for a stricter policy).
+- Published and later states need explicit evidence: `publishedUrl` (http/https only) and `publishedAt`, or for
+  `kind: "outreach"` a `sentAt` (stored as `published_at`). Clearing them while live is refused too.
+- `result_observed` needs `result.comparisonRunId` naming a finished run of the same brand that started after
+  `published_at`. `comparable` defaults to `false` and then `direction` is `incomparable`; a comparable result needs
+  `improved | unchanged | regressed`. `before/after` are `{ named, total }`; `note` defaults to "Observed after
+  publication; causality is not established."; `observedAt` defaults to now. A `result` sent without that transition is `400`.
+- Dates must be ISO 8601; `ownerId` must be a member of the organisation; enums (`gapType`, `confidence`) are checked.
+- Audit log: `recovery.synced` (counts + run id), `recovery.status` (`{ id, from, to }`) on every status change,
+  `recovery.assigned` on owner change. Content-only edits are not audited.
+- Tests: one new database-backed test in `test/server/api.test.mjs` ("recovery actions: roles, isolation, sync upsert,
+  lifecycle"): organisation isolation (same slug in another org sees nothing, PATCH by id is 404), viewer reads but
+  gets 403 on sync/PATCH, editor sync + update, stable `source_key` upsert (one row, evidence refreshed), sync does not
+  regress status or touch owner/dates/output/publication, invalid transitions/status/dates/URLs/enums are 400, archive
+  keeps and restores `previousStatus`, published needs URL + date (or sent time for outreach), result_observed rules
+  (missing result, earlier run, other org's run, unknown run, bad direction), no DELETE, audit entries. Its signups use
+  their own `x-forwarded-for` so the per-IP signup limit (8/hour) shared with the earlier tests isn't hit.
+- Red first: `not ok 4 - recovery actions…` (`expected: 200, actual: 404`, routes missing). Then green.
+- Full suite after (`TEST_DATABASE_URL=DATABASE_URL=postgresql://localhost/whitepetal_pk7 npm test`):
+  `# tests 91 # pass 90 # fail 1` (same pre-existing organisations failure).
+- Deferred to Task 8: the browser deriving `source_key`s and calling sync, the board/detail UI, scheduling rechecks
+  and reconciling results from comparable runs (no server job sets `recheck_scheduled → result_observed` yet).
+  Rollback: the table is unused by the current UI; leave it in place (never drop it in production to remove the UI).
