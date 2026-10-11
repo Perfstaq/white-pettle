@@ -115,6 +115,8 @@ with sync_playwright() as p:
     pg.click("#readyGo"); time.sleep(1.2); shot("11_overview")
     pg.screenshot(path=str(OUT / "11b_overview_full.png"), full_page=True)
     if W < 800:
+        pg.click("#sideToggle"); time.sleep(0.4); shot("11c_drawer")
+        pg.click("#acctBtn"); time.sleep(0.3); shot("11d_account_menu")
         b.close(); print("ERRORS:", [e for e in errors if not any(s in e for s in SKIP)] or "none"); sys.exit()
     for page in ["prompts", "gaps", "chats", "domains", "gap", "rankings", "insights", "perception", "actions", "ranking", "site", "fanouts", "settings"]:
         pg.click(f'#side [data-page="{page}"]'); time.sleep(0.6); shot(f"12_{page}")
@@ -133,6 +135,7 @@ with sync_playwright() as p:
     print("reload screen:", pg2.evaluate("[...document.querySelectorAll('body > section, body > main, body > div')].filter(e=>!e.hidden).map(e=>e.id).join(',')"))
     print("runs on server:", pg2.evaluate("fetch('/api/workspaces').then(r=>r.json()).then(d=>JSON.stringify(d.workspaces.map(w=>[w.slug,w.samples,(w.trend||[]).length])))"))
     # sign out -> landing; sign in -> back to brand
+    pg2.click("#acctBtn"); time.sleep(0.4); pg2.screenshot(path=str(OUT / "17b_account_menu.png"))
     pg2.click("#signOut"); time.sleep(1); pg2.screenshot(path=str(OUT / "18_signed_out.png"))
     print("after sign out:", pg2.evaluate("[...document.querySelectorAll('body > section, body > main, body > div')].filter(e=>!e.hidden).map(e=>e.id).join(',')"))
     pg2.click("#lpAuth"); pg2.wait_for_selector("#auth:not([hidden])"); pg2.fill("#authEmail", EMAIL); pg2.fill("#authPass", "correct-horse-9"); pg2.click("#authGo")
@@ -140,7 +143,7 @@ with sync_playwright() as p:
     print("after sign in:", pg2.evaluate("[...document.querySelectorAll('body > section, body > main, body > div')].filter(e=>!e.hidden).map(e=>e.id).join(',')"))
     pg2.goto(BASE + "/"); time.sleep(0.5)
     # landing for a signed-in user shows their brands when they come back to it
-    pg2.wait_for_selector("#reportWrap:not([hidden])", timeout=15000); pg2.click("#side :text('New brand')")
+    pg2.wait_for_selector("#reportWrap:not([hidden])", timeout=15000); pg2.click("#acctBtn"); pg2.click("#newBrand")
     time.sleep(1.2); pg2.screenshot(path=str(OUT / "20_landing_signed_in.png"))
     b.close()
 print("ERRORS:", [e for e in errors if not any(s in e for s in SKIP)] or "none")

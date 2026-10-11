@@ -161,10 +161,16 @@
       </nav>
       <div class="side-foot">
         <button type="button" class="navlike" data-page="settings" id="navSettings"><i data-ic="gear"></i>Settings</button>
-        <button type="button" class="navlike" id="navTeam"><i data-ic="team"></i><span id="navTeamTxt">Team &amp; keys</span></button>
-        <button type="button" class="navlike" id="viewLog"><i data-ic="play"></i>Watch the agent</button>
-        <button type="button" class="navlike" id="newBrand"><i data-ic="plus"></i>New brand</button>
-        <button type="button" class="navlike" id="signOut" hidden><i data-ic="out"></i><span id="whoami">Sign out</span></button>
+        <div class="acct-wrap">
+          <button type="button" class="acct" id="acctBtn" aria-haspopup="true" aria-expanded="false"><span class="acct-av" id="acctAv">?</span><span class="acct-tx"><b id="acctName">Account</b><span id="acctOrg"></span></span><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 15l5-5 5 5"/></svg></button>
+          <div class="acct-menu" id="acctMenu" role="menu" hidden>
+            <div class="am-h" id="acctEmail"></div>
+            <button type="button" class="navlike" id="navTeam"><i data-ic="team"></i><span id="navTeamTxt">Team &amp; keys</span></button>
+            <button type="button" class="navlike" id="viewLog"><i data-ic="play"></i>Watch the agent</button>
+            <button type="button" class="navlike" id="newBrand"><i data-ic="plus"></i>New brand</button>
+            <button type="button" class="navlike am-out" id="signOut" hidden><i data-ic="out"></i><span id="whoami">Sign out</span></button>
+          </div>
+        </div>
       </div>
     </aside>
     <main class="main">

@@ -238,6 +238,17 @@ const sparkline = (vals, w = 96, h = 26) => {
   const pts = v.map((x, i) => `${(i * step).toFixed(1)},${(h - 2 - ((x - min) / (max - min || 1)) * (h - 4)).toFixed(1)}`).join(" ");
   return `<svg class="spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 };
+// The account button at the bottom of the sidebar: who is signed in, and which team.
+function paintAccount() {
+  const signedIn = DATA.server();
+  const who = signedIn ? (APP.user.name || APP.user.email.split("@")[0]) : "Not signed in";
+  $("#signOut").hidden = !signedIn;
+  $("#acctAv").textContent = who.charAt(0).toUpperCase();
+  $("#acctName").textContent = who;
+  $("#acctEmail").textContent = signedIn ? APP.user.email : "";
+  $("#acctEmail").hidden = !signedIn;
+  $("#acctOrg").textContent = signedIn && APP.org ? APP.org.name : "";
+}
 function paintLanding() {
   const signedIn = DATA.server();
   $("#lpAuth").hidden = !APP.cfg.auth || signedIn;
@@ -246,7 +257,7 @@ function paintLanding() {
   $("#lpUser").innerHTML = signedIn ? `<span class="muted">${esc(APP.user.email)}</span> <button type="button" class="lnk" id="lpOut">Sign out</button>` : "";
   $("#startForm").hidden = signedIn && !canEdit();
   $("#lpOut")?.addEventListener("click", () => $("#signOut").click());
-  $("#signOut").hidden = !signedIn; if (signedIn) $("#whoami").textContent = `Sign out (${APP.user.email})`;
+  paintAccount();
   const avail = (APP.cfg.engines || []).map((e) => ENG[e]).filter(Boolean);
   $("#lpEngines").innerHTML = avail.length ? `<span class="muted">Checks</span> ${avail.map((n) => `<span class="eng-pill">${esc(n)}</span>`).join("")}` : "";
   const list = signedIn ? DATA.companies() : [];
@@ -1611,7 +1622,7 @@ function dashRender() {
   $("#rerun").hidden = !canEdit(); $("#newBrand").hidden = DATA.server() && !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
-  $("#navTeam").hidden = !DATA.server(); if (APP.org) $("#navTeamTxt").textContent = `${APP.org.name} · Team`;
+  $("#navTeam").hidden = !DATA.server(); paintAccount();
   const m = metrics(M, DASH.eng), pm = prevMetrics(M, DASH.eng);
   $("#pages").innerHTML = `<div class="pg">${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
   if (DASH.page === "actions") drawDeck();
@@ -1802,6 +1813,12 @@ $("#projBtn").addEventListener("click", (e) => {
   menu.hidden = !open; $("#projBtn").setAttribute("aria-expanded", String(open));
 });
 document.addEventListener("click", (e) => { if (!e.target.closest(".proj-wrap")) $("#projMenu").hidden = true; });
+// Account menu (bottom of the sidebar): team, the agent log, new brand, sign out. Closes after any choice.
+const acctShow = (open) => { $("#acctMenu").hidden = !open; $("#acctBtn").setAttribute("aria-expanded", String(open)); };
+$("#acctBtn").addEventListener("click", (e) => { e.stopPropagation(); acctShow($("#acctMenu").hidden); });
+$("#acctMenu").addEventListener("click", (e) => { if (e.target.closest("button")) acctShow(false); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".acct-wrap")) acctShow(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") { acctShow(false); $("#projMenu").hidden = true; } });
 $("#projMenu").addEventListener("click", (e) => {
   const b = e.target.closest("[data-proj]"); if (!b) return; $("#projMenu").hidden = true;
   if (b.dataset.proj === "__new") return goHome();
