@@ -226,9 +226,13 @@ async function openBrand(slug, { quiet } = {}) {
   let run = null;
   try { run = await DATA.open(slug); } catch (e) { if (!quiet) toast(esc(e.message)); return false; }
   if (run?.finishedAt && !run.abandoned) { APP.M = run; DASH.page = "overview"; showReport(); return true; }
-  if (run && run.profile && run.done && !run.finishedAt) { APP.M = run; resumeMission(run); return true; }
-  const c = DATA.company(slug); if (c) { startOnboarding(c.profile.site, c); return true; }
-  return false;
+  // An unfinished check opens paused. Opening a brand never asks AI anything by itself; "Resume" does.
+  if (run && run.profile && run.done && !run.finishedAt) { APP.M = run; DASH.page = "overview"; showRunning(); return true; }
+  // No saved check yet: setting it up reads the site again (an AI call), so ask first instead of starting on open.
+  const c = DATA.company(slug); if (!c || quiet) return false;
+  modal(`<span class="status">Not checked yet</span><h3>${esc(c.profile.name)} has no results yet</h3><p class="muted">Setting it up reads ${esc(host(c.profile.site))} again, then asks AI your prompts. It takes a few minutes.</p><div class="ob-btns"><button class="btn" type="button" data-obgo>Set it up now</button></div>`);
+  $(".modal:last-of-type [data-obgo]").addEventListener("click", () => startOnboarding(c.profile.site, c));
+  return true;
 }
 
 /* ---------- landing: signed out it explains; signed in it is your brand list ---------- */
@@ -920,7 +924,6 @@ function rebuildMap(M) {
   Object.entries(M.inspections).forEach(([u, r]) => { const sid = sidOf(u); gNode(sid, "source", host(r.final || u), { url: u, inspected: true, you: !!r.you, rivals: (r.rivals || []).length }); if (r.you) gLink(sid, "you", "on", "#FF7A1A"); (r.rivals || []).forEach((rv) => gLink(sid, "r:" + norm(rv), "on", "#E2483D")); });
 }
 $("#rerun").addEventListener("click", async () => { const M = APP.M; if (!M) return; if (await lockedElsewhere(M.slug)) return toast("This brand is running in another tab right now."); startOnboarding(M.profile.site, DATA.company(M.slug) || { profile: M.profile, questions: M.questions.map((q) => ({ ...q, on: true })), engines: M.engines, samples: M.samples }); });
-$("#newBrand").addEventListener("click", goHome);
 function goHome() { APP.ctl?.abort(); APP.running = false; OB = null; document.body.classList.remove("sheet-open"); if (APP.M) lockRelease(APP.M.slug); toggleAgent(false); screen("landing"); $("#startUrl").value = ""; paintLanding(); renderRecent(); if (DATA.server()) DATA.refresh().then(paintLanding).catch(() => {}); }
 
 /* ---------- action deck ---------- */
@@ -1482,7 +1485,7 @@ function howModal() {
   $(".modal:last-of-type .box").style.maxWidth = "980px";
 }
 function kpiHtml(M, m, pm) {
-  const y = m.you || {}, py = pm?.m?.you, tip = (n) => esc((METRICS.find((x) => x[0] === n) || [])[1] || "");
+  const y = m.you || {}, py = pm?.m?.you, tip = (n) => { const x = METRICS.find((r) => r[0] === n); return x ? esc(`${x[1]} How: ${x[2]}.`) : ""; };
   const eng = m.byEngine.filter((x) => x.vis != null).sort((a, b) => b.vis - a.vis);
   const cell = (label, val, dl = "") => `<div class="kpi"><span class="kl">${label} <span title="${tip(label)}">${icon("info", 12)}</span></span><span class="kv">${val}${dl}</span></div>`;
   const engCell = (label, x) => `<div class="kpi"><span class="kl">${label}</span><span class="kv"><span class="kengine"><i style="background:${ENGC[x.e]}"></i>${ENG[x.e]}</span><small>${pct(x.vis, 0)}</small></span></div>`;
@@ -1619,7 +1622,7 @@ function dashRender() {
   $("#crumb").innerHTML = `<span class="muted">${g}</span>${icon("chev", 13)}<b>${t}</b>`;
   $("#filters").innerHTML = filtersHtml(M);
   $("#filters").hidden = ["actions", "site", "perception", "settings"].includes(DASH.page);
-  $("#rerun").hidden = !canEdit(); $("#newBrand").hidden = DATA.server() && !canEdit();
+  $("#rerun").hidden = !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
   $("#navTeam").hidden = !DATA.server(); paintAccount();
@@ -1808,7 +1811,7 @@ $("#projBtn").addEventListener("click", (e) => {
   e.stopPropagation(); const menu = $("#projMenu"), open = menu.hidden;
   if (open) {
     const cos = DATA.companies();
-    menu.innerHTML = `<div class="pm-h">Your brands</div>${cos.map((c) => { const at = c.ws ? c.ws.lastRunAt : store.get("mission:" + c.slug, null)?.finishedAt; const sc = c.ws?.trend?.[0]?.summary?.score; return `<button type="button" data-proj="${esc(c.slug)}" class="${APP.M?.slug === c.slug ? "on" : ""}">${favImg(host(c.profile.site))}<span>${esc(c.profile.name)}</span><span class="sp"></span>${sc != null ? `<span class="pm-score">${sc}</span>` : ""}<span class="muted sm">${at ? new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "set up"}</span></button>`; }).join("")}<button type="button" data-proj="__new">${icon("plus", 14)}<span>New brand</span></button>`;
+    menu.innerHTML = `<div class="pm-h">Your brands</div>${cos.map((c) => { const at = c.ws ? c.ws.lastRunAt : store.get("mission:" + c.slug, null)?.finishedAt; const sc = c.ws?.trend?.[0]?.summary?.score; return `<button type="button" data-proj="${esc(c.slug)}" class="${APP.M?.slug === c.slug ? "on" : ""}">${favImg(host(c.profile.site))}<span>${esc(c.profile.name)}</span><span class="sp"></span>${sc != null ? `<span class="pm-score">${sc}</span>` : ""}<span class="muted sm">${at ? new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "set up"}</span></button>`; }).join("")}${!DATA.server() || canEdit() ? `<button type="button" data-proj="__new">${icon("plus", 14)}<span>New brand</span></button>` : ""}`;
   }
   menu.hidden = !open; $("#projBtn").setAttribute("aria-expanded", String(open));
 });
@@ -1942,7 +1945,7 @@ Object.assign(PAGE, {
     const cta = [];
     if (!gsc) cta.push(`<div class="cta">${icon("link", 16)}<div><b>Connect Google Search Console</b><span class="muted">Free. Shows where you rank on Google for these queries, with clicks.</span></div><button type="button" class="btn ghost sm" data-page="settings">Connect</button></div>`);
     if (!bing) cta.push(`<div class="cta">${icon("link", 16)}<div><b>Connect Bing Webmaster Tools</b><span class="muted">Free. ChatGPT search leans on Bing's index; this shows your Bing positions.</span></div><button type="button" class="btn ghost sm" data-page="settings">Connect</button></div>`);
-    if (!APP.cfg.serp) cta.push(`<div class="cta">${icon("info", 16)}<div><b>Live Google top-10 checks are off</b><span class="muted">Add DATAFORSEO_LOGIN/PASSWORD or SERPAPI_KEY on the server to check any query on demand (paid, about $0.002 a query).</span></div></div>`);
+    if (!APP.cfg.serp) cta.push(`<div class="cta">${icon("info", 16)}<div><b>Live Google top-10 checks are off</b><span class="muted">Ask your White Petal admin to turn on live Google checks to see your top-10 position for any query.</span></div></div>`);
     return head("Search rankings", "AI answers start with a web search. These are the searches AI ran for your prompts, and where you rank for them. Ranking on page one is still the biggest single lever for being cited.")
       + (cta.length && DATA.server() ? `<div class="ctas">${cta.join("")}</div>` : "")
       + `<div class="kpis k4"><div class="kpi"><span class="kl">Queries AI searched</span><span class="kv">${Q.size}</span></div><div class="kpi"><span class="kl">Search Console clicks (28d)</span><span class="kv">${gsc?.totals ? gsc.totals.clicks.toLocaleString() : "–"}</span></div><div class="kpi"><span class="kl">Avg Google position</span><span class="kv">${gsc?.totals?.position || "–"}</span></div><div class="kpi"><span class="kl">Top 10 on Google</span><span class="kv">${checked.length ? `${inTop.length}<small>/${checked.length} checked</small>` : "–"}</span></div></div>`
@@ -1958,24 +1961,41 @@ Object.assign(PAGE, {
     const d = APP.ints[M.slug]; const ints = d?.integrations || [];
     const sched = ws?.schedule || "off", samples = ws?.samples || 1;
     const c = DATA.company(M.slug) || {};
+    const prompts = (c.questions || M.questions).filter((q) => q.on !== false).length;
     const moveTo = APP.orgs.filter((o) => o.slug !== APP.org?.slug && ["owner", "admin"].includes(o.role));
     const roleNote = !canEdit() ? `<div class="card note"><div class="pad">${icon("info", 16)} <b>You're a viewer in ${esc(APP.org?.name || "this organisation")}.</b> <span class="muted">You can see everything here; an editor or admin can change it.</span></div></div>` : "";
-    const moveCard = canAdmin() && moveTo.length ? `<div class="card"><div class="card-h"><b>Move to another organisation</b><span class="muted">Brings its history, prompts and integrations along</span></div><div class="pad set"><div class="srow"><select id="moveOrg" class="sel">${moveTo.map((o) => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join("")}</select><button type="button" class="btn ghost sm" data-move>Move ${esc(M.profile.name)}</button></div></div></div>` : "";
+    const TABS = [["checks", "Checks", "When White Petal asks AI again"], ["tracked", "What's tracked", "Prompts and competitors"], ["integrations", "Integrations", d ? `${ints.filter((i) => i.connected).length} connected` : "Search, site, alerts"], ["brand", "Brand", "Move or delete"]];
+    const tab = TABS.some((t) => t[0] === DASH.setTab) ? DASH.setTab : "checks";
+    const row = (title, hint, ctl) => `<div class="st-row"><div class="st-l"><b>${title}</b>${hint ? `<span>${hint}</span>` : ""}</div><div class="st-c">${ctl}</div></div>`;
+    const when = ws?.running ? "A check is running now." : ws?.nextRunAt ? `Next check ${new Date(ws.nextRunAt).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}.` : "No automatic checks scheduled.";
+    let body = "";
+    if (tab === "checks") body = `<div class="card st-card">
+        ${row("Automatic checks", "Re-runs every prompt on the server. You can close the tab.", `<div class="seg">${[["off", "Off"], ["weekly", "Weekly"], ["daily", "Daily"]].map(([k, l]) => `<button type="button" data-sched="${k}" aria-pressed="${sched === k}">${l}</button>`).join("")}</div>`)}
+        ${row("Answers per prompt", "Asking more than once averages out AI's run-to-run variation.", `<div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samp="${k}" aria-pressed="${samples === k}">${k}×</button>`).join("")}</div>`)}
+        ${row("Run a check now", `${when}${ws?.lastRunAt ? ` Last check ${new Date(ws.lastRunAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}.` : ""}`, `<button type="button" class="btn ghost sm" data-queue>Queue a check</button>`)}
+      </div>
+      <p class="st-foot">Each check collects about ${prompts * M.engines.length * samples} AI answers: ${prompts} prompts × ${M.engines.length} engine${M.engines.length === 1 ? "" : "s"} (${M.engines.map((e) => ENG[e]).join(", ")}) × ${samples}.</p>`;
+    if (tab === "tracked") body = `<div class="card st-card">
+        ${row("Prompts", "The buyer questions we ask AI for you.", `<span class="st-v">${prompts}${(c.topics || []).length ? ` <span class="muted">in ${(c.topics || []).length} topics</span>` : ""}</span>`)}
+        ${row("Competitors", esc((M.profile.competitors || []).slice(0, 6).join(", ")) || "None yet", `<span class="st-v">${(M.profile.competitors || []).length}</span>`)}
+        ${row("Website", esc(host(M.profile.site || "")), `<button type="button" class="btn ghost sm" data-editsetup>Edit prompts and competitors</button>`)}
+      </div>`;
+    if (tab === "integrations") {
+      const GROUPS = [["Search and traffic", "Where you rank and who visits.", ["google", "bing", "serp"]], ["Your site", "Help AI find and read your pages.", ["cloudflare", "indexnow", "entity"]], ["Alerts", "Hear about changes without opening White Petal.", ["slack"]]];
+      const seen = new Set();
+      const grp = GROUPS.map(([t, h, ids]) => { const list = ints.filter((i) => ids.includes(i.id)); list.forEach((i) => seen.add(i.id)); return list.length ? `<div class="st-grp"><div class="st-gh"><b>${t}</b><span>${h}</span></div><div class="ints">${list.map((i) => intCard(M, i)).join("")}</div></div>` : ""; }).join("");
+      const rest = ints.filter((i) => !seen.has(i.id));
+      body = (!d ? '<p class="muted pad">Loading…</p>' : grp + (rest.length ? `<div class="st-grp"><div class="st-gh"><b>More</b></div><div class="ints">${rest.map((i) => intCard(M, i)).join("")}</div></div>` : ""))
+        + (canAdmin() ? "" : `<p class="st-foot">Connecting and disconnecting is for admins.</p>`);
+    }
+    if (tab === "brand") body = `<div class="card st-card">
+        ${canAdmin() && moveTo.length ? row("Move to another organisation", "Brings its history, prompts and integrations along.", `<div class="st-inline"><select id="moveOrg" class="sel">${moveTo.map((o) => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join("")}</select><button type="button" class="btn ghost sm" data-move>Move</button></div>`) : ""}
+        ${row("Delete this brand", `Removes ${esc(M.profile.name)}, its checks and history. This can't be undone.`, `<button type="button" class="btn ghost sm st-danger" id="delBrand" data-del>Delete brand</button>`)}
+      </div>`;
     return head("Settings", `How White Petal tracks ${esc(M.profile.name)}.`) + roleNote
-      + `<div class="grid2"><div class="card"><div class="card-h"><b>Automatic checks</b><span class="muted">Runs on the server; you can close the tab</span></div><div class="pad set">
-          <div class="srow"><span>Re-run every prompt</span><div class="seg">${[["off", "Off"], ["weekly", "Weekly"], ["daily", "Daily"]].map(([k, l]) => `<button type="button" data-sched="${k}" aria-pressed="${sched === k}">${l}</button>`).join("")}</div></div>
-          <div class="srow"><span>Answers per prompt <span class="muted sm">averages out AI's run-to-run variation</span></span><div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samp="${k}" aria-pressed="${samples === k}">${k}×</button>`).join("")}</div></div>
-          <div class="srow"><span class="muted">${ws?.running ? "A check is running now." : ws?.nextRunAt ? `Next check ${new Date(ws.nextRunAt).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}` : "No automatic checks scheduled."}${ws?.lastRunAt ? ` · last ${new Date(ws.lastRunAt).toLocaleDateString()}` : ""}</span><button type="button" class="btn ghost sm" data-queue>Queue a check now</button></div>
-          <p class="muted sm">About ${(c.questions || M.questions).filter((q) => q.on !== false).length * M.engines.length * samples} AI answers per check. Engines: ${M.engines.map((e) => ENG[e]).join(", ")}.</p>
-        </div></div>
-        <div class="card"><div class="card-h"><b>What's tracked</b></div><div class="pad set">
-          <div class="srow"><span>${(c.questions || M.questions).filter((q) => q.on !== false).length} prompts · ${(c.topics || []).length || "–"} topics</span><span class="muted">${(M.profile.competitors || []).length} competitors</span></div>
-          <p class="muted sm">${esc((M.profile.competitors || []).slice(0, 6).join(", "))}</p>
-          <div class="srow"><button type="button" class="btn ghost sm" data-editsetup>Edit prompts and competitors</button><button type="button" class="btn ghost sm" id="delBrand" data-del>Delete brand</button></div>
-        </div></div></div>
-      ${moveCard}
-      <div class="sec-h"><h3>Integrations</h3><p>Connect the free tools, and White Petal pulls their data into every check.${canAdmin() ? "" : " Connecting and disconnecting is for admins."}</p></div>
-      <div class="ints">${!d ? '<p class="muted pad">Loading…</p>' : ints.map((i) => intCard(M, i)).join("")}</div>`;
+      + `<div class="st"><nav class="st-nav" aria-label="Settings sections">${TABS.map(([k, l, h]) => `<button type="button" data-settab="${k}" aria-current="${k === tab}"><b>${l}</b><span>${h}</span></button>`).join("")}
+          <button type="button" class="st-team" data-openteam>${icon("team", 15)}<span><b>Team &amp; keys</b><span>For every brand in ${esc(APP.org?.name || "this team")}</span></span></button></nav>
+        <div class="st-body">${body}</div></div>`;
   },
 });
 
@@ -1984,7 +2004,7 @@ function intCard(M, i) {
   const fields = (i.fields || []).filter((f) => !(i.id === "google")).map((f) => `<label class="af sm"><span>${esc(f.label)}</span><input data-f="${esc(f.key)}" type="${f.secret ? "password" : "text"}" placeholder="${esc(f.secret && i.connected ? "•••••••• (saved)" : f.placeholder || "")}" value="${esc(f.secret ? "" : i.config?.[f.key] || "")}" autocomplete="off"></label>`).join("");
   let body = "";
   if (i.id === "google") {
-    if (!i.available) body = `<p class="muted sm">Needs a Google OAuth client on the server (GOOGLE_OAUTH_CLIENT_ID / SECRET). See infra/README.</p>`;
+    if (!i.available) body = `<p class="muted sm">Google sign-in is not set up on this server yet. Ask your White Petal admin to turn it on.</p>`;
     else if (!i.connected) body = `<a class="btn sm" href="/api/oauth/google/start?ws=${encodeURIComponent(M.slug)}">Connect with Google</a>`;
     else body = `<div class="gprops" data-gprops><button type="button" class="btn ghost sm" data-loadprops>Choose properties</button><span class="muted sm">Search Console: ${esc(i.config?.gscProperty || "not chosen")} · GA4: ${esc(i.config?.ga4PropertyId || "not chosen")}</span></div>`;
   } else body = `<div class="ifields">${fields}</div>`;
@@ -2003,6 +2023,8 @@ $("#reportWrap").addEventListener("click", async (e) => {
   const busy = (b, txt) => { b.setAttribute("aria-disabled", "true"); const o = b.textContent; b.textContent = txt; return () => { b.removeAttribute("aria-disabled"); b.textContent = o; }; };
   try {
     if (t.closest("#navSettings")) { DASH.page = "settings"; return dashRender(); }
+    const stb = t.closest("[data-settab]"); if (stb) { DASH.setTab = stb.dataset.settab; return dashRender(); }
+    if (t.closest("[data-openteam]")) return openTeam();
     const sc = t.closest("[data-sched]"); if (sc) { await DATA.patch(slug, { schedule: sc.dataset.sched }); toast(sc.dataset.sched === "off" ? "Automatic checks are off." : `${sc.dataset.sched === "daily" ? "Daily" : "Weekly"} checks are on.`); return dashRender(); }
     const sp = t.closest("[data-samp]"); if (sp) { await DATA.patch(slug, { samples: +sp.dataset.samp }); return dashRender(); }
     if (t.closest("[data-queue]")) { await DATA.patch(slug, { runNow: true }); toast("Queued. The server starts it within about 10 minutes, so you can close this tab. Results appear here."); return dashRender(); }
@@ -2273,5 +2295,27 @@ document.addEventListener("visibilitychange", () => {
   if (hm && DATA.server()) { history.replaceState(null, "", location.pathname); if (await openBrand(decodeURIComponent(hm[1]), { quiet: true })) { DASH.page = "settings"; dashRender(); if (/google=connected/.test(hm[2] || "")) toast("Google connected. Choose your Search Console and GA4 properties."); return; } }
   if (DATA.server() && DATA.list.length) return home();
   renderRecent(); $("#startUrl").focus();
+})();
+/* Instant hover hints. Any element with a title (or data-tip) shows its text in a small bubble as soon as the
+   pointer rests on it. The title moves to data-tip on first hover so the browser's own tooltip doesn't double up. */
+(() => {
+  const el = $("#hint"); let cur = null;
+  const place = (t) => {
+    const r = t.getBoundingClientRect(), w = el.offsetWidth, h = el.offsetHeight;
+    let x = r.left + r.width / 2 - w / 2, y = r.top - h - 8;
+    if (y < 8) y = r.bottom + 8;
+    x = Math.max(8, Math.min(innerWidth - w - 8, x));
+    el.style.left = x + "px"; el.style.top = y + "px";
+  };
+  const hide = () => { cur = null; el.classList.remove("on"); el.hidden = true; };
+  document.addEventListener("mouseover", (e) => {
+    const t = e.target.closest?.("[title],[data-tip]");
+    if (!t || t === cur) return;
+    if (t.hasAttribute("title")) { const v = t.getAttribute("title"); t.removeAttribute("title"); if (v) t.dataset.tip = v; else return; }
+    const txt = t.dataset.tip; if (!txt) return hide();
+    cur = t; el.textContent = txt; el.hidden = false; place(t); requestAnimationFrame(() => el.classList.add("on"));
+  });
+  document.addEventListener("mouseout", (e) => { if (cur && !cur.contains(e.relatedTarget)) hide(); });
+  addEventListener("scroll", hide, true); addEventListener("blur", hide);
 })();
 })();

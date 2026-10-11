@@ -119,7 +119,12 @@ with sync_playwright() as p:
         pg.click("#acctBtn"); time.sleep(0.3); shot("11d_account_menu")
         b.close(); print("ERRORS:", [e for e in errors if not any(s in e for s in SKIP)] or "none"); sys.exit()
     for page in ["prompts", "gaps", "chats", "domains", "gap", "rankings", "insights", "perception", "actions", "ranking", "site", "fanouts", "settings"]:
+        if page == "settings": pg.click("#acctBtn")
         pg.click(f'#side [data-page="{page}"]'); time.sleep(0.6); shot(f"12_{page}")
+        if page == "settings":
+            for t in ("tracked", "integrations", "brand"):
+                pg.click(f'[data-settab="{t}"]'); time.sleep(0.4); shot(f"12_settings_{t}")
+            pg.click('[data-settab="checks"]'); time.sleep(0.3)
         if page in ("domains", "site", "settings", "gaps", "rankings"): pg.screenshot(path=str(OUT / f"12_{page}_full.png"), full_page=True)
     pg.click('#side [data-page="domains"]'); time.sleep(0.3)
     if pg.query_selector("[data-srcview=urls]"): pg.click("[data-srcview=urls]"); time.sleep(0.4); shot("12_domains_urls")
@@ -143,7 +148,7 @@ with sync_playwright() as p:
     print("after sign in:", pg2.evaluate("[...document.querySelectorAll('body > section, body > main, body > div')].filter(e=>!e.hidden).map(e=>e.id).join(',')"))
     pg2.goto(BASE + "/"); time.sleep(0.5)
     # landing for a signed-in user shows their brands when they come back to it
-    pg2.wait_for_selector("#reportWrap:not([hidden])", timeout=15000); pg2.click("#acctBtn"); pg2.click("#newBrand")
+    pg2.wait_for_selector("#reportWrap:not([hidden])", timeout=15000); pg2.click("#projBtn"); pg2.click("#projMenu [data-proj=__new]")
     time.sleep(1.2); pg2.screenshot(path=str(OUT / "20_landing_signed_in.png"))
     b.close()
 print("ERRORS:", [e for e in errors if not any(s in e for s in SKIP)] or "none")
