@@ -71,3 +71,8 @@ The one failure is pre-existing and fails on untouched code:
   deck's "no engine named you" question list. Layout and labels unchanged. Behaviour changes, both per 06:
   questions whose answers all failed no longer appear as deck "Win …" cards; competitor counts are once per answer.
   `metrics()` and the advanced KPI calculations are untouched.
+- Full suite after: `# tests 90 # pass 89 # fail 1` (same pre-existing organisations failure).
+- E2E at `f754ad8` from a temporary worktree (no `.env.local`), own server on :4340 against a scratch database,
+  system Chrome: desktop 1440×900 full flow `ERRORS: none` (sign up → onboarding → run → every dashboard page →
+  reload → sign out/in); mobile 390×844 (flow stops after the mission by design) `ERRORS: none`. The Mention gaps
+  page renders 6 of 12 questions with the model, same layout. Worktree and scratch databases removed afterwards.
