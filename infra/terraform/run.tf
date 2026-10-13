@@ -287,4 +287,10 @@ resource "google_cloud_run_domain_mapping" "custom" {
   spec {
     route_name = google_cloud_run_v2_service.whitepetal.name
   }
+
+  # The live mapping was created by hand, without Terraform's labels. Re-creating it only to add labels would take the domain
+  # down while Google issues a new certificate, so label differences are ignored.
+  lifecycle {
+    ignore_changes = [metadata]
+  }
 }
