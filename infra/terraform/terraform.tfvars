@@ -18,4 +18,4 @@ razorpay_plan_ids = {
 }
 
 # Paid plans: "0" closed, "operators" only platform operators can buy (first live payment), "1" open to everyone.
-billing_enabled = "operators"
+billing_enabled = "1"
