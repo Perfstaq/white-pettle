@@ -8,7 +8,7 @@ github_repo = "Perfstaq/white-pettle"
 
 # The people who run White Petal for clients (create organisations, open any organisation; every visit is
 # logged). Operator rights need a confirmed email, so listing an address no one has signed up with is safe.
-platform_operators = "sathvikvk238@gmail.com"
+platform_operators = "sathvik@metawurks.com,sathvikvk238@gmail.com"
 
 # Razorpay LIVE plans (INR, monthly, price incl. 18% GST). Checked against Razorpay on 14 Oct 2026. Not secret.
 razorpay_plan_ids = {
