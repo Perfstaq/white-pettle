@@ -288,7 +288,7 @@ function paintAccount() {
   const who = signedIn ? (APP.user.name || APP.user.email.split("@")[0]) : "Not signed in";
   $("#signOut").hidden = !signedIn;
   // The dashboard's one profile control (bottom of the sidebar): who, the plan and where it stands, and the plan card in its menu.
-  const st = signedIn ? planLine(APP.cfg.billing) : { text: "", tone: "" }, b = APP.cfg.billing, bill = signedIn && billingOn() && b && b.plan.status !== "internal";
+  const st = signedIn ? planLine(APP.cfg.billing) : { text: "", tone: "" }, b = APP.cfg.billing, bill = signedIn && billingOn() && b && (b.plan.status !== "internal" || !!b.checkout?.enabled);
   $("#acctAv").textContent = who.charAt(0).toUpperCase();
   $("#acctName").textContent = who;
   $("#acctEmail").textContent = signedIn ? APP.user.email : "";
@@ -2586,7 +2586,9 @@ $("#accBack").addEventListener("click", () => backFromSide());
    the separate trial pill, Account and Team buttons and the email, so the corner always looks the same. */
 const initialsOf = (s) => (String(s).trim().split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("") || "?").toUpperCase();
 function planLine(b) {
-  if (!b || !billingOn() || b.plan.status === "internal") return { text: APP.org?.name || "", tone: "", cta: "" };
+  if (!b || !billingOn() || (b.plan.status === "internal" && !b.checkout?.enabled)) return { text: APP.org?.name || "", tone: "", cta: "" };
+  // An organisation from before paid plans (no limits), now able to buy one.
+  if (b.plan.status === "internal") return { text: "Legacy plan", tone: "", cta: "Choose a plan", detail: "Made before paid plans: no limits, no charge." };
   const p = b.plan, n = Math.max(0, dayDiff(b.trialEndsAt)), name = b.trialChosen ? p.name : "Free trial";
   if (p.status === "new") return { text: "Choose a plan", tone: "warn", cta: "Choose a plan", detail: b.trialAvailable ? `Start your ${BILL.cat?.trialDays || 7}-day free trial.` : "Your free trial has been used." };
   if (b.mode === "read") return { text: p.status === "trialing" ? "Trial ended" : "Payment needed", tone: "bad", cta: "Choose a plan", detail: "Reports stay readable. Pick a plan to carry on." };
@@ -2608,7 +2610,7 @@ function paintProfile() {
 const paintTrialPill = paintProfile; // the older name, still called after billing changes
 function openProfileMenu(btn) {
   closeProfileMenu();
-  const who = APP.user.name || APP.user.email.split("@")[0], b = APP.cfg.billing, st = planLine(b), bill = billingOn() && b && b.plan.status !== "internal";
+  const who = APP.user.name || APP.user.email.split("@")[0], b = APP.cfg.billing, st = planLine(b), bill = billingOn() && b && (b.plan.status !== "internal" || !!b.checkout?.enabled);
   const m = document.createElement("div"); m.className = "pf-menu"; m.setAttribute("role", "menu");
   m.innerHTML = `<div class="pf-h"><span class="pf-av lg ${st.tone}">${esc(initialsOf(who))}</span><div><b>${esc(who)}</b><span>${esc(APP.user.email)}</span>${APP.org ? `<em>${esc(APP.org.name)}</em>` : ""}</div></div>
     ${bill ? `<div class="pf-plan ${st.tone}"><div><span class="bl-kicker">Plan</span><b>${esc(b.plan.status === "new" ? "No plan yet" : b.plan.status === "trialing" ? "Free trial" : b.plan.name)}</b><span>${esc(st.detail || st.text)}</span></div>${st.cta ? `<button type="button" class="btn sm" data-pfgo="billing">${esc(st.cta)}</button>` : ""}</div>` : ""}
