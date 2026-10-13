@@ -35,7 +35,7 @@ variable "github_repo" {
 
 variable "domain" {
   description = <<-EOT
-    Optional custom hostname, e.g. "whitepetal.perfstaq.com". Empty = serve on
+    Optional custom hostname, e.g. "os.perfstaq.com". Empty = serve on
     the run.app URL only.
 
     Mapped with a Cloud Run DOMAIN MAPPING, which is free, rather than an
@@ -113,8 +113,34 @@ variable "platform_operators" {
   default     = ""
 }
 
+variable "billing_enabled" {
+  description = "Paid plans: \"0\" checkout closed (default), \"operators\" only platform operators can buy (first live payment), \"1\" open to every organisation owner and self-serve sign-up with a trial. See docs/razorpay-runbook.md."
+  type        = string
+  default     = "0"
+  validation {
+    condition     = contains(["0", "operators", "1"], var.billing_enabled)
+    error_message = "billing_enabled must be \"0\", \"operators\" or \"1\"."
+  }
+}
+
+variable "billing_contact_email" {
+  description = "Where \"Talk to us\" (Enterprise) on the pricing page sends people. Empty links back to the app."
+  type        = string
+  default     = ""
+}
+
+variable "razorpay_plan_ids" {
+  description = "Razorpay plan ids by <PLAN>_<CURRENCY>, e.g. { GROWTH_INR = \"plan_...\", GROWTH_USD = \"plan_...\" }. A plan and currency with no id here cannot be bought."
+  type        = map(string)
+  default     = {}
+  validation {
+    condition     = alltrue([for k in keys(var.razorpay_plan_ids) : can(regex("^(STARTER|GROWTH|AGENCY)_(INR|USD)$", k))])
+    error_message = "Keys must look like GROWTH_INR: STARTER, GROWTH or AGENCY, then INR or USD."
+  }
+}
+
 variable "email_from" {
   description = "Sender for invite and password-reset emails (Resend). The domain must be verified in Resend."
   type        = string
-  default     = "White Petal <no-reply@whitepetal.perfstaq.com>"
+  default     = "Perfstaq <no-reply@perfstaq.com>"
 }

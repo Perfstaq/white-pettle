@@ -1,4 +1,4 @@
-/* WhitePetal product language: one immutable source for navigation labels, gap types, lifecycle labels,
+/* Perfstaq product language: one immutable source for navigation labels, gap types, lifecycle labels,
    positioning/onboarding copy, scoped-claim templates and the prohibited outcome claims the copy tests enforce.
    Plain script, loaded before app.js (window.WP_LANGUAGE). Tests load it in a VM the same way.
    Voice: observed fact + buyer consequence + evidence + credible next action. Never promise an outcome. */
@@ -49,7 +49,7 @@
     insights: "Contextual findings",
     perception: "Brand accuracy",
     rerun: "Recheck recommendations",
-    agent: "Ask WhitePetal",
+    agent: "Ask Perfstaq",
     settings: "Settings",
     team: "Team & keys",
     noOpenActions: "No open recovery actions",
@@ -91,7 +91,7 @@
     home: {
       eyebrow: "AI recommendation intelligence for brands",
       headline: "When buyers ask AI what to choose, does your brand make the answer?",
-      subhead: "WhitePetal checks the questions buyers ask ChatGPT, Gemini and Perplexity, shows where competitors are recommended instead of you, traces the evidence behind those answers, and drafts the work needed to compete.",
+      subhead: "Perfstaq checks the questions buyers ask ChatGPT, Gemini and Perplexity, shows where competitors are recommended instead of you, traces the evidence behind those answers, and drafts the work needed to compete.",
       cta: "Find my recommendation gaps",
       proof: ["Buyer questions", "Competing recommendations", "Trusted evidence", "Recovery actions"],
     },
@@ -102,7 +102,7 @@
       competitors: "Which brands take the same customer choice?",
       topics: "Which purchase decisions should include you?",
       focus: "Which buyer moments matter most right now?",
-      questions: "These are the buyer questions WhitePetal will monitor",
+      questions: "These are the buyer questions Perfstaq will monitor",
       run: "Check where AI leaves us out",
       ready: "We found your first recommendation gaps",
     },
@@ -117,7 +117,7 @@
     competitorContrast: ({ competitor, brand, n: count }) => `${n(competitor)} appeared in ${n(count)} of the same answers. The cited sources below mention ${n(competitor)} but not ${n(brand)}.`,
     actionRationale: ({ question }) => `This action addresses an observed evidence gap for ${n(question)}. It may strengthen the information available to AI systems; it does not guarantee inclusion.`,
     movement: ({ before, after }) => `After publication, recommendation coverage changed from ${n(before)} to ${n(after)} in the next comparable check. This is an observed association, not proof that one action caused the change.`,
-    insufficient: () => "WhitePetal does not yet have enough comparable answers to call this a trend.",
+    insufficient: () => "Perfstaq does not yet have enough comparable answers to call this a trend.",
     // Engine · date · market · question count · answer sample, for headline claims.
     scope: ({ engine, date, market, questions, answers }) => [n(engine), n(date), market || "Global", `${n(questions)} buyer question${questions === 1 ? "" : "s"}`, `${n(answers)} answer${answers === 1 ? "" : "s"}`].join(" · "),
     pursueInclusion: (domain) => `Pursue inclusion on ${n(domain)}`,

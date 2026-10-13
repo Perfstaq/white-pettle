@@ -269,7 +269,7 @@ if [ "$DNS" != "[]" ] && [ "$DNS" != "null" ]; then
   echo "    The certificate is issued automatically once DNS resolves (up to ~24 h)."
 else
   echo "  * Custom domain (free, no load balancer): put"
-  echo "      domain = \"whitepetal.perfstaq.com\""
+  echo "      domain = \"os.perfstaq.com\""
   echo "    in infra/terraform/terraform.tfvars, re-run this script, and add the"
   echo "    CNAME it prints (whitepetal → ghs.googlehosted.com.) at the registrar."
 fi

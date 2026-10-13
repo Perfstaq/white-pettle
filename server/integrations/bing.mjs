@@ -15,7 +15,7 @@ export const meta = {
     { key: "apiKey", label: "API key", secret: true, placeholder: "e.g. 1a2b3c4d5e6f…", help: "Bing Webmaster Tools → Settings (gear) → API access → Generate API key. One key covers all your verified sites." },
     { key: "siteUrl", label: "Site URL", secret: false, placeholder: "https://brand.com/", help: "Exactly as the site appears in Bing Webmaster Tools. Leave blank to use your main site." },
   ],
-  blurb: "Shows which Bing searches surface your site (Bing powers ChatGPT search and Copilot) and lets White Petal push new pages to Bing instantly.",
+  blurb: "Shows which Bing searches surface your site (Bing powers ChatGPT search and Copilot) and lets Perfstaq push new pages to Bing instantly.",
   docs: "https://www.bing.com/webmasters/",
 };
 

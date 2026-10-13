@@ -58,7 +58,7 @@ terraform apply                      # read the plan: it is PerfStaq's project
 
 | Variable | Default | Change it when |
 |---|---|---|
-| `domain` | `""` | you want `whitepetal.perfstaq.com` — free domain mapping, no load balancer |
+| `domain` | `""` | you want `os.perfstaq.com` — free domain mapping, no load balancer |
 | `max_instances` | `3` | traffic grows — but read *Shared database* first |
 | `cron_schedule` | `0 * * * *` | the app wants a different tick |
 | `budget_amount_inr` | `500` | the alert is too noisy or too quiet |
@@ -72,7 +72,7 @@ for `domain`, that deletes the mapping.
 
 ```hcl
 # terraform.tfvars
-domain = "whitepetal.perfstaq.com"
+domain = "os.perfstaq.com"
 ```
 
 `terraform apply`, then create the record from `terraform output

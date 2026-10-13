@@ -39,11 +39,11 @@ async function post(cfg, ctx, payload) {
 const cut = (s, n) => { s = String(s ?? ""); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 
 // Build Block Kit: header (plain_text ≤150) + section mrkdwn (≤3000) + optional link button. `text` is the notification fallback.
-export function buildMessage({ title = "White Petal", lines = [], url } = {}) {
+export function buildMessage({ title = "Perfstaq", lines = [], url } = {}) {
   const body = cut([].concat(lines).filter((l) => l != null && l !== "").join("\n"), 3000);
   const blocks = [{ type: "header", text: { type: "plain_text", text: cut(title, 150), emoji: true } }];
   if (body) blocks.push({ type: "section", text: { type: "mrkdwn", text: body } });
-  if (url) blocks.push({ type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open in White Petal" }, url }] });
+  if (url) blocks.push({ type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open in Perfstaq" }, url }] });
   return { text: cut(`${title}${body ? `: ${body.split("\n")[0]}` : ""}`, 300), blocks };
 }
 
@@ -54,7 +54,7 @@ export async function notify(cfg, msg, ctx = {}) {
 
 export async function test(cfg, ctx = {}) {
   return safeTest(async () => {
-    await post(cfg, ctx, buildMessage({ title: "White Petal connected", lines: [`Alerts${ctx.brand ? ` for *${ctx.brand}*` : ""} will be posted to this channel.`] }));
+    await post(cfg, ctx, buildMessage({ title: "Perfstaq connected", lines: [`Alerts${ctx.brand ? ` for *${ctx.brand}*` : ""} will be posted to this channel.`] }));
     return { ok: true, detail: "Sent a test message to Slack." };
   });
 }

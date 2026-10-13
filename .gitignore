@@ -5,3 +5,6 @@ node_modules
 .DS_Store
 .env*
 !.env.example
+
+# Local AI-tool state (claude-flow / ruflo)
+.claude-flow/

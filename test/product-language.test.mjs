@@ -54,7 +54,7 @@ test("product-language: canonical navigation follows the new information archite
   assert.equal(byKey.actions, "Recovery plan");
   assert.equal(byKey.ranking, "Competitive landscape");
   assert.equal(L.LABELS.rerun, "Recheck recommendations");
-  assert.equal(L.LABELS.agent, "Ask WhitePetal");
+  assert.equal(L.LABELS.agent, "Ask Perfstaq");
 });
 
 test("product-language: intents map to discovery, consideration and decision gaps", () => {
@@ -82,7 +82,7 @@ test("product-language: positioning and onboarding copy", () => {
   assert.equal(L.COPY.home.eyebrow, "AI recommendation intelligence for brands");
   assert.equal(L.COPY.home.headline, "When buyers ask AI what to choose, does your brand make the answer?");
   assert.equal(L.COPY.home.cta, "Find my recommendation gaps");
-  assert.match(L.COPY.home.subhead, /^WhitePetal checks the questions buyers ask ChatGPT, Gemini and Perplexity/);
+  assert.match(L.COPY.home.subhead, /^Perfstaq checks the questions buyers ask ChatGPT, Gemini and Perplexity/);
   assert.equal(L.COPY.home.proof.join(" → "), "Buyer questions → Competing recommendations → Trusted evidence → Recovery actions");
   assert.equal(L.COPY.onboarding.market, "Where are the buyers whose decisions matter?");
   assert.equal(L.COPY.onboarding.run, "Check where AI leaves us out");
@@ -99,7 +99,7 @@ test("product-language: scoped claim helpers implement the 03 templates", () => 
   assert.equal(C.competitorContrast({ competitor: "Acme", brand: "Perfstaq", n: 6 }), "Acme appeared in 6 of the same answers. The cited sources below mention Acme but not Perfstaq.");
   assert.equal(C.actionRationale({ question: "best running shoes" }), "This action addresses an observed evidence gap for best running shoes. It may strengthen the information available to AI systems; it does not guarantee inclusion.");
   assert.equal(C.movement({ before: "0/10", after: "2/10" }), "After publication, recommendation coverage changed from 0/10 to 2/10 in the next comparable check. This is an observed association, not proof that one action caused the change.");
-  assert.equal(C.insufficient(), "WhitePetal does not yet have enough comparable answers to call this a trend.");
+  assert.equal(C.insufficient(), "Perfstaq does not yet have enough comparable answers to call this a trend.");
   assert.equal(C.scope({ engine: "ChatGPT", date: "11 Oct 2026", market: "India", questions: 20, answers: 40 }), "ChatGPT · 11 Oct 2026 · India · 20 buyer questions · 40 answers");
   assert.equal(C.pursueInclusion("g2.com"), "Pursue inclusion on g2.com");
   assert.equal(C.strengthenEvidence("best crm"), "Strengthen evidence for “best crm”");

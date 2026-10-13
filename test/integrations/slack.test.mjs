@@ -13,8 +13,8 @@ test("test(): posts a short connected message to the webhook", async () => {
   assert.equal(c.method, "POST");
   assert.match(c.headers["content-type"], /application\/json/);
   assert.equal(c.body.blocks[0].type, "header");
-  assert.equal(c.body.blocks[0].text.text, "White Petal connected");
-  assert.match(c.body.text, /White Petal connected/);
+  assert.equal(c.body.blocks[0].text.text, "Perfstaq connected");
+  assert.match(c.body.text, /Perfstaq connected/);
 });
 
 test("notify(): header + mrkdwn section + button", async () => {
@@ -24,7 +24,7 @@ test("notify(): header + mrkdwn section + button", async () => {
   assert.deepEqual(fetch.calls[0].body.blocks, [
     { type: "header", text: { type: "plain_text", text: "Visibility up 12%", emoji: true } },
     { type: "section", text: { type: "mrkdwn", text: "*ChatGPT*: 4/10\n*Perplexity*: 6/10" } },
-    { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open in White Petal" }, url: "https://app.whitepetal.ai/r/1" }] },
+    { type: "actions", elements: [{ type: "button", text: { type: "plain_text", text: "Open in Perfstaq" }, url: "https://app.whitepetal.ai/r/1" }] },
   ]);
 });
 
