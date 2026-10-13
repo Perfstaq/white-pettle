@@ -102,7 +102,7 @@ async function sendConfig(req, res, url) {
   return sendJson(res, 200, { ...cfg, db: hasDb(), auth: hasDb(), access: hasDb() || isLocalDev(req) ? false : cfg.access, invite: hasDb() && !!process.env.ACCESS_CODE && billingConfig().enabled !== "1",
     user: user ? { id: user.id, email: user.email, name: user.name, verified: !!user.email_verified_at } : null,
     org: ctx ? O.orgOut(ctx) : null, orgs: ctx ? ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })) : [], operator: !!ctx?.operator,
-    budget: budget ? { warn: budget.warn, over: budget.over, pct: budget.pct, source: budget.source } : null, billing: ctx?.org ? await B.billingSummary(ctx.org.id) : null,
+    budget: budget ? { warn: budget.warn, over: budget.over, pct: budget.pct, source: budget.source } : null, billing: ctx?.org ? { ...(await B.billingSummary(ctx.org.id)), checkout: { enabled: billingConfig().enabled === "1" || (billingConfig().enabled === "operators" && !!ctx.operator) } } : null,
     // Billing screens show only when billing is open: "1" for everyone, "operators" for platform operators, nothing at "0".
     billingUi: billingConfig().enabled === "1" || (billingConfig().enabled === "operators" && !!ctx?.operator),
     googleLogin: hasDb() && !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET),
