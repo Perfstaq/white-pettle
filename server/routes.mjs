@@ -11,17 +11,29 @@ import * as google from "./integrations/google.mjs";
 import * as serp from "./integrations/serp.mjs";
 import * as entity from "./integrations/entity.mjs";
 import * as slack from "./integrations/slack.mjs";
-import { serpConfig, env } from "../api/_lib.js";
+import { serpConfig, env, engines as availableEngines } from "../api/_lib.js";
 import { summarize, hostOf } from "./metrics.mjs";
 import { runCheck } from "./runner.mjs";
 import { slugify, emailOk, normEmail } from "./util.mjs";
 import * as O from "./orgs.mjs";
+import * as B from "./billing.mjs";
+import { makeBillingRoutes, reconcile } from "./billing-routes.mjs";
+import * as N from "./notify.mjs";
+import { billingConfig } from "./razorpay.mjs";
+import { PLANS } from "./plans.mjs";
 import * as mail from "./mail.mjs";
 
 const SESSION = "wp_session";
 const GSTATE = "wp_gstate";
 const DAY = 864e5;
 const nextRun = (schedule, from = Date.now()) => (schedule === "daily" ? new Date(from + DAY) : schedule === "weekly" ? new Date(from + 7 * DAY) : null);
+// Self-serve (BILLING_ENABLED=1): anyone may sign up; a new personal organisation chooses a plan first, which starts the trial.
+export const selfServe = () => billingConfig().enabled === "1";
+async function newPersonalOrg(u) {
+  const org = await O.createOrg({ name: personalOrgName(u), by: u.id, allowPlatformKeys: platformKeysForSignups() });
+  if (selfServe()) await B.awaitPlan(org.id); // the plans page comes first; choosing a plan starts the trial
+  return org;
+}
 const personalOrgName = (u) => `${(u.name || "").trim() || u.email.split("@")[0]}'s brands`;
 const platformKeysForSignups = () => process.env.PLATFORM_KEYS_FOR_SIGNUPS !== "0";
 
@@ -56,7 +68,7 @@ async function meOut(u) {
   const ctx = await O.context(u);
   const cap = ctx.org ? await O.capState(ctx.org.id) : null;
   return { user: publicUser(u), operator: ctx.operator, org: O.orgOut(ctx), orgs: ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })),
-    budget: cap ? { warn: cap.warn, over: cap.over, pct: cap.pct } : null };
+    budget: cap ? { warn: cap.warn, over: cap.over, pct: cap.pct, source: cap.source } : null, billing: ctx.org ? await B.billingSummary(ctx.org.id) : null };
 }
 const wsOut = (w, extra = {}) => ({ slug: w.slug, name: w.name, site: w.site, schedule: w.schedule, samples: w.samples, nextRunAt: w.next_run_at, lastRunAt: w.last_run_at, running: !!w.running_at && Date.now() - new Date(w.running_at) < 40 * 60000, createdAt: w.created_at, updatedAt: w.updated_at, ...extra });
 
@@ -79,6 +91,7 @@ export async function aiAuth(req) {
 export async function aiAllow(ctx, req, min = "editor") {
   if (!ctx) return null;
   O.needRole(ctx, min);
+  await B.needWrite(ctx.org.id);
   await O.needBudget(ctx.org.id);
   const slug = String(req.headers["x-wp-brand"] || "").slice(0, 60);
   ctx.workspaceId = slug ? (await one(`select id from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug]))?.id || null : null;
@@ -163,9 +176,12 @@ async function integrationsFor(ws) {
 // minutes left of the budget, because Cloud Scheduler gives up on an HTTP target after 30 minutes.
 export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
   const until = Date.now() + budgetMs, done = [];
+  // Billing drift first: a small batch, each subscription at most once a day.
+  await reconcile({ limit: 20, log }).catch((e) => log(`[reconcile] ${e.message}`));
+  await N.trialSweep().catch((e) => log(`[notify] ${e.message}`)); // trial ending soon / ended emails
   while (Date.now() < until - 5 * 60000) {
     const ws = await one(`update workspaces set running_at = now()
-      where id = (select id from workspaces where schedule <> 'off' and next_run_at <= now() and (running_at is null or running_at < now() - interval '45 minutes')
+      where id = (select id from workspaces where next_run_at <= now() and (running_at is null or running_at < now() - interval '45 minutes')
                   order by next_run_at limit 1 for update skip locked)
       returning *`);
     if (!ws) break;
@@ -176,6 +192,15 @@ export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
       await O.audit(ws.org_id, null, "check.skipped", ws.name, { reason: "monthly AI budget reached", spent: budget.spent, cap: budget.cap });
       continue;
     }
+    // Unattended spend needs a paid-up plan that includes this schedule; otherwise look again tomorrow.
+    const bs = await B.billingState(ws.org_id, { usage: "checks" });
+    const noChecks = bs.ent.checks !== Infinity && bs.used.checks >= bs.ent.checks;
+    if (bs.mode !== "write" || !bs.ent.schedule.includes(ws.schedule) || noChecks) {
+      log(`[tick ${ws.slug}] skipped: plan`);
+      await q(`update workspaces set running_at = null, next_run_at = now() + interval '1 day' where id = $1`, [ws.id]);
+      await O.audit(ws.org_id, null, "check.skipped", ws.name, { reason: bs.mode !== "write" ? "billing " + bs.org.billing_status : noChecks ? "no checks left" : "schedule not in plan", plan: bs.org.plan_code });
+      continue;
+    }
     const prev = await one(`select data from runs where workspace_id = $1 and status = 'done' order by started_at desc limit 1`, [ws.id]);
     const prevSummary = prev?.data ? summarize(prev.data) : null;
     let M = null, err = null;
@@ -183,7 +208,7 @@ export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
       const keys = O.envFor(await O.orgKeys(ws.org_id));
       // Stop asking once this run's estimated cost would pass what's left of the monthly budget.
       const budgetUsd = budget.cap == null ? null : Math.max(0, budget.cap - budget.spent);
-      M = await O.withEnv(keys, () => runCheck(ws, { prev: prev?.data, deadline: until - 60000, budgetUsd, costOf: O.costOf, log: (m) => log(`[tick ${ws.slug}] ${m}`) }));
+      M = await O.withEnv(keys, () => runCheck(ws, { prev: prev?.data, deadline: until - 60000, budgetUsd, engines: availableEngines().filter((e) => bs.ent.engines.includes(e)), costOf: O.costOf, log: (m) => log(`[tick ${ws.slug}] ${m}`) }));
     } catch (e) { err = String(e.message || e); log(`[tick ${ws.slug}] failed: ${err}`); }
     if (M) {
       const s = summarize(M);
@@ -191,6 +216,7 @@ export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
       await meterRun(ws, M);
       for (const p of ["google", "bing", "cloudflare", "entity"]) { if (await one(`select 1 from integrations where workspace_id = $1 and provider = $2`, [ws.id, p])) await collectOne(ws, p).catch(() => {}); }
       await notifySlack(ws, s, prevSummary).catch(() => {});
+      await N.notify(ws.org_id, "weekly_results", M.id, { brand: ws.name, slug: ws.slug, s, prev: prevSummary }, { admins: true });
       done.push({ slug: ws.slug, visibility: s.visibility, score: s.score });
     }
     await q(`update workspaces set running_at = null, last_run_at = case when $2 then now() else last_run_at end, next_run_at = $3, updated_at = now() where id = $1`,
@@ -288,6 +314,8 @@ const roleOk = (r) => O.ROLES.includes(r);
 // ── route table ─────────────────────────────────────────────────────────────
 // [method, pattern, handler(req, res, params, url)]. Patterns use :name segments.
 export const ROUTES = [
+  // ── billing (first, so the webhook is matched before anything generic) ──
+  ...makeBillingRoutes({ needCtx, needUser }),
   // ── accounts ──
   ["POST", "/api/auth/signup", async (req, res) => {
     needDb();
@@ -299,7 +327,7 @@ export const ROUTES = [
     const inv = b.invite ? await O.findInvite(String(b.invite)) : null;
     if (b.invite && !inv) fail(400, "This invite link has expired or was already used. Ask for a new one.", { code: "invite_gone" });
     if (inv && normEmail(inv.email) !== email) fail(403, `This invite is for ${inv.email}.`, { code: "invite_email" });
-    if (!inv && process.env.ACCESS_CODE && !safeEqual(b.code, process.env.ACCESS_CODE)) fail(403, "That invite code isn't right.", { code: "invite" });
+    if (!inv && process.env.ACCESS_CODE && !selfServe() && !safeEqual(b.code, process.env.ACCESS_CODE)) fail(403, "That invite code isn't right.", { code: "invite" });
     if (await one(`select 1 from users where email = $1`, [email])) fail(409, "There's already an account with that email. Sign in instead.");
     const pw = await hashPassword(b.password), name = String(b.name || "").trim().slice(0, 80) || null;
     let u, orgId;
@@ -312,7 +340,7 @@ export const ROUTES = [
       u.email_verified_at = new Date();
     } else {
       u = await one(`insert into users (email, name, pw_hash, last_login_at) values ($1, $2, $3, now()) returning id, email, name, email_verified_at`, [email, name, pw]);
-      orgId = (await O.createOrg({ name: personalOrgName(u), by: u.id, allowPlatformKeys: platformKeysForSignups() })).id;
+      orgId = (await newPersonalOrg(u)).id;
       emailLink(req, u, "verify").catch((e) => console.warn("[verify]", e.message));
     }
     sendJson(res, 200, { user: publicUser(u) }, { "set-cookie": await startSession(req, u.id, orgId) });
@@ -407,13 +435,13 @@ export const ROUTES = [
     if (u) await q(`update users set google_sub = coalesce(google_sub, $2), email_verified_at = coalesce(email_verified_at, now()), last_login_at = now() where id = $1`, [u.id, g.sub]);
     else {
       if (invite && normEmail(invite.email) !== g.email) return back(`This invite is for ${invite.email}, but you signed in to Google as ${g.email}.`);
-      if (!invite && process.env.ACCESS_CODE) return back(`New accounts need an invite. Ask your admin to invite ${g.email}.`);
+      if (!invite && process.env.ACCESS_CODE && !selfServe()) return back(`New accounts need an invite. Ask your admin to invite ${g.email}.`);
       if (invite) {
         try { ({ u, orgId } = await tx(async (c) => { const u = (await c.query(`insert into users (email, name, google_sub, email_verified_at, last_login_at) values ($1, $2, $3, now(), now()) returning id, email, name`, [g.email, g.name, g.sub])).rows[0]; return { u, orgId: (await O.acceptInvite(invite, u, c)).orgId }; })); }
         catch (e) { return back(e.message); }
       } else {
         u = await one(`insert into users (email, name, google_sub, email_verified_at, last_login_at) values ($1, $2, $3, now(), now()) returning id, email, name`, [g.email, g.name, g.sub]);
-        orgId = (await O.createOrg({ name: personalOrgName(u), by: u.id, allowPlatformKeys: platformKeysForSignups() })).id;
+        orgId = (await newPersonalOrg(u)).id;
       }
     }
     if (invite && !orgId) { try { orgId = (await O.acceptInvite(invite, u)).orgId; } catch (e) { return back(e.message); } }
@@ -432,12 +460,13 @@ export const ROUTES = [
   ["POST", "/api/orgs", async (req, res) => {
     const u = await needUser(req); const b = await readJson(req, 20000);
     const operator = O.isOperator(u);
-    if (!operator && process.env.ORG_CREATION !== "open") fail(403, "Only the White Petal team can create organisations. Ask for an invite instead.");
+    if (!operator && process.env.ORG_CREATION !== "open") fail(403, "Only the Perfstaq team can create organisations. Ask for an invite instead.");
     const name = String(b.name || "").trim(); if (name.length < 2) fail(400, "Give the organisation a name.");
     const ownerEmail = b.ownerEmail ? normEmail(b.ownerEmail) : null;
     if (ownerEmail && !emailOk(ownerEmail)) fail(400, "Enter a valid email for the owner.");
     const selfOwner = !ownerEmail || ownerEmail === normEmail(u.email);
     const org = await O.createOrg({ name, by: u.id, role: selfOwner ? "owner" : "admin", allowPlatformKeys: operator && !!b.allowPlatformKeys });
+    if (selfServe() && !operator) await B.awaitPlan(org.id); // its trial is the person's one trial (joined, not restarted)
     await O.audit(org.id, u.id, "org.created", org.name, { owner: ownerEmail || u.email });
     const invite = selfOwner ? null : await sendInvite(req, u, org, ownerEmail, "owner");
     await setSessionOrg(u, org.id);
@@ -452,9 +481,41 @@ export const ROUTES = [
     if (!m) await O.audit(o.id, u.id, "operator.visit", u.email);
     sendJson(res, 200, await meOut({ ...u, session_org: o.id }));
   }],
+  // An operator sets an organisation's plan by hand: an invoiced Enterprise contract, a longer trial, custom limits. Every change is
+  // audited with before and after. It refuses an organisation that has a live Razorpay subscription (cancel that first).
+  ["PATCH", "/api/admin/orgs/:slug/billing", async (req, res, p) => {
+    const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+    const b = await readJson(req, 5000);
+    const org = await one(`select id, name, plan_code, billing_status, razorpay_subscription_id, trial_ends_at, current_period_end, entitlement_overrides from organizations where slug = $1`, [p.slug]);
+    if (!org) fail(404, "Not found");
+    const reason = String(b.reason || "").trim(); if (reason.length < 3) fail(400, "Say why (a few words): it goes in the audit log.");
+    if (org.razorpay_subscription_id && ["active", "past_due"].includes(org.billing_status)) fail(409, "This organisation has a Razorpay subscription. Cancel it first.");
+    const plan = String(b.plan || org.plan_code), status = String(b.status || (plan === "legacy" ? "internal" : org.billing_status));
+    if (!PLANS[plan]) fail(400, "Unknown plan.");
+    if (!["internal", "trialing", "active", "canceled"].includes(status)) fail(400, "Status must be internal, trialing, active or canceled.");
+    const when = (v, label) => { const d = new Date(v); if (Number.isNaN(d.getTime())) fail(400, `${label} must be a date.`); return d; };
+    const trialEnds = b.trialEndsAt ? when(b.trialEndsAt, "trialEndsAt") : null, periodEnds = b.periodEndsAt ? when(b.periodEndsAt, "periodEndsAt") : null;
+    if (status === "trialing" && !trialEnds) fail(400, "A trial needs trialEndsAt.");
+    if (["active", "canceled"].includes(status) && !periodEnds) fail(400, "A granted plan needs periodEndsAt, the date its access ends.");
+    let overrides = org.entitlement_overrides;
+    if ("overrides" in b) {
+      if (b.overrides === null) overrides = {};
+      else {
+        const keys = ["brands", "questions", "competitors", "seats", "drafts", "samples"], v = b.overrides?.values || {};
+        for (const [k, n] of Object.entries(v)) if (!keys.includes(k) || !Number.isInteger(n) || n < 0) fail(400, `Custom limits can set ${keys.join(", ")} to whole numbers.`);
+        overrides = { values: v, expiresAt: b.overrides.expiresAt ? when(b.overrides.expiresAt, "expiresAt").toISOString() : null, reason, by: u.email };
+      }
+    }
+    await q(`update organizations set plan_code = $2, billing_status = $3, trial_started_at = case when $3 = 'trialing' then coalesce(trial_started_at, now()) else trial_started_at end,
+             trial_ends_at = coalesce($4::timestamptz, trial_ends_at), current_period_start = case when $5::timestamptz is not null then now() else current_period_start end,
+             current_period_end = coalesce($5::timestamptz, current_period_end), grace_ends_at = null, pending_plan_code = null, cancel_at_period_end = false,
+             entitlement_overrides = $6, updated_at = now() where id = $1`, [org.id, plan, status, trialEnds, periodEnds, overrides]);
+    await O.audit(org.id, u.id, "billing.operator_set", org.name, { reason, before: { plan: org.plan_code, status: org.billing_status, trialEndsAt: org.trial_ends_at, periodEnd: org.current_period_end, overrides: org.entitlement_overrides }, after: { plan, status, trialEndsAt: trialEnds, periodEnd: periodEnds, overrides } });
+    sendJson(res, 200, { billing: await B.billingSummary(org.id) });
+  }],
   ["GET", "/api/admin/orgs", async (req, res) => {
     const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
-    const orgs = await q(`select o.slug, o.name, o.allow_platform_keys, o.monthly_cap_usd, o.created_at,
+    const orgs = await q(`select o.slug, o.name, o.allow_platform_keys, o.monthly_cap_usd, o.created_at, o.plan_code, o.billing_status, o.trial_ends_at, o.current_period_end,
         (select count(*)::int from memberships m where m.org_id = o.id) as members,
         (select count(*)::int from workspaces w where w.org_id = o.id) as brands,
         (select u.email from memberships m join users u on u.id = m.user_id where m.org_id = o.id and m.role = 'owner') as owner,
@@ -480,7 +541,7 @@ export const ROUTES = [
     const ctx = await needCtx(req, "admin"); const b = await readJson(req, 20000); const changes = {};
     if (b.name != null) { const n = String(b.name).trim(); if (n.length < 2) fail(400, "Give the organisation a name."); changes.name = n.slice(0, 80); }
     if ("monthlyCapUsd" in b) { const v = b.monthlyCapUsd === null || b.monthlyCapUsd === "" ? null : Number(b.monthlyCapUsd); if (v != null && (!Number.isFinite(v) || v < 0 || v > 100000)) fail(400, "Enter a monthly budget in dollars, or leave it empty for no limit."); changes.monthly_cap_usd = v; }
-    if ("allowPlatformKeys" in b) { if (!ctx.operator) fail(403, "Only the White Petal team can change this."); changes.allow_platform_keys = !!b.allowPlatformKeys; }
+    if ("allowPlatformKeys" in b) { if (!ctx.operator) fail(403, "Only the Perfstaq team can change this."); changes.allow_platform_keys = !!b.allowPlatformKeys; }
     const keys = Object.keys(changes);
     if (keys.length) {
       await q(`update organizations set ${keys.map((k, i) => `${k} = $${i + 2}`).join(", ")}, updated_at = now() where id = $1`, [ctx.org.id, ...keys.map((k) => changes[k])]);
@@ -505,6 +566,7 @@ export const ROUTES = [
     }
     if (await one(`select 1 from memberships m join users u on u.id = m.user_id where m.org_id = $1 and u.email = $2`, [ctx.org.id, email])) fail(409, `${email} is already in this organisation.`);
     if (limited("invite:" + ctx.org.id, 30, 3600e3)) fail(429, "That's a lot of invites in an hour. Try again later.");
+    await B.assertSeat(ctx.org.id);
     sendJson(res, 200, { invite: await sendInvite(req, ctx.user, ctx.org, email, role), invites: await O.pendingInvites(ctx.org.id) });
   }],
   ["DELETE", "/api/org/invitations/:id", async (req, res, p) => {
@@ -586,8 +648,15 @@ export const ROUTES = [
     const ctx = await needCtx(req, "editor"); const b = await readJson(req);
     const slug = slugify(p.slug), name = String(b.name || b.setup?.profile?.name || slug).slice(0, 120);
     const setup = b.setup || {};
-    const w = await one(`insert into workspaces (org_id, owner_id, slug, name, site, setup) values ($1, $2, $3, $4, $5, $6)
-      on conflict (org_id, slug) do update set name = excluded.name, site = excluded.site, setup = excluded.setup, updated_at = now() returning *`, [ctx.org.id, ctx.user.id, slug, name, b.site || setup.profile?.site || null, setup]);
+    // The brand limit counts only a genuinely new brand: this route is an upsert.
+    const w = await B.guarded(ctx.org.id, async (c, st) => {
+      B.assertWrite(st);
+      const prev = (await c.query(`select id, setup from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug])).rows[0];
+      if (!prev) B.assertBrandCreate(st);
+      await B.assertSetup(st, c, setup, prev?.setup, prev?.id);
+      return (await c.query(`insert into workspaces (org_id, owner_id, slug, name, site, setup) values ($1, $2, $3, $4, $5, $6)
+        on conflict (org_id, slug) do update set name = excluded.name, site = excluded.site, setup = excluded.setup, updated_at = now() returning *`, [ctx.org.id, ctx.user.id, slug, name, b.site || setup.profile?.site || null, setup])).rows[0];
+    });
     sendJson(res, 200, { workspace: wsOut(w, { setup: w.setup }) });
   }],
   ["PATCH", "/api/workspaces/:slug", async (req, res, p) => {
@@ -599,7 +668,7 @@ export const ROUTES = [
       const mine = to && (await one(`select role from memberships where org_id = $1 and user_id = $2`, [to.id, ctx.user.id]));
       if (!to || !((mine && O.can(mine.role, "admin")) || ctx.operator)) fail(403, "You need to be an admin in the organisation you're moving it to.");
       if (await one(`select 1 from workspaces where org_id = $1 and slug = $2`, [to.id, w.slug])) fail(409, `${to.name} already has a brand called ${w.slug}.`);
-      await q(`update workspaces set org_id = $2, updated_at = now() where id = $1`, [w.id, to.id]);
+      await B.guarded(to.id, async (c, st) => { B.assertWrite(st); B.assertBrandCreate(st); await c.query(`update workspaces set org_id = $2, updated_at = now() where id = $1`, [w.id, to.id]); });
       await O.audit(ctx.org.id, ctx.user.id, "brand.moved_out", w.name, { to: to.slug });
       await O.audit(to.id, ctx.user.id, "brand.moved_in", w.name, { from: ctx.org.slug });
       return sendJson(res, 200, { moved: { slug: w.slug, to: to.slug } });
@@ -609,8 +678,11 @@ export const ROUTES = [
     const setup = b.setup ? { ...w.setup, ...b.setup } : w.setup;
     // A new or changed schedule starts from now: the next run is one period away, or "soon" if asked (runNow).
     const next = b.runNow ? new Date() : schedule === w.schedule && w.next_run_at ? w.next_run_at : nextRun(schedule);
-    const out = await one(`update workspaces set schedule = $2, samples = $3, setup = $4, next_run_at = $5, name = coalesce($6, name), updated_at = now() where id = $1 returning *`,
-      [w.id, schedule, samples, setup, schedule === "off" && !b.runNow ? null : next, b.name || null]);
+    const out = await B.guarded(ctx.org.id, async (c, st) => {
+      B.assertWrite(st); B.assertSchedule(st, schedule, samples, w); await B.assertSetup(st, c, setup, w.setup, w.id); if (b.runNow) B.assertCheck(st);
+      return (await c.query(`update workspaces set schedule = $2, samples = $3, setup = $4, next_run_at = $5, name = coalesce($6, name), updated_at = now() where id = $1 returning *`,
+        [w.id, schedule, samples, setup, schedule === "off" && !b.runNow ? null : next, b.name || null])).rows[0];
+    });
     if (b.runNow) await O.audit(ctx.org.id, ctx.user.id, "check.queued", w.name);
     sendJson(res, 200, { workspace: wsOut(out, { setup: out.setup }) });
   }],
@@ -648,6 +720,7 @@ export const ROUTES = [
              values ($1, $2, 'live', $3, to_timestamp($4 / 1000.0), $5, $6, $7, $8, now())
              on conflict (id) do update set status = excluded.status, finished_at = excluded.finished_at, summary = excluded.summary, data = excluded.data, updated_at = now()`,
       [p.id, w.id, status, data.startedAt || Date.now(), data.finishedAt ? new Date(data.finishedAt) : null, status === "done" ? summarize(data) : null, data, ctx.user.id]);
+    if (status === "done" && (await B.trialUsedUp(ctx.org.id))) void N.notify(ctx.org.id, "trial_check_used", "trial", { plan: (await one(`select plan_code from organizations where id = $1`, [ctx.org.id]))?.plan_code });
     if (status === "done") await q(`update workspaces set last_run_at = now(), updated_at = now(), next_run_at = case when schedule <> 'off' then now() + case schedule when 'daily' then interval '1 day' else interval '7 days' end else null end where id = $1`, [w.id]);
     sendJson(res, 200, { ok: true, status });
   }],
@@ -747,6 +820,7 @@ export const ROUTES = [
   ["PUT", "/api/workspaces/:slug/integrations/:provider", async (req, res, p) => {
     const ctx = await needCtx(req, "admin"); const w = await needWorkspace(ctx, p.slug, "admin"); const mod = getProvider(p.provider);
     if (!mod || p.provider === "serp") fail(404, "Unknown integration.");
+    await B.assertIntegration(ctx.org.id, p.provider);
     const b = await readJson(req, 50000);
     const prev = (await integrationCfg(w, p.provider))?.cfg || {};
     const cfg = { ...prev };

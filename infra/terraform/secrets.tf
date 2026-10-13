@@ -51,6 +51,9 @@ locals {
     "SERPAPI_KEY",
     "ACCESS_CODE",
     "RESEND_API_KEY",
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET",
   ])
 
   # node-postgres reads a Unix socket from `?host=/cloudsql/<connection>`

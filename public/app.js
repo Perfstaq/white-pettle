@@ -1,4 +1,4 @@
-/* White Petal by Perfstaq: a visible AI agent.
+/* Perfstaq AI Visibility: a visible AI agent.
    Flow: Peec-style setup (scan site → brand profile → market → competitors → topics → prompt focus → prompt set)
    → live AI answers → follow the sources → what AI says about you → insights → drafts → "workspace ready" reveal
    → results dashboard (overview, prompts, chats, sources, gap analysis, actions) with an agent you can ask. */
@@ -48,7 +48,7 @@ async function stream(path, payload, on, signal, idleMs = 75000) {
 async function streamInner(path, payload, on, signal, kick) {
   const r = await fetch(path, { method: "POST", headers: aiHeaders(), body: JSON.stringify(payload), signal, cache: "no-store" });
   if (r.status === 401) { if (APP.cfg.db) { APP.user = null; showAuth("signin"); throw new Error("Please sign in again."); } APP.code = ""; store.set("code", ""); APP.cfg.access = true; $("#accessRow").hidden = false; $("#accessCode").value = ""; throw new Error("That access code didn't work. Go back and enter it again (it's ACCESS_CODE in the server's environment)."); }
-  if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); throw new Error(d.error || `Server error ${r.status}`); }
+  if (!r.ok || !r.body) { const d = await r.json().catch(() => ({})); if (r.status === 402 && (d.code === "plan_limit" || d.code === "billing_read_only")) upgradeModal(d); throw Object.assign(new Error(d.error || `Server error ${r.status}`), { code: d.code, data: d }); }
   const reader = r.body.getReader(), dec = new TextDecoder(); let buf = "", err = null;
   for (;;) {
     const { value, done } = await reader.read(); if (done) break;
@@ -76,8 +76,21 @@ async function api(method, path, body) {
   const r = await fetch(path, { method, headers: body ? { "content-type": "application/json", "x-wp-brand": APP.M?.slug || "" } : {}, body: body ? JSON.stringify(body) : undefined, credentials: "same-origin", cache: "no-store" });
   const d = await r.json().catch(() => ({}));
   if (r.status === 401 && d.code === "auth") { APP.user = null; showAuth("signin"); throw new Error("Please sign in."); }
-  if (!r.ok) throw new Error(d.error || `Server error ${r.status}`);
+  if (!r.ok) { if (r.status === 402 && (d.code === "plan_limit" || d.code === "billing_read_only")) upgradeModal(d); throw Object.assign(new Error(d.error || `Server error ${r.status}`), { code: d.code, data: d }); }
   return d;
+}
+// A plan limit or a read-only account asks the person to pay, in a pop-up rather than a toast that fades.
+let LIMIT_MSG = "";
+function upgradeModal(d) {
+  if ($(".modal.upsell")) return;
+  const next = d.nextPlanName, ro = d.code === "billing_read_only";
+  LIMIT_MSG = esc(d.error || "");
+  const m = document.createElement("div"); m.className = "modal light upsell";
+  m.innerHTML = `<div class="box" role="dialog" aria-modal="true"><h3>${ro ? "Choose a plan to continue" : d.trialDone ? "Your free trial check is done" : "You've reached your plan's limit"}</h3><p>${esc(d.error || "")}</p><div class="row" style="gap:8px"><button class="btn" type="button" data-up>${ro || d.trialDone ? "Choose a plan" : next ? `Upgrade to ${esc(next)}` : "See plans"}</button><button class="btn ghost" type="button" data-x>Not now</button></div></div>`;
+  const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  const close = () => { document.removeEventListener("keydown", key, true); m.remove(); };
+  m.addEventListener("click", (e) => { if (e.target === m || e.target.closest("[data-x]")) close(); else if (e.target.closest("[data-up]")) { close(); openBilling(); } });
+  document.addEventListener("keydown", key, true); document.body.append(m); m.querySelector("[data-up]").focus();
 }
 const DATA = {
   list: [],
@@ -120,8 +133,11 @@ const DATA = {
     const go = async () => {
       if (DATA._busy) { DATA._again = true; return; }
       DATA._busy = true;
-      try { await api("PUT", "/api/runs/" + encodeURIComponent(M.id), { slug: M.slug, data: slim(M) }); }
-      catch (e) { console.warn("[sync]", e.message); }
+      try { await api("PUT", "/api/runs/" + encodeURIComponent(M.id), { slug: M.slug, data: slim(M) }); DATA._fail = 0; }
+      catch (e) {
+        console.warn("[sync]", e.message);
+        if (M.finishedAt) { if ((DATA._fail = (DATA._fail || 0) + 1) <= 3) DATA._again = true; else { DATA._fail = 0; toast("Couldn't save the finished check to your account. It's kept in this browser and syncs next time you open it."); } }
+      }
       DATA._busy = false; if (DATA._again) { DATA._again = false; DATA._t = setTimeout(go, 1500); }
     };
     if (now || M.finishedAt) go(); else DATA._t = setTimeout(go, 4000);
@@ -137,7 +153,7 @@ function showAuth(mode = "signup", after) {
 }
 function paintAuth() {
   const m = AUTH.mode, up = m === "signup", inv = AUTH.inviteInfo;
-  $("#authTitle").textContent = { signup: inv ? `Join ${inv.org} on White Petal` : "Create your White Petal account", signin: inv ? `Sign in to join ${inv.org}` : "Sign in to White Petal", forgot: "Reset your password", reset: "Choose a new password" }[m];
+  $("#authTitle").textContent = { signup: inv ? `Join ${inv.org} on Perfstaq` : "Create your Perfstaq account", signin: inv ? `Sign in to join ${inv.org}` : "Sign in to Perfstaq", forgot: "Reset your password", reset: "Choose a new password" }[m];
   $("#authSub").textContent = m === "forgot" ? "We'll email you a link to set a new one." : m === "reset" ? "At least 8 characters. You'll be signed out everywhere else." : AUTH.after?.url ? `Then we'll start on ${host(AUTH.after.url)}.` : up ? "Track how AI search talks about your brand, every week." : "Welcome back.";
   $("#authInvite").hidden = !inv;
   if (inv) $("#authInvite").innerHTML = `${inv.inviter ? `<b>${esc(inv.inviter)}</b> invited <b>${esc(inv.email)}</b>` : `<b>${esc(inv.email)}</b> is invited`} to <b>${esc(inv.org)}</b> as ${esc({ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[inv.role] || inv.role)}.`;
@@ -150,7 +166,7 @@ function paintAuth() {
   $("#authGoogle").hidden = !g; $("#authOr").hidden = !g;
   $("#authGo").textContent = { signup: inv ? "Create account and join" : "Create account", signin: inv ? "Sign in and join" : "Sign in", forgot: "Email me a link", reset: "Save and sign in" }[m];
   $("#authPass").autocomplete = up || m === "reset" ? "new-password" : "current-password";
-  $("#authSwitchTxt").textContent = up ? "Already have an account?" : m === "signin" ? "New to White Petal?" : "Remembered it?";
+  $("#authSwitchTxt").textContent = up ? "Already have an account?" : m === "signin" ? "New to Perfstaq?" : "Remembered it?";
   $("#authSwitch").textContent = up ? "Sign in" : m === "signin" ? "Create an account" : "Sign in";
   $("#authSwitch").parentElement.hidden = m === "reset";
   $("#authForgotRow").hidden = m !== "signin";
@@ -171,6 +187,8 @@ $("#authForm").addEventListener("submit", async (e) => {
     await reloadConfig(); await DATA.refresh();
     if (joined) toast(`You're in ${esc(joined.org)}.`);
     const after = AUTH.after; AUTH.after = null;
+    if (await resumeIntent()) return;
+    if (await maybeFirstRun()) return;
     if (after?.url && canEdit()) return startOnboarding(after.url);
     return home();
   } catch (err) { $("#authErr").textContent = err.message; }
@@ -188,8 +206,25 @@ const canAdmin = () => roleAtLeast("admin");
 async function reloadConfig() {
   try { APP.cfg = await (await fetch("/api/config", { cache: "no-store" })).json(); } catch {}
   APP.user = APP.cfg.user || null; APP.org = APP.cfg.org || null; APP.orgs = APP.cfg.orgs || []; APP.operator = !!APP.cfg.operator;
-  if (APP.cfg.budget?.over) toast("This organisation has used its monthly AI budget. An admin can raise it in Team & keys.");
-  else if (APP.cfg.budget?.warn) toast(`This organisation has used ${Math.round((APP.cfg.budget.pct || 0) * 100)}% of its monthly AI budget.`);
+  if (APP.cfg.budget?.over) toast(APP.cfg.budget.source === "plan" ? "This plan's AI allowance is used up. Upgrade in Plans &amp; payment, or it resets with your next billing period." : "This organisation has used its monthly AI budget. An admin can raise it in Team & keys.");
+  else if (APP.cfg.budget?.warn) toast(`This organisation has used ${Math.round((APP.cfg.budget.pct || 0) * 100)}% of its ${APP.cfg.budget.source === "plan" ? "plan's AI allowance" : "monthly AI budget"}.`);
+  else billingToast(APP.cfg.billing);
+  paintTrialPill();
+}
+// A payment can land while the tab sits in the background (a webhook converts the trial, a renewal fails): coming back refreshes the
+// plan pill, quietly and at most once a minute. The server enforces the real state either way.
+let billSeen = 0;
+document.addEventListener("visibilitychange", async () => {
+  if (document.hidden || !APP.user || !billingOn() || Date.now() - billSeen < 60e3) return; billSeen = Date.now();
+  try { const c = await (await fetch("/api/config", { cache: "no-store" })).json(); if (c.billing) { APP.cfg.billing = c.billing; paintTrialPill(); } } catch {}
+});
+// Trial and payment state, said once on load. The server enforces all of it; this only explains.
+function billingToast(b) {
+  if (!b || !billingOn() || b.plan.status === "new") return; // the plans page opens instead
+  const left = b.trialEndsAt ? Math.ceil((new Date(b.trialEndsAt) - Date.now()) / 864e5) : null;
+  if (b.mode === "read") toast(b.plan.status === "trialing" ? "Your trial has ended. Choose a plan in Plans &amp; payment to keep running checks. Your reports stay readable." : "This organisation is read-only until the plan is paid. See Plans &amp; payment.");
+  else if (b.mode === "manual") toast(`Your last payment failed. Update your payment method by ${new Date(b.graceEndsAt).toLocaleDateString()} to keep scheduled checks running.`);
+  else if (b.plan.status === "trialing" && !b.paymentMethod?.connected && left != null && left <= 2) toast(`Your trial ends ${left <= 0 ? "today" : left === 1 ? "tomorrow" : "in 2 days"}. Choose a plan in Plans &amp; payment to keep going.`);
 }
 // Invite links (#invite=…), password resets (#reset=…) and Google sign-in errors (#auth-error=…).
 async function handleAuthHash() {
@@ -227,6 +262,9 @@ async function home() {
 async function openBrand(slug, { quiet } = {}) {
   let run = null;
   try { run = await DATA.open(slug); } catch (e) { if (!quiet) toast(esc(e.message)); return false; }
+  // The server's copy lacks the finish (the final save failed or has not landed yet) but this browser has the finished check: use it and send it again,
+  // instead of showing a finished analysis as "paused".
+  if (DATA.server() && !run?.finishedAt) { const local = store.get("mission:" + slug, null); if (local?.finishedAt && !local.abandoned && (!run || run.id === local.id || (local.startedAt || 0) >= (run.startedAt || 0))) { run = local; DATA.pushRun(local, true); } }
   if (run?.finishedAt && !run.abandoned) { APP.M = run; DASH.page = "overview"; showReport(); return true; }
   // An unfinished check opens paused. Opening a brand never asks AI anything by itself; "Resume" does.
   if (run && run.profile && run.done && !run.finishedAt) { APP.M = run; DASH.page = "overview"; showRunning(); return true; }
@@ -249,20 +287,21 @@ function paintAccount() {
   const signedIn = DATA.server();
   const who = signedIn ? (APP.user.name || APP.user.email.split("@")[0]) : "Not signed in";
   $("#signOut").hidden = !signedIn;
+  // The dashboard's one profile control (bottom of the sidebar): who, the plan and where it stands, and the plan card in its menu.
+  const st = signedIn ? planLine(APP.cfg.billing) : { text: "", tone: "" }, b = APP.cfg.billing, bill = signedIn && billingOn() && b && b.plan.status !== "internal";
   $("#acctAv").textContent = who.charAt(0).toUpperCase();
   $("#acctName").textContent = who;
   $("#acctEmail").textContent = signedIn ? APP.user.email : "";
   $("#acctEmail").hidden = !signedIn;
   $("#acctOrg").textContent = signedIn && APP.org ? APP.org.name : "";
+  const ap = $("#acctPlan"); ap.hidden = !bill;
+  if (bill) { ap.className = "pf-plan " + (st.tone || ""); ap.innerHTML = `<div><span class="bl-kicker">Plan</span><b>${esc(b.plan.status === "new" ? "No plan yet" : b.plan.status === "trialing" ? "Free trial" : b.plan.name)}</b><span>${esc(st.detail || st.text)}</span></div>${st.cta ? `<button type="button" class="btn sm" data-pfgo="billing">${esc(st.cta)}</button>` : ""}`; }
 }
 function paintLanding() {
   const signedIn = DATA.server();
   $("#lpAuth").hidden = !APP.cfg.auth || signedIn;
-  $("#lpTeam").hidden = !signedIn;
-  $("#lpTeam").textContent = APP.org ? `${APP.org.name} · Team` : "Team";
-  $("#lpUser").innerHTML = signedIn ? `<span class="muted">${esc(APP.user.email)}</span> <button type="button" class="lnk" id="lpOut">Sign out</button>` : "";
+  paintProfile();
   $("#startForm").hidden = signedIn && !canEdit();
-  $("#lpOut")?.addEventListener("click", () => $("#signOut").click());
   paintAccount();
   const avail = (APP.cfg.engines || []).map((e) => ENG[e]).filter(Boolean);
   $("#lpEngines").innerHTML = avail.length ? `<span class="muted">Checks</span> ${avail.map((n) => `<span class="eng-pill">${esc(n)}</span>`).join("")}` : "";
@@ -355,6 +394,12 @@ $("#startForm").addEventListener("submit", (e) => {
 });
 
 /* =================================================================== MISSION UI */
+// The counters and phase bars for a run that's already (partly) done: what was saved, without re-asking anything.
+function fillHud(M) {
+  const fin = Object.values(M.answers || {}).filter((a) => a.status === "yes" || a.status === "no"), done = M.done || {};
+  bump("q", M.questions.length); bump("a", fin.length); bump("s", fin.reduce((s, a) => s + Math.max(a.nS || 0, (a.searches || []).length), 0)); bump("src", fin.reduce((s, a) => s + Math.max(a.nSrc || 0, (a.sources || []).length), 0)); bump("p", Object.keys(M.inspections || {}).length); bump("r", Object.keys(rivalCounts(M)).length); bump("d", Object.keys(M.pitches || {}).length + (M.assets ? 1 : 0));
+  PHASES.forEach(([k]) => { if (done[{ site: "questions", questions: "questions", ask: "ask", sources: "sources", think: "insights", draft: "draft" }[k]] || k === "site") finishPhase(k); });
+}
 const PHASES = [["site", "Read site"], ["questions", "Questions"], ["ask", "Ask AI live"], ["sources", "Follow sources"], ["think", "Analyse"], ["draft", "Draft fixes"]];
 const CTRS = [["q", "Questions"], ["a", "Answers"], ["s", "Searches"], ["src", "Sources"], ["p", "Pages opened"], ["r", "Rivals seen"], ["c", "Contacts"], ["d", "Drafts"]];
 const C = {};
@@ -393,7 +438,8 @@ function stepEl(text, why) {
   return { done(t, ok = true) { el.className = "ev step " + (ok ? "ok" : "bad"); el.querySelector(".ic").textContent = ok ? "✓" : "!"; if (t) el.querySelector(".tx").textContent = t; } };
 }
 let toastT;
-function toast(html) { let t = $(".toast"); if (!t) { t = document.createElement("div"); t.className = "toast"; document.body.append(t); } t.innerHTML = html; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.remove(), 4200); }
+// Messages: one at a time, bottom centre. tone: ok | info | warn | bad (a coloured mark), or none.
+function toast(html, tone = "") { if (html && html === LIMIT_MSG) { LIMIT_MSG = ""; return; } let t = $(".toast"); if (!t) { t = document.createElement("div"); t.setAttribute("role", "status"); document.body.append(t); } t.className = "toast" + (tone ? " t-" + tone : ""); t.innerHTML = `${tone ? `<i class="t-mark" aria-hidden="true">${icon(tone === "ok" ? "check" : tone === "bad" ? "x" : "info", 13)}</i>` : ""}<span>${html}</span>`; t.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => t.remove(), Math.max(4200, String(html).length * 55)); }
 
 /* =================================================================== HIGHLIGHT */
 function namesFor(M, extra = []) {
@@ -417,14 +463,20 @@ const isYou = (name, M) => { const n = norm(name); return namesFor(M).you.some((
 const textHasYou = (t, M) => { const x = " " + norm(t) + " "; return namesFor(M).you.some((y) => x.includes(" " + norm(y) + " ")); };
 function md(t) {
   const lines = esc(t).replace(/\*\*(.+?)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>').split("\n");
-  let out = "", list = null;
+  let out = "", list = null, table = null;
+  const cells = (l) => l.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+  const flush = () => { if (!table) return; const [h, ...rows] = table; out += `<div class="md-tw"><table class="md-t"><thead><tr>${h.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`; table = null; };
   for (const l of lines) {
+    // Markdown tables (| a | b |), which AI answers use for comparisons; the |---| rule line is dropped.
+    if (/^\s*\|.*\|\s*$/.test(l)) { if (list) { out += `</${list}>`; list = null; } if (!/^\s*\|?\s*:?-{2,}/.test(l)) (table = table || []).push(cells(l)); continue; }
+    flush();
     const li = l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)/);
     if (li) { if (!list) { list = /^\s*\d/.test(l) ? "ol" : "ul"; out += `<${list}>`; } out += `<li>${li[1]}</li>`; continue; }
     if (list) { out += `</${list}>`; list = null; }
     if (/^#{1,4}\s/.test(l)) out += `<h4>${l.replace(/^#{1,4}\s/, "")}</h4>`;
     else if (l.trim()) out += `<p>${l}</p>`;
   }
+  flush();
   if (list) out += `</${list}>`;
   return out;
 }
@@ -625,9 +677,7 @@ async function resumeMission(M) {
   APP.M = M; M.done = M.done || {};
   rebuildMap(M); renderMatrix($("#matrix"), M); setRing(liveScore(M));
   const ans = Object.values(M.answers || {});
-  const fin = ans.filter((a) => a.status === "yes" || a.status === "no");
-  bump("q", M.questions.length); bump("a", fin.length); bump("s", fin.reduce((s, a) => s + Math.max(a.nS || 0, (a.searches || []).length), 0)); bump("src", fin.reduce((s, a) => s + Math.max(a.nSrc || 0, (a.sources || []).length), 0)); bump("p", Object.keys(M.inspections || {}).length); bump("r", Object.keys(rivalCounts(M)).length); bump("d", Object.keys(M.pitches || {}).length + (M.assets ? 1 : 0));
-  PHASES.forEach(([k]) => { if (M.done[{ site: "questions", questions: "questions", ask: "ask", sources: "sources", think: "insights", draft: "draft" }[k]] || k === "site") finishPhase(k); });
+  fillHud(M);
   thought(`<b>Picking up where I left off.</b> ${M.questions.length} questions and ${ans.filter((a) => a.status === "yes" || a.status === "no").length} answers are already saved. Nothing gets asked twice.`, "Runs are saved after every step, so leaving the page doesn't lose work.");
   showRunning();
   try { await runPipeline(M, sig); } catch (err) { missionError(err, sig); }
@@ -673,7 +723,7 @@ async function runPipeline(M, sig) {
       qc.querySelector(".ql").insertAdjacentHTML("beforeend", `<div><span>${esc(intent)}</span>${esc(text)}</div>`); qc.querySelector(".qn").textContent = M.questions.length;
       gNode("q:" + q.id, "question", text); bump("q"); phase("questions", Math.min(95, M.questions.length * 8)); scrollFeed();
     };
-    await stream("/api/write", { kind: "questions", data: { profile, count: 12 } }, {
+    await stream("/api/write", { kind: "questions", data: { profile, count: Math.min(12, Math.max(1, PLANL.prompts())) } }, {
       delta: (d) => { buf += d.text; const lines = buf.split("\n"); buf = lines.pop(); lines.forEach(takeLine); },
       final: () => { if (buf.trim()) takeLine(buf); },
     }, sig);
@@ -698,13 +748,13 @@ async function runPipeline(M, sig) {
       renderMatrix($("#matrix"), M);
       const card = add(`<div class="hd"><span class="eng"><i style="background:${ENGC[e]}"></i>${ENG[e]}</span>${S > 1 ? `<span class="chip">answer ${s + 1} of ${S}</span>` : ""}<span class="sp"></span><span class="vd">${verdictHtml(a)}</span></div><div class="q">${esc(q.text)}</div><div class="status st">Connecting</div><div class="chips sq"></div><div class="answer typing"></div><div class="sr"></div>`, "card hot");
       const ansEl = card.querySelector(".answer"); let raf = 0;
-      const paint = () => { raf = 0; ansEl.innerHTML = highlight(a.answer, M); ansEl.classList.toggle("short", a.answer.length < 400); scrollFeed(); };
+      const paint = () => { raf = 0; ansEl.innerHTML = markHtml(md(a.answer), M); ansEl.classList.toggle("short", a.answer.length < 400); scrollFeed(); };
       for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         if (attempt > 1) { Object.assign(a, { status: "run", answer: "", sources: [], brands: [], searches: [], error: "", nSrc: 0, nS: 0 }); card.querySelector(".st").textContent = `Retrying (attempt ${attempt} of 3)`; card.querySelector(".sq").innerHTML = ""; }
         await stream("/api/ask", { engine: e, question: q.text, brand: profile }, {
           status: (d) => { card.querySelector(".st").textContent = d.text; },
-          search: (d) => { a.searches.push(d.query); a.nS = (a.nS || 0) + 1; bump("s"); card.querySelector(".sq").insertAdjacentHTML("beforeend", `<span class="search">searched: ${esc(d.query)}</span>`); },
+          search: (d) => { a.searches.push(d.query); a.nS = (a.nS || 0) + 1; bump("s"); card.querySelector(".sq").insertAdjacentHTML("beforeend", `<span class="search" title="AI searched the web for this">${esc(d.query)}</span>`); },
           source: (d) => {
             if (!a.sources.some((s) => s.url === d.url)) { a.sources.push(d); a.nSrc = (a.nSrc || 0) + 1; bump("src"); }
             if (!card._srcT) card._srcT = later(() => { card._srcT = 0; card.querySelector(".sr").innerHTML = srcChips(a.sources); });
@@ -823,9 +873,9 @@ async function runPipeline(M, sig) {
       await Promise.all(pq.map(async (qq, i) => {
         if (sig.aborted) return;
         const card = add(`<div class="hd"><span class="eng"><i style="background:${ENGC[engs[0]]}"></i>${ENG[engs[0]]}</span><span class="chip you">about you</span></div><div class="q">${esc(qq)}</div><div class="answer typing"></div>`, "card hot");
-        const el = card.querySelector(".answer"); let t = ""; const paintP = throttled(() => { el.innerHTML = highlight(t, M); scrollFeed(); });
+        const el = card.querySelector(".answer"); let t = ""; const paintP = throttled(() => { el.innerHTML = markHtml(md(t), M); scrollFeed(); });
         try { await stream("/api/ask", { engine: engs[0], question: qq, brand: profile }, { delta: (d) => { t += d.text; paintP(); }, final: (d) => { t = d.answer || t; } }, sig); } catch (e) { t = t || e.message; }
-        el.classList.remove("typing"); el.innerHTML = highlight(t, M); card.classList.remove("hot"); pAns[i] = { q: qq, a: t };
+        el.classList.remove("typing"); el.innerHTML = markHtml(md(t), M); card.classList.remove("hot"); pAns[i] = { q: qq, a: t };
       }));
       phase("think", 45);
       const pc = add(`<div class="hd"><span>Fact-check</span><span class="sp"></span><svg class="pq think" viewBox="0 0 56 30" style="height:12px;width:22px;color:var(--muted)"><rect x="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/><rect x="20" width="16" height="30" rx="4.5" fill="#FF7A1A"/><rect x="40" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/></svg></div><div class="body status">Comparing claims with your site</div>`, "card hot");
@@ -913,7 +963,7 @@ function digest(M) {
 /* =================================================================== REPORT */
 $("#viewLog").addEventListener("click", () => {
   screen("mission");
-  if (!$("#feed").children.length && APP.M) { setupHud(); gInit(); rebuildMap(APP.M); renderMatrix($("#matrix"), APP.M); thought("This run was loaded from your saved companies. The live log isn't stored, but the map and answers are. Click any node or cell."); $("#toReport").hidden = false; $("#stopBtn").hidden = true; $("#liveTag").className = "live off"; $("#liveTag").innerHTML = "<i></i>Saved"; $("#hudBrand").textContent = APP.M.profile.name; setRing(liveScore(APP.M)); }
+  if (!$("#feed").children.length && APP.M) { setupHud(); gInit(); rebuildMap(APP.M); renderMatrix($("#matrix"), APP.M); fillHud(APP.M); $("#hudPhase").textContent = APP.M.finishedAt ? "Finished" : "Paused"; thought("<b>This is a saved run.</b> The live log isn't kept, but every answer, source and rival is on the map. Click any node, or a cell in the grid below it."); $("#toReport").hidden = false; $("#stopBtn").hidden = true; $("#liveTag").className = "live off"; $("#liveTag").innerHTML = "<i></i>Saved"; $("#hudBrand").textContent = APP.M.profile.name; setRing(liveScore(APP.M)); }
 });
 function rebuildMap(M) {
   gNode("you", "you", M.profile.name);
@@ -925,7 +975,16 @@ function rebuildMap(M) {
   });
   Object.entries(M.inspections).forEach(([u, r]) => { const sid = sidOf(u); gNode(sid, "source", host(r.final || u), { url: u, inspected: true, you: !!r.you, rivals: (r.rivals || []).length }); if (r.you) gLink(sid, "you", "on", "#FF7A1A"); (r.rivals || []).forEach((rv) => gLink(sid, "r:" + norm(rv), "on", "#E2483D")); });
 }
-$("#rerun").addEventListener("click", async () => { const M = APP.M; if (!M) return; if (await lockedElsewhere(M.slug)) return toast("This brand is running in another tab right now."); startOnboarding(M.profile.site, DATA.company(M.slug) || { profile: M.profile, questions: M.questions.map((q) => ({ ...q, on: true })), engines: M.engines, samples: M.samples }); });
+// The free trial is one check: once it's done, paying starts the plan today instead of at the trial's end.
+const trialDone = (b) => b?.plan?.status === "trialing" && b.limits?.checks != null && (b.used?.checks || 0) >= b.limits.checks;
+// Before re-running: a read-only organisation, or a free trial whose one check is done, gets the pay pop-up instead of the prompt editor.
+async function runBlocked() {
+  if (!DATA.server()) return false; await refreshBilling(); const b = APP.cfg.billing; if (!b) return false;
+  if (b.mode === "read") { upgradeModal({ code: "billing_read_only", error: b.plan?.status === "trialing" ? "Your 7-day trial has ended. Choose a plan to keep running checks. Your reports stay readable." : "Choose a plan to run your prompts again. Your reports stay readable." }); return true; }
+  if (trialDone(b)) { upgradeModal({ code: "plan_limit", trialDone: true, error: "Choose a plan to run your prompts again. Paying now starts your plan today; your reports stay readable." }); return true; }
+  return false;
+}
+$("#rerun").addEventListener("click", async () => { const M = APP.M; if (!M) return; if (await runBlocked()) return; if (await lockedElsewhere(M.slug)) return toast("This brand is running in another tab right now."); startOnboarding(M.profile.site, DATA.company(M.slug) || { profile: M.profile, questions: M.questions.map((q) => ({ ...q, on: true })), engines: M.engines, samples: M.samples }); });
 function goHome() { APP.ctl?.abort(); APP.running = false; OB = null; document.body.classList.remove("sheet-open"); if (APP.M) lockRelease(APP.M.slug); toggleAgent(false); screen("landing"); $("#startUrl").value = ""; paintLanding(); renderRecent(); if (DATA.server()) DATA.refresh().then(paintLanding).catch(() => {}); }
 
 /* ---------- action deck ---------- */
@@ -1015,11 +1074,21 @@ async function ask(q) {
 }
 
 /* =================================================================== SCREENS */
-const SCREENS = ["landing", "auth", "mission", "onboard", "ready", "reportWrap", "team"];
+const SCREENS = ["landing", "auth", "mission", "onboard", "ready", "reportWrap", "team", "billing", "account"];
+// Team, Plans & payment and Account are side pages. Remember the screen you opened them from, so Back returns to it. (Going to "home" instead
+// opens the most recently saved brand, which can be a different one, even one whose check was never finished.)
+const SIDE = ["team", "billing", "account"]; let CAME_FROM = null;
+function backFromSide() {
+  const from = CAME_FROM; CAME_FROM = null;
+  if (from === "reportWrap" && APP.M?.finishedAt) return showReport(DASH.page);
+  if ((from === "ready" || from === "mission") && APP.M) return showRunning();
+  return from === "landing" ? goHome() : home();
+}
 function screen(id) {
+  if (SIDE.includes(id)) { const cur = SCREENS.find((s) => !$("#" + s).hidden); if (cur && !SIDE.includes(cur)) CAME_FROM = cur; }
   SCREENS.forEach((s) => ($("#" + s).hidden = s !== id));
   document.body.classList.add("is-light"); // every screen is light now; the agent console included
-  $$(".modal,.drawer").forEach((x) => x.remove());
+  $$(".modal,.drawer,.ck,.paid,.pf-menu").forEach((x) => x.remove()); document.body.classList.remove("sheet-open");
   scrollTo({ top: 0 });
 }
 const ICONS = {
@@ -1052,6 +1121,8 @@ const ICONS = {
   out: '<path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/>',
   team: '<circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6"/><circle cx="17" cy="9" r="2.5"/><path d="M15.5 14.6c2.4-.3 4.3 1 5 3.9"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l3 3M14 9l2 2"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  card: '<rect x="3" y="5" width="18" height="14" rx="3"/><path d="M3 10h18M7 15h3"/>',
 };
 const icon = (k, s = 16) => `<svg class="ic" viewBox="0 0 24 24" width="${s}" height="${s}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[k] || ""}</svg>`;
 function paintIcons(root = document) { $$("i[data-ic]", root).forEach((el) => { el.outerHTML = icon(el.dataset.ic); }); }
@@ -1075,9 +1146,30 @@ const OB_BACK = { scan: "home", profile: "home", market: "profile", rivals: "mar
 let OB = null;
 const splitList = (s) => String(s || "").split(/,|;|\/|\band\b/).map((x) => x.trim()).filter((x) => x.length > 1).slice(0, 6);
 
+const billingOn = () => !!APP.cfg.billingUi && DATA.server(); // BILLING_ENABLED: billing screens, reminders and the first-run plan page exist only when it is on
+
+/* What the current plan allows, so setup only OFFERS and GENERATES what can be saved. The server enforces the same limits (and stays the
+   authority); this keeps people from generating 25 prompts and then being refused at 15. Unlimited without accounts or when the plan has no limit. */
+const PLANL = {
+  b: () => (DATA.server() ? APP.cfg.billing : null),
+  f: () => PLANL.b()?.report?.features || null,
+  name: () => (PLANL.b()?.plan?.status === "trialing" ? "free trial" : PLANL.b()?.plan?.name || "current"),
+  prompts(active = 0) { const b = PLANL.b(), lim = b?.limits?.questions; if (lim == null) return Infinity; return Math.max(0, lim - Math.max(0, (b.used?.questions || 0) - active)); },
+  rivals() { const c = PLANL.f()?.competitors; return c == null ? Infinity : c; },
+  samples() { const n = PLANL.f()?.samples; return n == null ? 3 : Math.max(1, Math.min(3, n)); },
+  engines(list) { const e = PLANL.f()?.engines; return e ? list.filter((x) => e.includes(x)) : list; },
+  schedules() { return PLANL.f()?.schedules || ["off", "weekly", "daily"]; },
+};
+async function refreshBilling() { if (!DATA.server()) return; try { APP.cfg.billing = await api("GET", "/api/billing"); } catch {} }
+const activeOf = (c) => (c?.questions || []).filter((q) => q.on !== false).length;
+const promptCap = () => PLANL.prompts(activeOf(OB?.saved));
+const promptMsg = () => `Your ${PLANL.name()} plan tracks up to ${promptCap()} prompts. Uncheck one to add another, or upgrade in Plans & payment for more.`;
+const perOpts = () => { const cap = promptCap(), T = Math.max(1, OB.topics.length); if (cap === Infinity) return [2, 3, 4, 5]; const f = [1, 2, 3, 4, 5].filter((k) => k * T <= cap); return f.some((k) => k >= 2) ? f.filter((k) => k >= 2) : f; }; // 2 to 5 as before, down to 1 only when the plan leaves no room for 2
+const effPer = () => { const o = perOpts(); return o.includes(OB.perTopic) ? OB.perTopic : o.length ? o[o.length - 1] : 1; };
+
 async function startOnboarding(url, saved) {
-  APP.ctl?.abort(); APP.ctl = new AbortController(); const sig = APP.ctl.signal; APP.running = false;
-  OB = { url, saved, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(3, saved?.samples || 1)), questions: [], selTopic: null, engines: APP.cfg.engines.filter((e) => e !== "aimode"), gen: false, err: "" };
+  APP.ctl?.abort(); APP.ctl = new AbortController(); const sig = APP.ctl.signal; APP.running = false; await refreshBilling();
+  OB = { url, saved, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(PLANL.samples(), saved?.samples || 1)), questions: [], selTopic: null, engines: PLANL.engines(APP.cfg.engines.filter((e) => e !== "aimode")), gen: false, err: "" };
   screen("onboard"); $("#obSite").textContent = host(url); obRender();
   try {
     let result = null;
@@ -1093,7 +1185,7 @@ async function startOnboarding(url, saved) {
     for (const k of ["identity", "products", "facts"]) p[k] = p[k]?.length ? p[k] : result.profile[k] || [];
     p.personas = p.personas?.length ? p.personas : result.profile.personas?.length ? result.profile.personas : splitList(p.audience);
     OB.profile = p;
-    OB.rivals = (p.competitors || []).map((name) => ({ name }));
+    OB.rivals = (p.competitors || []).slice(0, PLANL.rivals()).map((name) => ({ name }));
     if (saved?.questions?.length) {
       OB.questions = saved.questions.map((q) => ({ topic: q.topic || "General", intent: q.intent, persona: q.persona || "", text: q.text, on: q.on !== false }));
       OB.topics = (saved.topics?.length ? saved.topics : [...new Set(OB.questions.map((q) => q.topic))]).map((t) => (typeof t === "string" ? { name: t } : t));
@@ -1149,7 +1241,7 @@ function obFrame() {
   const s = OB.step;
   if (s === "scan" || s === "profile" || s === "market") return frame(null, "", "");
   if (s === "rivals") {
-    const col = `<div class="fr-col"><div class="fr-colh">Competitors <span>${OB.rivals.length}</span></div>
+    const col = `<div class="fr-col"><div class="fr-colh">Competitors <span>${OB.rivals.length}${PLANL.rivals() === Infinity ? "" : ` of ${PLANL.rivals()} on your plan`}</span></div>
       <form class="fr-add" data-form="rival"><input id="obAdd-rival" placeholder="Add competitor" aria-label="Add competitor" autocomplete="off"><button type="submit" aria-label="Add">${icon("plus", 14)}</button></form>
       <div class="fr-row">${letterAv(OB.profile.name, "you")}<span>${esc(OB.profile.name)}</span><span class="youtag">You</span></div>
       ${OB.rivals.map((r, i) => `<div class="fr-row">${letterAv(r.name)}<span>${esc(r.name)}</span><button type="button" class="fr-x" data-rvx="${i}" aria-label="Remove ${esc(r.name)}">${icon("trash", 14)}</button></div>`).join("")}</div>`;
@@ -1215,7 +1307,7 @@ function sheetProfile() {
 }
 function dbar(parts) { return `<div class="dbar">${parts.map(([v, c]) => `<i style="flex:${Math.max(0.0001, v)};background:${c}"></i>`).join("")}</div>`; }
 function sheetFocus() {
-  const d = FOCUS[OB.focus][2], n = OB.topics.length * OB.perTopic;
+  const d = FOCUS[OB.focus][2], cap = promptCap(), n = Math.min(OB.topics.length * effPer(), cap), perO = perOpts();
   return {
     body: `<button type="button" class="sheet-back" data-act="closeSheet">${icon("arrow", 14)}Back</button>
     <div class="sheet-narrow"><h2 id="obSheetTitle">What should your prompts focus on?</h2><p class="sub">We'll include a mix of questions, with more emphasis on your selection.</p>
@@ -1226,12 +1318,12 @@ function sheetFocus() {
     <div class="fsec"><b>Intent distribution</b><span>Where buyers are in their journey</span></div>
     ${dbar([[d[0], "var(--i-info)"], [d[1], "var(--i-comm)"], [d[2], "var(--i-trans)"]])}
     <div class="dleg"><span><i style="background:var(--i-info)"></i>Informational <b>${d[0]}%</b></span><span><i style="background:var(--i-comm)"></i>Commercial <b>${d[1]}%</b></span><span><i style="background:var(--i-trans)"></i>Transactional <b>${d[2]}%</b></span></div>
-    <div class="fsec"><b>Prompts per topic</b><span>${OB.topics.length} topics</span></div>
-    <div class="seg">${[2, 3, 4, 5].map((k) => `<button type="button" data-per="${k}" aria-pressed="${OB.perTopic === k}">${k}</button>`).join("")}</div>
+    <div class="fsec"><b>Prompts per topic</b><span>${OB.topics.length} topics${cap === Infinity ? "" : ` · your ${esc(PLANL.name())} plan tracks up to ${cap} prompts`}</span></div>
+    ${perO.length ? `<div class="seg">${perO.map((k) => `<button type="button" data-per="${k}" aria-pressed="${effPer() === k}">${k}</button>`).join("")}</div>` : `<p class="muted">Your ${esc(PLANL.name())} plan tracks up to ${cap} prompts, fewer than your ${OB.topics.length} topics. Go back and remove some topics.</p>`}
     <div class="fsec"><b>Answers per prompt</b><span>AI answers vary run to run. Asking more than once averages the luck out (more cost)</span></div>
-    <div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samples="${k}" aria-pressed="${OB.samples === k}">${k}×</button>`).join("")}</div>
+    <div class="seg">${[1, 2, 3].filter((k) => k <= PLANL.samples()).map((k) => `<button type="button" data-samples="${k}" aria-pressed="${OB.samples === k}">${k}×</button>`).join("")}</div>
     <div class="fsec"><b>AI engines</b><span>Where the prompts run, live with web search</span></div>
-    <div class="engs">${ENG_ALL.map((e) => { const av = APP.cfg.engines.includes(e), on = OB.engines.includes(e); return `<label class="engc${av ? "" : " na"}${on ? " on" : ""}"><input type="checkbox" data-eng="${e}" ${on ? "checked" : ""} ${av ? "" : "disabled"}><span class="edot" style="background:${ENGC[e]}"></span><b>${ENG[e]}</b>${av ? "" : `<span class="muted">Add ${ENG_KEY[e]}</span>`}</label>`; }).join("")}</div>
+    <div class="engs">${ENG_ALL.map((e) => { const pl = PLANL.engines([e]).length === 1, av = APP.cfg.engines.includes(e) && pl, on = OB.engines.includes(e); return `<label class="engc${av ? "" : " na"}${on ? " on" : ""}"><input type="checkbox" data-eng="${e}" ${on ? "checked" : ""} ${av ? "" : "disabled"}><span class="edot" style="background:${ENGC[e]}"></span><b>${ENG[e]}</b>${av ? "" : !pl ? `<span class="muted">Not on your plan</span>` : `<span class="muted">Add ${ENG_KEY[e]}</span>`}</label>`; }).join("")}</div>
     </div>`,
     foot: `<span class="muted">About ${n} prompts × ${OB.engines.length} engine${OB.engines.length === 1 ? "" : "s"}${OB.samples > 1 ? ` × ${OB.samples}` : ""} = ${n * OB.engines.length * OB.samples} answers per check</span><span class="sp"></span><button class="btn" type="button" data-act="genPrompts" ${n && OB.engines.length ? "" : 'aria-disabled="true"'}>Generate prompts</button>`,
   };
@@ -1242,7 +1334,7 @@ function sheetReview() {
   const pers = [...new Set([...(OB.profile.personas || []), ...qs.map((q) => q.persona).filter(Boolean)])];
   const ic = Object.keys(INTENTS).map((k) => on.filter((q) => q.intent === k).length);
   const tot = Math.max(1, ic.reduce((a, b) => a + b, 0));
-  const jobs = on.length * OB.engines.length * OB.samples;
+  const jobs = on.length * OB.engines.length * OB.samples, cap = promptCap();
   return {
     body: `<h2 id="obSheetTitle">Review your prompt set</h2><p class="sub">Review the prompts generated for your topics. Uncheck any that should not run.</p>
     <div class="rv-grid">
@@ -1262,7 +1354,7 @@ function sheetReview() {
         ${OB.engines.map((e) => `<div class="cov-row"><span><i class="dotc" style="background:${ENGC[e]}"></i>${ENG[e]}</span><b>${on.length}</b></div>`).join("")}
       </div>
     </div>`,
-    foot: `<span class="muted">Tracking <b>${on.length} prompts</b> · ${jobs} live AI answers per run</span><span class="sp"></span><button class="btn ghost" type="button" data-act="closeSheet">Cancel</button><button class="btn" type="button" data-act="launch" ${jobs ? "" : 'aria-disabled="true"'}>Run analysis</button>`,
+    foot: `<span class="muted">Tracking <b>${on.length}${cap === Infinity ? "" : " of " + cap} prompts</b> · ${jobs} live AI answers per run</span><span class="sp"></span><button class="btn ghost" type="button" data-act="closeSheet">Cancel</button><button class="btn" type="button" data-act="launch" ${jobs && on.length <= cap ? "" : 'aria-disabled="true"'}>Run analysis</button>`,
   };
 }
 
@@ -1292,19 +1384,23 @@ async function obTopics(more) {
   if (OB.step === "topicsGen" || OB.step === "topics") { OB.step = "topics"; obRender(); }
 }
 async function obPrompts(more) {
+  if (more && OB.questions.length >= promptCap()) return toast(esc(promptMsg()));
   if (OB.gen) return; OB.gen = true; if (!more) OB.questions = []; OB.selTopic = null; obRender();
   const topics = OB.topics.map((t) => t.name), exclude = OB.questions.map((q) => q.text); let buf = "";
   const pick = (t) => topics.find((x) => norm(x) === norm(t)) || topics.find((x) => norm(t).includes(norm(x)) || norm(x).includes(norm(t))) || topics[0];
   const take = (line) => {
     const m = line.split("|").map((x) => x.trim()); if (m.length < 2) return;
+    if (OB.questions.length >= promptCap()) return; // the plan's allowance: generate no more than can be saved
     let q;
     if (m.length >= 4) q = { topic: pick(m[0]), intent: m[1].toLowerCase().replace(/[^a-z]/g, ""), persona: m[2], text: m.slice(3).join(" | ") };
     else q = { topic: m.length === 3 ? pick(m[0]) : topics[0], intent: (m.length === 3 ? m[1] : m[0]).toLowerCase().replace(/[^a-z]/g, ""), persona: "", text: m[m.length - 1] };
     q.text = q.text.replace(/^["“]|["”]$/g, "").trim(); if (!INTENTS[q.intent]) q.intent = "commercial";
     if (!q.text || q.text.length < 8 || OB.questions.some((x) => norm(x.text) === norm(q.text))) return;
+    // Exactly what was asked for: the per-topic number chosen and never more than the plan tracks, whatever the AI returns.
+    if (OB.questions.filter((x) => x.topic === q.topic).length >= effPer() || OB.questions.filter((x) => x.on !== false).length >= promptCap()) return;
     q.on = true; OB.questions.push(q); if (!OB.selTopic) OB.selTopic = q.topic; obRender();
   };
-  try { await stream("/api/write", { kind: "topicQuestions", data: { profile: obProfile(), topics, perTopic: OB.perTopic, focus: OB.focus, exclude } }, { delta: (d) => { buf += d.text; const ls = buf.split("\n"); buf = ls.pop(); ls.forEach(take); }, final: () => { if (buf.trim()) take(buf); } }, APP.ctl.signal); }
+  try { await stream("/api/write", { kind: "topicQuestions", data: { profile: obProfile(), topics, perTopic: effPer(), focus: OB.focus, exclude } }, { delta: (d) => { buf += d.text; const ls = buf.split("\n"); buf = ls.pop(); ls.forEach(take); }, final: () => { if (buf.trim()) take(buf); } }, APP.ctl.signal); }
   catch (e) { if (APP.ctl.signal.aborted) return; toast(esc(e.message)); }
   OB.gen = false;
   if (!OB.questions.length) { OB.step = "focus"; obRender(); return toast("The AI didn't return any prompts. Try again in a minute."); }
@@ -1324,18 +1420,18 @@ $("#onboard").addEventListener("keydown", (e) => {
 });
 $("#onboard").addEventListener("change", (e) => {
   const t = e.target;
-  if (t.dataset.pq != null) { OB.questions[+t.dataset.pq].on = t.checked; obRender(); }
-  if (t.dataset.pqall != null) { const sel = OB.reviewTopic; OB.questions.filter((q) => !sel || q.topic === sel).forEach((q) => (q.on = t.checked)); obRender(); }
-  if (t.dataset.tpon != null) { OB.questions.filter((q) => q.topic === t.dataset.tpon).forEach((q) => (q.on = t.checked)); obRender(); }
+  if (t.dataset.pq != null) { if (t.checked && OB.questions.filter((q) => q.on).length >= promptCap()) { t.checked = false; return toast(esc(promptMsg())); } OB.questions[+t.dataset.pq].on = t.checked; obRender(); }
+  if (t.dataset.pqall != null) { const sel = OB.reviewTopic; let cut = false; OB.questions.filter((q) => !sel || q.topic === sel).forEach((q) => { if (t.checked && !q.on && OB.questions.filter((x) => x.on).length >= promptCap()) { cut = true; return; } q.on = t.checked; }); if (cut) toast(esc(promptMsg())); obRender(); }
+  if (t.dataset.tpon != null) { let cut = false; OB.questions.filter((q) => q.topic === t.dataset.tpon).forEach((q) => { if (t.checked && !q.on && OB.questions.filter((x) => x.on).length >= promptCap()) { cut = true; return; } q.on = t.checked; }); if (cut) toast(esc(promptMsg())); obRender(); }
   if (t.dataset.eng) { OB.engines = t.checked ? ENG_ALL.filter((x) => x === t.dataset.eng || OB.engines.includes(x)) : OB.engines.filter((x) => x !== t.dataset.eng); obRender(); }
 });
 $("#onboard").addEventListener("submit", (e) => {
   e.preventDefault(); const f = e.target.dataset.form, inp = e.target.querySelector("input"), v = inp.value.trim();
   if (f === "market") { if (!v) return inp.focus(); OB.profile.market = v; return obGo("rivals"); }
   if (!v) return inp.focus();
-  if (f === "rival" && !OB.rivals.some((r) => norm(r.name) === norm(v))) OB.rivals.push({ name: v, added: true });
+  if (f === "rival" && !OB.rivals.some((r) => norm(r.name) === norm(v))) { if (OB.rivals.length >= PLANL.rivals()) return toast(`Your ${esc(PLANL.name())} plan tracks up to ${PLANL.rivals()} competitors per brand. Remove one to add another, or upgrade in Plans &amp; payment.`); OB.rivals.push({ name: v, added: true }); }
   if (f === "topic" && !OB.topics.some((t) => norm(t.name) === norm(v))) OB.topics.push({ name: v });
-  if (f === "prompt" && !OB.questions.some((q) => norm(q.text) === norm(v))) OB.questions.push({ topic: OB.reviewTopic || OB.topics[0]?.name || "General", intent: "commercial", persona: "", text: v, on: true });
+  if (f === "prompt" && !OB.questions.some((q) => norm(q.text) === norm(v))) { if (OB.questions.filter((q) => q.on).length >= promptCap()) return toast(esc(promptMsg())); OB.questions.push({ topic: OB.reviewTopic || OB.topics[0]?.name || "General", intent: "commercial", persona: "", text: v, on: true }); }
   inp.value = ""; obRender(); setTimeout(() => (document.getElementById(inp.id) || e.target.querySelector("input"))?.focus(), 0);
 });
 $("#onboard").addEventListener("click", (e) => {
@@ -1368,6 +1464,7 @@ $("#onboard").addEventListener("click", (e) => {
 async function obLaunch() {
   const profile = obProfile(), qs = OB.questions.filter((q) => q.on), r = OB.scan;
   if (!qs.length) return toast("Pick at least one prompt.");
+  if (qs.length > promptCap()) return toast(esc(promptMsg()));
   if (!OB.engines.length) { obSheet("focus"); return toast("Pick at least one AI engine."); }
   const slug = slugify(profile.name);
   if (await lockedElsewhere(slug)) return toast("This brand is running in another tab right now.");
@@ -1384,7 +1481,7 @@ async function obLaunch() {
   const sig = missionUI(profile.name);
   rebuildMap(M); bump("q", M.questions.length); finishPhase("site"); finishPhase("questions"); renderMatrix($("#matrix"), M);
   thought(`<b>Setup approved for ${esc(profile.name)}.</b> ${M.questions.length} prompts across ${OB.topics.length} topics, ${profile.competitors.length} competitors, ${M.engines.map((e) => ENG[e]).join(", ")}. Saved to your companies.`, "Everything below runs on the profile, rivals and prompts you just approved.");
-  add(`<div class="hd"><span>Tracked prompts</span><span class="sp"></span><span class="mono" style="font-size:.7rem">${M.questions.length}</span></div><div class="ql">${M.questions.map((q) => `<div><span>${esc(q.intent)}</span>${esc(q.text)}</div>`).join("")}</div>`, "card");
+  add(`<div class="hd"><span>Tracked prompts</span><span class="sp"></span><span class="mono" style="font-size:.7rem">${M.questions.length}</span></div><div class="ql">${M.questions.map((q) => `<div><span class="it it-${esc(q.intent || "")}">${esc(INTENTS[q.intent]?.[0] || q.intent || "")}</span>${esc(q.text)}</div>`).join("")}</div>`, "card");
   showRunning();
   try { await runPipeline(M, sig); } catch (err) { missionError(err, sig); }
 }
@@ -1479,7 +1576,7 @@ const METRICS = [
   ["Used as source", "Share of answers that cite a page on your own domain.", "Answers citing your domain ÷ all answers", "Peec Used as source · Otterly Domain Coverage"],
   ["Citation share", "Your domain's share of every citation AI used.", "Citations of your domain ÷ all citations", "Profound Citation Share"],
   ["Accuracy", "Share of checkable claims AI makes about you that are correct.", "Accurate claims ÷ (accurate + wrong + outdated)", "Profound Accuracy Score"],
-  ["On cited pages", "Of the pages AI cited that the agent opened, how many mention you.", "Pages naming you ÷ pages opened", "White Petal"],
+  ["On cited pages", "Of the pages AI cited that the agent opened, how many mention you.", "Pages naming you ÷ pages opened", "Perfstaq"],
 ];
 function howModal() {
   modal(`<span class="status">Methodology</span><h3>How these numbers are measured</h3><p class="muted">Every number comes from this run's live answers: each prompt asked on each engine with web search on, your name left out of the prompt.</p>
@@ -1627,7 +1724,7 @@ function dashRender() {
   $("#rerun").hidden = !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
-  $("#navTeam").hidden = !DATA.server(); paintAccount();
+  $("#navTeam").hidden = !DATA.server(); $("#navBilling").hidden = !billingOn(); $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
   const m = metrics(M, DASH.eng), pm = prevMetrics(M, DASH.eng);
   $("#pages").innerHTML = `<div class="pg">${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
   if (DASH.page === "actions") drawDeck();
@@ -1641,7 +1738,7 @@ const PAGE = {
     const h = !y?.mentions ? "AI doesn't recommend you yet" : m.rank === 1 ? "You're #1 in AI visibility" : `You're #${m.rank} in AI visibility`;
     const p = !y?.mentions ? `${lead ? `${esc(lead.name)} appears in ${pct(lead.vis)} of answers. ` : ""}You weren't named in any of the ${m.n} answers.` : m.rank === 1 ? `You appear in more AI answers than any competitor, and are often the default choice.` : `${esc(lead.name)} appears in ${pct(lead.vis)} of answers; you appear in ${pct(y.vis)}.`;
     const acts = DECK.slice(0, 3);
-    return head(h, p) + kpiHtml(M, m, pm) + trendHtml(M) + referralHtml(M) + `<div class="grid2">${visChartHtml(M, m)}${brandsTableHtml(M, m)}</div>`
+    return head(h, p) + kpiHtml(M, m, pm) + (trendPoints(M).length < 2 ? trendHtml(M) : "") + referralHtml(M) + `<div class="grid2">${visChartHtml(M, m)}${brandsTableHtml(M, m)}</div>`
       + `<div class="grid2"><div class="card"><div class="card-h"><b>Visibility by engine</b></div>${m.byEngine.map((x) => { const top = metrics(M, x.e).brands.find((b) => !b.you); return `<div class="erow"><span class="en">${engDot(x.e)}${ENG[x.e]}</span><span class="eb"><i style="width:${(100 * (x.vis || 0)).toFixed(0)}%"></i></span><b>${pct(x.vis, 0)}</b><span class="muted el">${top ? `Leader: ${esc(top.name)} ${pct(top.vis, 0)}` : ""}</span></div>`; }).join("")}</div>
         <div class="card"><div class="card-h"><b>Top recommended actions</b><span class="sp"></span><button class="lnk" type="button" data-page="actions">${DECK.length} actions ${icon("chev", 12)}</button></div>${acts.length ? acts.map((c) => `<button type="button" class="arow" data-page="actions" data-card="${esc(c.id)}"><span class="ak">${esc(c.kind)}</span><b>${esc(c.title)}</b><span class="muted">${esc(c.why)}</span></button>`).join("") : '<p class="muted pad">Nothing left to do. Run again next week.</p>'}</div></div>`
       + chatCardsHtml(M, m) + topDomainsHtml(M, m);
@@ -1881,7 +1978,7 @@ function trendPoints(M) {
 }
 function trendHtml(M) {
   const pts = trendPoints(M);
-  if (pts.length < 2) return `<div class="card note"><div class="pad">${icon("rank", 16)} <b>Trends start with your second check.</b> <span class="muted">${DATA.server() ? `Turn on weekly checks in <button type="button" class="lnk" data-page="settings">Settings</button> and White Petal re-runs every prompt on its own.` : "Run the check again next week to see what moved."}</span></div></div>`;
+  if (pts.length < 2) return `<div class="card note"><div class="pad">${icon("rank", 16)} <b>Trends start with your second check.</b> <span class="muted">${DATA.server() ? `Turn on weekly checks in <button type="button" class="lnk" data-page="settings">Settings</button> and Perfstaq re-runs every prompt on its own.` : "Run the check again next week to see what moved."}</span></div></div>`;
   const W = 620, H = 170, L = 36, B = 22, max = Math.max(0.1, ...pts.flatMap((p) => [p.visibility || 0, p.leader?.vis || 0]));
   const top = Math.min(1, Math.ceil(max * 5) / 5);
   const X = (i) => L + (i * (W - L - 10)) / (pts.length - 1), Y = (v) => 8 + (1 - (v || 0) / top) * (H - B - 8);
@@ -1942,7 +2039,7 @@ Object.assign(PAGE, {
     const cta = [];
     if (!gsc) cta.push(`<div class="cta">${icon("link", 16)}<div><b>Connect Google Search Console</b><span class="muted">Free. Shows where you rank on Google for these queries, with clicks.</span></div><button type="button" class="btn ghost sm" data-page="settings">Connect</button></div>`);
     if (!bing) cta.push(`<div class="cta">${icon("link", 16)}<div><b>Connect Bing Webmaster Tools</b><span class="muted">Free. ChatGPT search leans on Bing's index; this shows your Bing positions.</span></div><button type="button" class="btn ghost sm" data-page="settings">Connect</button></div>`);
-    if (!APP.cfg.serp) cta.push(`<div class="cta">${icon("info", 16)}<div><b>Live Google top-10 checks are off</b><span class="muted">Ask your White Petal admin to turn on live Google checks to see your top-10 position for any query.</span></div></div>`);
+    if (!APP.cfg.serp) cta.push(`<div class="cta">${icon("info", 16)}<div><b>Live Google top-10 checks are off</b><span class="muted">Ask your Perfstaq admin to turn on live Google checks to see your top-10 position for any query.</span></div></div>`);
     return head("Search rankings", "AI answers start with a web search. These are the searches AI ran for your prompts, and where you rank for them. Ranking on page one is still the biggest single lever for being cited.")
       + (cta.length && DATA.server() ? `<div class="ctas">${cta.join("")}</div>` : "")
       + `<div class="kpis k4"><div class="kpi"><span class="kl">Queries AI searched</span><span class="kv">${Q.size}</span></div><div class="kpi"><span class="kl">Search Console clicks (28d)</span><span class="kv">${gsc?.totals ? gsc.totals.clicks.toLocaleString() : "–"}</span></div><div class="kpi"><span class="kl">Avg Google position</span><span class="kv">${gsc?.totals?.position || "–"}</span></div><div class="kpi"><span class="kl">Top 10 on Google</span><span class="kv">${checked.length ? `${inTop.length}<small>/${checked.length} checked</small>` : "–"}</span></div></div>`
@@ -1954,21 +2051,21 @@ Object.assign(PAGE, {
   },
   settings(M) {
     const ws = DATA.ws(M.slug);
-    if (!DATA.server()) return head("Settings", "Scheduling, integrations and history need an account.") + `<div class="card pad"><p>This copy of White Petal is running without a database, so everything is kept in this browser. Deploy it on Google Cloud (see <code>infra/README</code>) or set <code>DATABASE_URL</code>, and you get accounts, weekly checks that run on their own, trend history and integrations with Search Console, GA4, Bing, Cloudflare and Slack.</p></div>`;
+    if (!DATA.server()) return head("Settings", "Scheduling, integrations and history need an account.") + `<div class="card pad"><p>This copy of Perfstaq is running without a database, so everything is kept in this browser. Deploy it on Google Cloud (see <code>infra/README</code>) or set <code>DATABASE_URL</code>, and you get accounts, weekly checks that run on their own, trend history and integrations with Search Console, GA4, Bing, Cloudflare and Slack.</p></div>`;
     const d = APP.ints[M.slug]; const ints = d?.integrations || [];
     const sched = ws?.schedule || "off", samples = ws?.samples || 1;
     const c = DATA.company(M.slug) || {};
     const prompts = (c.questions || M.questions).filter((q) => q.on !== false).length;
     const moveTo = APP.orgs.filter((o) => o.slug !== APP.org?.slug && ["owner", "admin"].includes(o.role));
     const roleNote = !canEdit() ? `<div class="card note"><div class="pad">${icon("info", 16)} <b>You're a viewer in ${esc(APP.org?.name || "this organisation")}.</b> <span class="muted">You can see everything here; an editor or admin can change it.</span></div></div>` : "";
-    const TABS = [["checks", "Checks", "When White Petal asks AI again"], ["tracked", "What's tracked", "Prompts and competitors"], ["integrations", "Integrations", d ? `${ints.filter((i) => i.connected).length} connected` : "Search, site, alerts"], ["brand", "Brand", "Move or delete"]];
+    const TABS = [["checks", "Checks", "When Perfstaq asks AI again"], ["tracked", "What's tracked", "Prompts and competitors"], ["integrations", "Integrations", d ? `${ints.filter((i) => i.connected).length} connected` : "Search, site, alerts"], ["brand", "Brand", "Move or delete"]];
     const tab = TABS.some((t) => t[0] === DASH.setTab) ? DASH.setTab : "checks";
     const row = (title, hint, ctl) => `<div class="st-row"><div class="st-l"><b>${title}</b>${hint ? `<span>${hint}</span>` : ""}</div><div class="st-c">${ctl}</div></div>`;
     const when = ws?.running ? "A check is running now." : ws?.nextRunAt ? `Next check ${new Date(ws.nextRunAt).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}.` : "No automatic checks scheduled.";
     let body = "";
     if (tab === "checks") body = `<div class="card st-card">
-        ${row("Automatic checks", "Re-runs every prompt on the server. You can close the tab.", `<div class="seg">${[["off", "Off"], ["weekly", "Weekly"], ["daily", "Daily"]].map(([k, l]) => `<button type="button" data-sched="${k}" aria-pressed="${sched === k}">${l}</button>`).join("")}</div>`)}
-        ${row("Answers per prompt", "Asking more than once averages out AI's run-to-run variation.", `<div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samp="${k}" aria-pressed="${samples === k}">${k}×</button>`).join("")}</div>`)}
+        ${row("Automatic checks", "Re-runs every prompt on the server. You can close the tab.", `<div class="seg">${[["off", "Off"], ["weekly", "Weekly"], ["daily", "Daily"]].map(([k, l]) => `<button type="button" data-sched="${k}" aria-pressed="${sched === k}" ${PLANL.schedules().includes(k) ? "" : `disabled title="Not on your ${esc(PLANL.name())} plan"`}>${l}</button>`).join("")}</div>`)}
+        ${row("Answers per prompt", "Asking more than once averages out AI's run-to-run variation.", `<div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samp="${k}" aria-pressed="${samples === k}" ${k <= PLANL.samples() ? "" : `disabled title="Not on your ${esc(PLANL.name())} plan"`}>${k}×</button>`).join("")}</div>`)}
         ${row("Run a check now", `${when}${ws?.lastRunAt ? ` Last check ${new Date(ws.lastRunAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}.` : ""}`, `<button type="button" class="btn ghost sm" data-queue>Queue a check</button>`)}
       </div>
       <p class="st-foot">Each check collects about ${prompts * M.engines.length * samples} AI answers: ${prompts} prompts × ${M.engines.length} engine${M.engines.length === 1 ? "" : "s"} (${M.engines.map((e) => ENG[e]).join(", ")}) × ${samples}.</p>`;
@@ -1978,7 +2075,7 @@ Object.assign(PAGE, {
         ${row("Website", esc(host(M.profile.site || "")), `<button type="button" class="btn ghost sm" data-editsetup>Edit prompts and competitors</button>`)}
       </div>`;
     if (tab === "integrations") {
-      const GROUPS = [["Search and traffic", "Where you rank and who visits.", ["google", "bing", "serp"]], ["Your site", "Help AI find and read your pages.", ["cloudflare", "indexnow", "entity"]], ["Alerts", "Hear about changes without opening White Petal.", ["slack"]]];
+      const GROUPS = [["Search and traffic", "Where you rank and who visits.", ["google", "bing", "serp"]], ["Your site", "Help AI find and read your pages.", ["cloudflare", "indexnow", "entity"]], ["Alerts", "Hear about changes without opening Perfstaq.", ["slack"]]];
       const seen = new Set();
       const grp = GROUPS.map(([t, h, ids]) => { const list = ints.filter((i) => ids.includes(i.id)); list.forEach((i) => seen.add(i.id)); return list.length ? `<div class="st-grp"><div class="st-gh"><b>${t}</b><span>${h}</span></div><div class="ints">${list.map((i) => intCard(M, i)).join("")}</div></div>` : ""; }).join("");
       const rest = ints.filter((i) => !seen.has(i.id));
@@ -1989,7 +2086,7 @@ Object.assign(PAGE, {
         ${canAdmin() && moveTo.length ? row("Move to another organisation", "Brings its history, prompts and integrations along.", `<div class="st-inline"><select id="moveOrg" class="sel">${moveTo.map((o) => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join("")}</select><button type="button" class="btn ghost sm" data-move>Move</button></div>`) : ""}
         ${row("Delete this brand", `Removes ${esc(M.profile.name)}, its checks and history. This can't be undone.`, `<button type="button" class="btn ghost sm st-danger" id="delBrand" data-del>Delete brand</button>`)}
       </div>`;
-    return head("Settings", `How White Petal tracks ${esc(M.profile.name)}.`) + roleNote
+    return head("Settings", `How Perfstaq tracks ${esc(M.profile.name)}.`) + roleNote
       + `<div class="st"><nav class="st-nav" aria-label="Settings sections">${TABS.map(([k, l, h]) => `<button type="button" data-settab="${k}" aria-current="${k === tab}"><b>${l}</b><span>${h}</span></button>`).join("")}
           <button type="button" class="st-team" data-openteam>${icon("team", 15)}<span><b>Team &amp; keys</b><span>For every brand in ${esc(APP.org?.name || "this team")}</span></span></button></nav>
         <div class="st-body">${body}</div></div>`;
@@ -2001,7 +2098,7 @@ function intCard(M, i) {
   const fields = (i.fields || []).filter((f) => !(i.id === "google")).map((f) => `<label class="af sm"><span>${esc(f.label)}</span><input data-f="${esc(f.key)}" type="${f.secret ? "password" : "text"}" placeholder="${esc(f.secret && i.connected ? "•••••••• (saved)" : f.placeholder || "")}" value="${esc(f.secret ? "" : i.config?.[f.key] || "")}" autocomplete="off"></label>`).join("");
   let body = "";
   if (i.id === "google") {
-    if (!i.available) body = `<p class="muted sm">Google sign-in is not set up on this server yet. Ask your White Petal admin to turn it on.</p>`;
+    if (!i.available) body = `<p class="muted sm">Google sign-in is not set up on this server yet. Ask your Perfstaq admin to turn it on.</p>`;
     else if (!i.connected) body = `<a class="btn sm" href="/api/oauth/google/start?ws=${encodeURIComponent(M.slug)}">Connect with Google</a>`;
     else body = `<div class="gprops" data-gprops><button type="button" class="btn ghost sm" data-loadprops>Choose properties</button><span class="muted sm">Search Console: ${esc(i.config?.gscProperty || "not chosen")} · GA4: ${esc(i.config?.ga4PropertyId || "not chosen")}</span></div>`;
   } else body = `<div class="ifields">${fields}</div>`;
@@ -2024,7 +2121,7 @@ $("#reportWrap").addEventListener("click", async (e) => {
     if (t.closest("[data-openteam]")) return openTeam();
     const sc = t.closest("[data-sched]"); if (sc) { await DATA.patch(slug, { schedule: sc.dataset.sched }); toast(sc.dataset.sched === "off" ? "Automatic checks are off." : `${sc.dataset.sched === "daily" ? "Daily" : "Weekly"} checks are on.`); return dashRender(); }
     const sp = t.closest("[data-samp]"); if (sp) { await DATA.patch(slug, { samples: +sp.dataset.samp }); return dashRender(); }
-    if (t.closest("[data-queue]")) { await DATA.patch(slug, { runNow: true }); toast("Queued. The server starts it within about 10 minutes, so you can close this tab. Results appear here."); return dashRender(); }
+    if (t.closest("[data-queue]")) { if (await runBlocked()) return; await DATA.patch(slug, { runNow: true }); toast("Queued. The server starts it within about 10 minutes, so you can close this tab. Results appear here."); return dashRender(); }
     if (t.closest("[data-editsetup]")) { const c = DATA.company(slug); return startOnboarding(M.profile.site, c || { profile: M.profile, questions: M.questions.map((q) => ({ ...q, on: true })), engines: M.engines }); }
     const del = t.closest("[data-del]");
     if (del) { if (del.dataset.armed !== "1") { del.dataset.armed = "1"; del.textContent = "Click again to delete everything"; del.classList.add("danger"); return; } await api("DELETE", `/api/workspaces/${encodeURIComponent(slug)}`); await DATA.refresh(); APP.M = null; toast("Brand deleted."); return home(); }
@@ -2130,19 +2227,566 @@ $("#reportWrap").addEventListener("click", async (e) => {
 
 /* =================================================================== TEAM
    The organisation: people and roles, invites, its own AI keys, the monthly budget and usage, the audit log.
-   Operators (the people who run White Petal for clients) also create organisations and can open any of them. */
+   Operators (the people who run Perfstaq for clients) also create organisations and can open any of them. */
 const ROLE_LABEL = { owner: "Owner", admin: "Admin", editor: "Editor", viewer: "Viewer" };
 const ROLE_HELP = { admin: "people, keys, integrations, deleting brands", editor: "runs checks, edits prompts, writes drafts", viewer: "sees dashboards and reports, can ask the agent" };
 const TEAM = { d: null, audit: null, adminOrgs: null, lastLink: null };
 const fmtDay = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "–");
 const fmtWhen = (d) => (d ? new Date(d).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "–");
 const usd = (v) => (v == null ? "–" : `$${Number(v).toFixed(2)}`);
+/* =================================================================== BILLING + ACCOUNT
+   Two screens, on purpose:
+   - PLANS & PAYMENT (#billing): only the plans and the payment method. Pick a plan, connect a payment method, change or cancel.
+   - ACCOUNT (#account), in the normal app: all the records. Plan and status, usage against the plan (the server's reader compares recorded
+     usage with the plan from the database), what is included, and the activity timeline.
+   Everything starts with a 7-day free trial and no card. Picking a plan puts the trial on that plan; connecting a payment method during
+   the trial costs nothing until it ends, then the plan is charged automatically. The server decides everything; buttons only ask. */
+const BILL = { b: null, cat: null, hist: null, admin: null, ccy: null };
+const guessCcy = () => (/Kolkata|Calcutta/.test(Intl.DateTimeFormat().resolvedOptions().timeZone || "") ? "INR" : "USD");
+const money = (minor, ccy) => new Intl.NumberFormat(undefined, { style: "currency", currency: ccy, maximumFractionDigits: 0 }).format(minor / 100);
+// What Razorpay actually charges: the price plus GST for INR (rates from the server), to the paisa.
+const taxRate = (ccy) => BILL.cat?.taxRates?.[ccy] || 0;
+const charged = (minor, ccy) => Math.round(minor * (1 + taxRate(ccy)));
+const moneyExact = (minor, ccy) => new Intl.NumberFormat(undefined, { style: "currency", currency: ccy, minimumFractionDigits: minor % 100 ? 2 : 0, maximumFractionDigits: 2 }).format(minor / 100);
+const withGst = (minor, ccy) => taxRate(ccy) ? `${moneyExact(charged(minor, ccy), ccy)} (${money(minor, ccy)} + ${taxRate(ccy) * 100}% GST)` : money(minor, ccy);
+const dayDiff = (d) => Math.ceil((new Date(d) - Date.now()) / 864e5);
+const SCHED_LABEL = { off: "Manual checks", weekly: "Weekly checks", daily: "Daily checks" };
+const INTEG_LABEL = { bing: "Bing", indexnow: "IndexNow", entity: "Entity check", google: "Search Console + GA4", cloudflare: "Cloudflare", slack: "Slack" };
+const engLabel = (e) => ENG[e] || ({ claude: "Claude" }[e]) || e;
+const plural = (n, w) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const planFacts = (e) => [`${plural(e.brands, "brand")}`, `${e.questions} tracked questions`, `${e.competitors} competitors per brand`, `${plural(e.seats, "seat")}`, `${e.drafts} drafted fixes a month`].map((x) => x.replace("null", "Unlimited"));
+
+function billBanners(b) {
+  const p = b.plan, out = [], r = b.report, owner = APP.org?.role === "owner" && !APP.org?.operatorVisit;
+  const go = owner ? `<button type="button" class="btn sm" data-openbilling>Choose a plan</button>` : "";
+  const add = (tone, title, text, acts = "") => out.push(`<div class="bl-banner ${tone}"><div class="tx"><b>${title}</b><span>${text}</span></div><div class="acts">${acts}</div></div>`);
+  if (b.mode === "read" && p.status === "trialing") add("bad", "Your trial has ended", "New checks, drafts, edits and invites are paused. Your reports stay readable. Choose a plan to carry on.", go);
+  else if (b.mode === "read" && p.status === "past_due") add("bad", "Payment failed: the organisation is read-only", "Razorpay emailed the owner a link to fix it. You can also start again with a new plan; the old subscription is cancelled once the new one is confirmed.", owner ? `<button type="button" class="btn ghost sm" data-paylink>Find payment link</button>${go}` : "");
+  else if (b.mode === "read") add("bad", "This organisation is read-only", "The plan has ended. Your reports stay readable. Choose a plan to carry on.", go);
+  else if (b.mode === "manual") add("warn", "Your last payment failed", `People can keep working, but scheduled checks are paused. Fix it by ${fmtDay(b.graceEndsAt)} to avoid read-only mode.`, owner ? `<button type="button" class="btn ghost sm" data-paylink>Find payment link</button>` : "");
+  else if (p.status === "trialing") { const n = dayDiff(b.trialEndsAt); if (n <= 3) add("warn", `Your trial ends ${n <= 0 ? "today" : n === 1 ? "tomorrow" : "in " + n + " days"}`, "Choose a plan before then to keep running checks.", go); }
+  if (p.status === "active" && p.cancelAtPeriodEnd) add("info", `Your subscription ends on ${fmtDay(b.periodEnd)}`, "You keep full access until then. Subscribe again any time to carry on.", owner ? `<button type="button" class="btn sm" data-openbilling>Choose a plan</button>` : "");
+  if (p.pendingPlan) { const n = BILL.cat?.plans.find((x) => x.code === p.pendingPlan)?.name || p.pendingPlan; add("info", `Moving to ${esc(n)} on ${fmtDay(b.periodEnd)}`, `You keep ${esc(p.name)} until then.`, owner ? `<button type="button" class="btn ghost sm" data-change="${esc(p.code)}">Keep ${esc(p.name)}</button>` : ""); }
+  if (r.over.length) add("warn", `You're over your plan's limit on ${r.over.map((k) => r.metrics.find((m) => m.key === k).label.toLowerCase()).join(", ")}`, "Nothing has been deleted. You can't add more until you're back within the limit.", "");
+  if (r.ai?.state === "over") add("bad", "This period's AI allowance is used up", `AI checks are paused until ${b.report.period.end ? fmtDay(b.report.period.end) : "the next period"}. Upgrade for a larger allowance.`, go);
+  return out.length ? `<div class="bl-banners">${out.join("")}</div>` : "";
+}
+function billStatus(b) {
+  const p = b.plan;
+  if (p.status === "internal") return ["Included", ""];
+  if (p.status === "new") return ["No plan yet", "warn"];
+  if (p.status === "trialing") return b.mode === "write" ? [`Trial · ${Math.max(0, dayDiff(b.trialEndsAt))} days left`, "info"] : ["Trial ended", "bad"];
+  if (p.status === "active") return p.cancelAtPeriodEnd ? [`Ends ${fmtDay(b.periodEnd)}`, "warn"] : ["Active", "good"];
+  if (p.status === "past_due") return [b.mode === "manual" ? "Payment failed" : "Payment failed · read-only", b.mode === "manual" ? "warn" : "bad"];
+  return ["Ended", "bad"];
+}
+const planName = (c) => BILL.cat?.plans.find((x) => x.code === c)?.name || c;
+// The plan, shown one way everywhere (plans page, account page, team page): what you're on, what it costs with GST, what happens
+// next, and only the actions that make sense right now. `where` trims it: the plans page has the plans below it, the team page is compact.
+function planPanel(b, owner, where = "account") {
+  const p = b.plan, [label, tone] = billStatus(b), ccy = p.currency || BILL.ccy, cat = BILL.cat?.plans.find((x) => x.code === p.code);
+  const price = cat?.prices?.[ccy], pm = b.paymentMethod, chosen = b.trialChosen, total = price != null ? moneyExact(charged(price, ccy), ccy) : "";
+  const name = p.status === "new" ? "No plan yet" : p.status === "trialing" ? "Free trial" : p.name;
+  const desc = p.status === "new" ? (b.trialAvailable ? `Pick a plan to start your ${BILL.cat?.trialDays || 7}-day free trial. No card needed.` : "Your free trial has been used. Choose a plan to subscribe.")
+    : trialDone(b) && !pm.connected ? "Your free trial check is done. Subscribe and your plan starts today."
+    : p.status === "trialing" ? (chosen ? `The same trial for every plan. ${p.name} starts when it ends, on ${fmtDay(b.trialEndsAt)}.` : "The same trial for every plan. Pick the plan that starts after it.") : p.description || "";
+  const priceHtml = ["active", "past_due"].includes(p.status) && price != null ? `<b>${esc(total)}</b><span>a month${taxRate(ccy) ? ` · ${esc(money(price, ccy))} + ${taxRate(ccy) * 100}% GST` : ""}</span>`
+    : p.status === "trialing" ? `<b>Free</b><span>until ${esc(fmtDay(b.trialEndsAt))}${chosen && total ? `, then ${esc(total)} a month incl. GST` : ""}</span>`
+    : p.status === "internal" ? `<b>Included</b><span>no charge</span>` : "";
+  const meta = [];
+  if (p.status === "trialing") meta.push(["Trial ends", fmtDay(b.trialEndsAt)], ...(chosen ? [["Then", p.name]] : []), ["Payment method", pm.connected ? "Connected" : "Not connected", pm.connected ? "good" : "warn"]);
+  if (p.status === "trialing" && pm.connected) meta.push(["First charge", fmtDay(pm.firstChargeAt || b.trialEndsAt)]);
+  if (p.status === "active") meta.push([p.cancelAtPeriodEnd ? "Access until" : "Next charge", fmtDay(b.periodEnd)], ["Payment method", "Connected", "good"]);
+  if (p.pendingPlan) meta.push([`From ${fmtDay(b.periodEnd)}`, planName(p.pendingPlan)]);
+  if (p.status === "past_due") meta.push(["Fix by", fmtDay(b.graceEndsAt), "bad"]);
+  if (p.status === "canceled") meta.push(["Ended", fmtDay(b.periodEnd)]);
+  const A = [], L = [];
+  if (!owner) L.push(`<span class="muted sm">Only the owner can change the plan.</span>`);
+  else {
+    if (p.status === "trialing" && chosen && !pm.connected && b.checkout.enabled) A.push(`<button class="btn" type="button" data-buy="${esc(p.code)}">${icon("card", 15)} ${trialDone(b) ? `Subscribe to ${esc(p.name)}` : "Connect payment method"}</button>`);
+    if (p.status === "active" && p.cancelAtPeriodEnd) A.push(`<button class="btn" type="button" data-buy="${esc(p.code)}">Keep my subscription</button>`);
+    if (p.status === "active" && p.pendingPlan) A.push(`<button class="btn ghost" type="button" data-change="${esc(p.code)}">Keep ${esc(p.name)}</button>`);
+    if (p.status === "past_due") A.push(`<button class="btn" type="button" data-paylink>Fix payment</button>`);
+    if (where === "plans") { if (p.status === "active" && !p.cancelAtPeriodEnd) A.push(`<button class="btn ghost" type="button" data-scrollplans>Change plan</button>`); }
+    else A.push(`<button class="btn${A.length ? " ghost" : ""}" type="button" data-openbilling>${p.status === "new" ? "Choose a plan" : "Plans & payment"}</button>`);
+    if (p.status === "trialing" && pm.connected) L.push(`<button class="lnk" type="button" data-rmpay>Remove payment method</button>`);
+    if (p.status === "trialing") L.push(`<button class="lnk danger" type="button" data-canceltrial>Cancel free trial</button>`);
+    if (p.status === "active" && !p.cancelAtPeriodEnd) L.push(`<button class="lnk" type="button" data-billrefresh>Check with Razorpay</button>`, `<button class="lnk danger" type="button" data-cancelsub>Cancel subscription</button>`);
+  }
+  const metaHtml = meta.length ? `<dl class="bl-meta">${meta.map(([k, v, t]) => `<div><dt>${esc(k)}</dt><dd${t ? ` class="${t}"` : ""}>${t ? `<i></i>` : ""}${esc(v)}</dd></div>`).join("")}</dl>` : "";
+  return `<section class="bl-card bl-plan pp-${where}"><div class="bl-plan-top"><div><span class="bl-kicker">Current plan</span><h2>${esc(name)}</h2>${where === "team" ? "" : `<p class="desc">${esc(desc)}</p>`}</div><span class="bl-status ${tone}">${esc(label)}</span></div>
+    ${priceHtml ? `<div class="bl-price">${priceHtml}</div>` : ""}${metaHtml}${A.length || L.length ? `<div class="bl-actions">${A.join("")}${L.length ? `<span class="sp"></span>${L.join("")}` : ""}</div>` : ""}</section>`;
+}
+function billIncluded(b) {
+  const f = b.report.features, all = Object.keys(INTEG_LABEL);
+  const chips = (list, label, off = []) => `<div class="bl-chips">${list.map((x) => `<span class="bl-chip">${esc(label(x))}</span>`).join("")}${off.map((x) => `<span class="bl-chip off">${esc(label(x))}</span>`).join("")}</div>`;
+  const engines = ["chatgpt", "perplexity", "gemini", "aio", "aimode", "claude", "groq"];
+  const ints = f.integrations === "all" ? all : f.integrations;
+  return `<section class="bl-card bl-inc"><h3>What's included</h3>
+    <div class="bl-grp"><span>AI engines</span>${chips(f.engines, engLabel, engines.filter((e) => !f.engines.includes(e)))}</div>
+    <div class="bl-grp"><span>Checks</span>${chips(f.schedules, (s) => SCHED_LABEL[s] || s, ["weekly", "daily"].filter((s) => !f.schedules.includes(s)))}</div>
+    <div class="bl-grp"><span>Integrations</span>${ints.length ? chips(ints, (i) => INTEG_LABEL[i] || i, all.filter((i) => !ints.includes(i))) : `<span class="muted sm">None on this plan</span>`}</div>
+    <div class="bl-facts"><span><b>${f.competitors ?? "Unlimited"}</b> competitors per brand</span><span><b>${f.samples ?? "Unlimited"}</b> sample${f.samples === 1 ? "" : "s"} per question</span></div></section>`;
+}
+function billUsage(b) {
+  const r = b.report, per = r.period;
+  const resets = per.kind === "trial" ? `Trial ends ${fmtDay(per.end)}` : per.kind === "plan" ? `Resets ${fmtDay(per.end)}` : `Resets ${fmtDay(per.end)}`;
+  const tile = (m) => {
+    const num = `<div class="bl-num"><b>${m.used}</b><span>${m.limit === null ? "Unlimited" : `of ${m.limit}`}</span></div>`;
+    const bar = m.limit === null ? "" : `<div class="bl-bar" role="progressbar" aria-label="${esc(m.label)}" aria-valuemin="0" aria-valuemax="${m.limit}" aria-valuenow="${Math.min(m.used, m.limit)}"><i style="width:${Math.round(m.pct * 100)}%"></i></div>`;
+    const foot = m.state === "over" ? `${m.used - m.limit} over the limit` : m.state === "full" ? "Limit reached" : m.limit === null ? esc(m.note) : `${m.remaining} left · ${esc(m.note)}`;
+    return `<div class="bl-card bl-tile ${m.state}"><div class="bl-tile-h"><span>${esc(m.label)}</span><em>${m.scope === "period" ? "this period" : "right now"}</em></div>${num}${bar}<div class="bl-tile-f">${foot}</div></div>`;
+  };
+  const ai = r.ai && r.ai.pct != null ? `<div class="bl-card bl-tile ${r.ai.state === "over" ? "over" : r.ai.state === "warn" ? "warn" : ""}"><div class="bl-tile-h"><span>AI allowance</span><em>this period</em></div><div class="bl-num"><b>${Math.round(r.ai.pct * 100)}%</b><span>used</span></div><div class="bl-bar" role="progressbar" aria-label="AI allowance" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r.ai.pct * 100)}"><i style="width:${Math.round(r.ai.pct * 100)}%"></i></div><div class="bl-tile-f">${r.ai.state === "over" ? "Used up: AI checks are paused" : `${100 - Math.round(r.ai.pct * 100)}% left · checks, engines and writing`}</div></div>` : "";
+  return `<div class="bl-sec-h"><h2>Usage</h2><span class="muted">${esc(resets)}</span></div><div class="bl-usage">${r.metrics.map(tile).join("")}${ai}</div>`;
+}
+const HIST = { "billing.checkout_started": ["Started connecting a payment method", "info"], "billing.payment_verified": ["Payment method verified", "good"], "billing.payment_confirmed": ["Confirmed with Razorpay", "good"], "billing.authenticated": ["Payment method connected", "good"], "billing.trial_plan_chosen": ["Trial plan chosen", "info"], "billing.payment_method_removed": ["Payment method removed", "warn"], "billing.activated": ["Subscription started", "good"], "billing.charged": ["Payment received", "good"],
+  "billing.pending": ["A payment failed", "bad"], "billing.halted": ["Payments stopped after retries", "bad"], "billing.paused": ["Subscription paused", "warn"], "billing.cancelled": ["Subscription ended", "warn"], "billing.completed": ["Subscription completed", "warn"], "billing.resumed": ["Subscription resumed", "good"],
+  "billing.cancel_requested": ["Cancellation requested", "warn"], "billing.upgrade_requested": ["Upgrade requested", "info"], "billing.downgrade_scheduled": ["Downgrade scheduled", "info"], "billing.downgrade_withdrawn": ["Downgrade withdrawn", "info"], "billing.reconciled": ["Synced with Razorpay", ""], "billing.operator_set": ["Plan set by Perfstaq", "info"] };
+function billHistory() {
+  if (!BILL.hist) return "";
+  const rows = BILL.hist.map((e) => { const [t, tone] = HIST[e.action] || [e.action.replace("billing.", "").replace(/_/g, " "), ""], d = e.detail || {};
+    const planName = (c) => BILL.cat?.plans.find((x) => x.code === c)?.name, sub = [planName(e.target) ? esc(planName(e.target)) : "", d.to?.plan && d.to.plan !== e.target && planName(d.to.plan) ? `now ${esc(planName(d.to.plan))}` : "", d.reason ? esc(d.reason) : "", e.who ? `by ${esc(e.who)}` : ""].filter(Boolean).join(" · ");
+    return `<li class="${tone}"><span class="w">${esc(t)}${sub ? `<small>${sub}</small>` : ""}</span><time datetime="${esc(e.at)}">${esc(fmtWhen(e.at))}</time></li>`; });
+  return `<div class="bl-sec-h"><h2>Activity</h2><span class="muted">Plan and payment events</span></div><section class="bl-card">${rows.length ? `<ul class="bl-tl">${rows.join("")}</ul>` : `<div class="bl-empty">Nothing yet. Plan changes and payments will show up here.</div>`}</section>`;
+}
+
+
+/* ---- the payment page: plans and the payment method, nothing else ---- */
+function payPlans(b, owner) {
+  const cat = BILL.cat, p = b.plan, locked = !!p.currency, ccy = locked ? p.currency : BILL.ccy, open = b.checkout.enabled;
+  const trialing = p.status === "trialing", connected = b.paymentMethod.connected, chosen = b.trialChosen, subscribed = p.status === "active" && !p.cancelAtPeriodEnd;
+  const cur = cat.plans.find((x) => x.code === p.code);
+  const seg = locked ? `<span class="muted">Billed in ${esc(ccy)}</span>` : cat.currencies.length > 1 ? `<div class="bl-seg" role="group" aria-label="Currency">${cat.currencies.map((c) => `<button type="button" data-ccy="${esc(c)}" aria-pressed="${c === ccy}">${esc(c)}</button>`).join("")}</div>` : "";
+  const card = (x) => {
+    const price = x.prices[ccy], avail = cat.available?.[x.code]?.[ccy] !== false && price != null, mine = x.code === p.code && (subscribed || (trialing && chosen));
+    const up = price > (cur?.prices[ccy] || 0); let action;
+    if (!x.selfServe) action = cat.contact ? `<a class="btn ghost" href="mailto:${esc(cat.contact)}?subject=${encodeURIComponent("Perfstaq " + x.name)}">Talk to us</a>` : `<div class="bl-pill">Talk to us</div>`;
+    else if (!owner) action = `<div class="bl-pill">${mine ? "Your plan" : "Ask the owner"}</div>`;
+    else if (!open && !(trialing && !connected)) action = `<div class="bl-pill">${mine ? "Your plan" : "Opening soon"}</div>`;
+    else if (p.status === "new") action = b.trialAvailable
+      ? `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-trial="${esc(x.code)}">Start ${esc(String(BILL.cat.trialDays || 7))}-day free trial</button>`
+      : avail ? `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">Not available yet</div>`;
+    else if (trialing && trialDone(b) && !connected) action = avail && open ? `<button type="button" class="btn ${mine || (x.featured && !chosen) ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">Not available yet</div>`;
+    else if (trialing) {
+      if (mine && connected) action = `<div class="bl-pill">Connected · first charge ${esc(fmtDay(b.trialEndsAt))}</div>`;
+      else if (mine) action = `<div class="bl-pill">Starts after your trial · ${esc(fmtDay(b.trialEndsAt))}</div>`;
+      else if (connected) action = avail && open ? `<button type="button" class="btn ghost" data-buy="${esc(x.code)}">Switch and reconnect</button>` : `<div class="bl-pill">Not available yet</div>`;
+      else action = `<button type="button" class="btn ${x.featured && !chosen ? "" : "ghost"}" data-trial="${esc(x.code)}">${chosen ? `Switch to ${esc(x.name)}` : "Start 7-day free trial"}</button>`;
+    }
+    else if (p.pendingPlan === x.code) action = `<div class="bl-pill">Starts ${esc(fmtDay(b.periodEnd))}</div>`;
+    else if (!avail) action = `<div class="bl-pill">Not available in ${esc(ccy)} yet</div>`;
+    else if (mine && p.pendingPlan) action = `<button type="button" class="btn ghost" data-change="${esc(x.code)}">Keep ${esc(x.name)}</button>`;
+    else if (mine) action = `<div class="bl-pill">Your plan</div>`;
+    else if (subscribed) action = `<button type="button" class="btn ${up ? "" : "ghost"}" data-change="${esc(x.code)}">${up ? "Upgrade" : "Downgrade"}</button>`;
+    else action = `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>`;
+    const noUpi = x.selfServe && ccy === "INR" && price > 0 && cat.upiMax && charged(price, ccy) > cat.upiMax;
+    const priceHtml = (!x.selfServe && !(price > 0) ? `<b>Custom</b>` : price != null ? `<b>${esc(money(price, ccy))}</b><span>/ month${ccy === "INR" ? " + GST" : ""}</span>` : `<b>–</b>`);
+    const upiNote = noUpi ? `<p class="muted sm" style="margin:-4px 0 0">Card or net banking (no UPI)</p>` : "";
+    return `<article class="bl-card bl-pc ${mine ? "cur" : ""} ${x.featured ? "feat" : ""}">${x.featured ? '<span class="badge">Most popular</span>' : ""}<h3>${esc(x.name)}</h3><p class="pd">${esc(x.description || "")}</p><div class="pr">${priceHtml}</div>${upiNote}
+      <ul>${planFacts(x.entitlements).map((l) => `<li>${esc(l)}</li>`).join("")}<li>${esc(x.entitlements.engines.length > 3 ? "All AI engines" : x.entitlements.engines.map(engLabel).join(", "))}</li></ul>${action}</article>`;
+  };
+  return `<div class="bl-sec-h" id="billPlans"><h2>Plans</h2>${seg}</div><div class="bl-plans">${cat.plans.map(card).join("")}</div>`;
+}
+function paintBilling(opts = {}) {
+  const b = BILL.b, owner = APP.org?.role === "owner" && !APP.org?.operatorVisit, first = opts.firstRun !== undefined ? opts.firstRun : BILL.first;
+  BILL.first = first;
+  const fresh = b.plan.status === "new";
+  const head = first ? `<div class="bl-hero-t"><span class="bl-kicker">Welcome to Perfstaq</span><h1>${fresh && !b.trialAvailable ? "Choose your plan" : `Start your ${BILL.cat.trialDays}-day free trial`}</h1><p>${fresh && !b.trialAvailable ? "Your free trial has been used. Pick the plan that fits and subscribe." : `Everyone gets the same free trial: ${BILL.cat.trialDays} days, 20 prompts, no card. Pick the plan that starts after it, and add a payment method any time before then.`}</p></div>`
+    : `<div class="bl-head"><div><span class="bl-kicker">${esc(APP.org?.name || "Organisation")}</span><h1>Plans &amp; payment</h1></div><button type="button" class="btn ghost sm" data-openaccount>Usage &amp; records</button></div>`;
+  $("#billBody").innerHTML = `${head}${first && fresh ? "" : planPanel(b, owner, "plans")}${payPlans(b, owner)}
+    ${first && !fresh ? `<div class="bl-first-f"><button type="button" class="btn ${b.trialChosen ? "" : "ghost"}" data-skipfirst>${!b.trialChosen ? "Skip for now" : DATA.list.length ? "Continue to the dashboard" : "Add your first website"}</button></div>` : ""}`;
+  billHint(b);
+}
+// What used to be a paragraph under the plans is now said once, as a toast, when it matters (once per session and state).
+function billHint(b) {
+  const p = b.plan, pm = b.paymentMethod; let key = "", msg = "", tone = "info";
+  if (trialDone(b) && !pm.connected) { key = "trial-done"; msg = "Your free trial check is done. Subscribe to run your prompts again: your plan starts today."; }
+  else if (p.status === "trialing" && b.trialChosen && !pm.connected) { key = "trial-nocard"; msg = `Free until ${esc(fmtDay(b.trialEndsAt))}. Connect a payment method before then so ${esc(p.name)} carries on without a break.`; }
+  else if (p.status === "trialing" && pm.connected) { key = "trial-card"; msg = `You're all set. Nothing is charged until ${esc(fmtDay(b.trialEndsAt))}.`; tone = "ok"; }
+  else if (p.status === "active" && p.cancelAtPeriodEnd) { key = "ending"; msg = `Your subscription ends on ${esc(fmtDay(b.periodEnd))}. You keep full access until then.`; tone = "warn"; }
+  else if (p.status === "past_due") { key = "pastdue"; msg = `Your last payment didn't go through. Fix it by ${esc(fmtDay(b.graceEndsAt))} to keep everything running.`; tone = "bad"; }
+  if (!key) return;
+  const k = `wp_hint_${key}_${APP.org?.id || ""}`; try { if (sessionStorage.getItem(k)) return; } catch {}
+  setTimeout(() => { if ($(".toast") || $("#billing").hidden) return; try { sessionStorage.setItem(k, "1"); } catch {} toast(msg, tone); }, 400);
+}
+async function loadBill(extra = {}) {
+  [BILL.b, BILL.cat] = await Promise.all([api("GET", "/api/billing"), fetch("/api/billing/plans").then((r) => r.json())]);
+  BILL.ccy = BILL.ccy || guessCcy(); if (!BILL.cat.currencies.includes(BILL.ccy)) BILL.ccy = BILL.cat.currencies[0];
+  if (extra.history) BILL.hist = canAdmin() ? (await api("GET", "/api/billing/history")).events : null;
+}
+async function openBilling(opts = {}) {
+  if (!billingOn()) return home();
+  screen("billing"); paintProfile();
+  $("#billBody").innerHTML = `<p class="muted pad">Loading…</p>`;
+  try { await loadBill(); } catch (e) { $("#billBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+  paintBilling({ firstRun: !!opts.firstRun });
+}
+/* ---- the account page: the records ---- */
+async function openAccount() {
+  if (!billingOn()) return home();
+  screen("account"); paintProfile();
+  $("#accBody").innerHTML = `<p class="muted pad">Loading…</p>`;
+  try { await loadBill({ history: true }); } catch (e) { $("#accBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
+  const b = BILL.b, owner = APP.org?.role === "owner" && !APP.org?.operatorVisit;
+  $("#accBody").innerHTML = `<div class="bl-head"><div><span class="bl-kicker">${esc(APP.org?.name || "Organisation")}</span><h1>Account &amp; usage</h1></div></div>
+    ${billBanners(b)}<div class="bl-hero">${planPanel(b, owner, "account")}${billIncluded(b)}</div>${billUsage(b)}${billHistory()}`;
+}
+/* operators: the plan catalogue, straight from the database */
+const money2 = (minor) => (minor == null ? "" : String(minor / 100));
+function planEditor(p, A) {
+  const n = A.organisations[p.code] || 0, cur = [...new Set([...BILL.cat.currencies, ...Object.keys(p.prices)])];
+  const flags = [["public", "Public"], ["selfServe", "Can be bought"], ["featured", "Most popular"], ["active", "Active"]];
+  const chk = (name, val, on, dis = false) => `<label><input type="checkbox" data-list="${name}" value="${esc(val)}" ${on ? "checked" : ""} ${dis ? "disabled" : ""}>${esc(name === "engines" ? engLabel(val) : name === "integrations" ? (INTEG_LABEL[val] || (val === "*" ? "All integrations" : val)) : SCHED_LABEL[val] || val)}</label>`;
+  return `<details class="bl-edit" data-plan="${esc(p.code)}"><summary><b>${esc(p.name)}</b><code>${esc(p.code)}</code><span class="muted sm">${n} organisation${n === 1 ? "" : "s"}</span><span class="sp"></span>${p.featured ? '<span class="pillx ok">Most popular</span>' : ""}${p.public ? '<span class="pillx">Public</span>' : '<span class="pillx">Hidden</span>'}${p.active ? "" : '<span class="pillx no">Inactive</span>'}</summary>
+    <div class="bl-form">
+      <div class="bl-fg"><label class="bl-f">Name<input class="inp" data-f="name" value="${esc(p.name)}"></label><label class="bl-f">Description<input class="inp" data-f="description" value="${esc(p.description)}"></label>
+        <label class="bl-f">Order<input class="inp" type="number" data-f="sort" value="${p.sort}"></label><label class="bl-f">AI allowance (USD / period)<input class="inp" type="number" step="0.5" min="0" data-f="aiCapUsd" placeholder="none" value="${p.aiCapUsd ?? ""}"></label></div>
+      <div class="bl-checks">${flags.map(([k, l]) => `<label><input type="checkbox" data-f="${k}" ${p[k] ? "checked" : ""}>${l}</label>`).join("")}</div>
+      <div><div class="bl-grp-t">Limits <span class="muted">(empty = unlimited)</span></div><div class="bl-fg">${A.options.limits.map((m) => `<label class="bl-f">${esc({ brands: "Brands", questions: "Tracked questions", competitors: "Competitors per brand", seats: "Seats", drafts: "Drafted fixes / period", samples: "Samples per question" }[m])}<input class="inp" type="number" min="0" data-limit="${m}" placeholder="unlimited" value="${p.limits[m] ?? ""}"></label>`).join("")}</div></div>
+      <div><div class="bl-grp-t">AI engines</div><div class="bl-checks">${A.options.engines.map((e) => chk("engines", e, p.engines.includes(e))).join("")}</div></div>
+      <div><div class="bl-grp-t">Checks</div><div class="bl-checks">${A.options.schedules.map((s) => chk("schedules", s, p.schedules.includes(s), s === "off")).join("")}</div></div>
+      <div><div class="bl-grp-t">Integrations</div><div class="bl-checks">${chk("integrations", "*", p.integrations.includes("*"))}${A.options.integrations.map((i) => chk("integrations", i, p.integrations.includes("*") || p.integrations.includes(i))).join("")}</div></div>
+      <div><div class="bl-grp-t">Prices <span class="muted">(monthly, before tax) and the Razorpay plan for each. Save first, then create or verify the Razorpay plan.</span></div>${cur.map((c) => `<div class="bl-price-row" data-ccy-row="${esc(c)}"><b>${esc(c)}</b><input class="inp" type="number" min="0" step="0.01" data-amount placeholder="no price" value="${money2(p.prices[c]?.amount)}"><input class="inp" data-rzp placeholder="plan_XXXXXXXXXXXXXX" value="${esc(p.prices[c]?.razorpayPlanId || "")}">${p.prices[c] ? (p.prices[c].razorpayPlanId ? `<button type="button" class="btn ghost sm" data-rzp-verify="${esc(c)}" title="Check this plan id against Razorpay: amount, currency and monthly cycle">Verify</button>` : p.prices[c].amount > 0 ? `<button type="button" class="btn ghost sm" data-rzp-create="${esc(c)}" title="Create the monthly plan in Razorpay from this saved price and store its id">Create in Razorpay</button>` : "") : ""}</div>`).join("")}
+        <div class="bl-price-row"><input class="inp" data-newccy maxlength="3" placeholder="CAD" style="text-transform:uppercase"><span class="muted sm" style="grid-column:2/-1">To add a currency, type its code (for example CAD) and save; its price and Razorpay plan id row then appears here.</span></div></div>
+      <div class="bl-form-f"><button type="button" class="btn sm" data-saveplan>Save plan</button><span class="msg" data-planmsg></span></div></div></details>`;
+}
+// Operators: is billing set up and healthy, and the one-click Razorpay plan sync.
+function billHealth() {
+  const S = BILL.status; if (!S) return "";
+  const mark = { ok: "✓", warn: "!", error: "✕" }, col = { ok: "var(--good)", warn: "#b7791f", error: "var(--bad)" };
+  const rows = S.checks.map((c) => `<li style="display:flex;gap:10px;padding:6px 0"><b style="color:${col[c.level]};width:14px">${mark[c.level]}</b><span>${esc(c.label)}${c.fix ? `<br><span class="muted sm">${esc(c.fix)}</span>` : ""}</span></li>`).join("");
+  const grid = S.prices.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.currency)}</td><td>${money(r.amount, r.currency)}${r.charged !== r.amount ? ` <span class="muted sm">charged ${moneyExact(r.charged, r.currency)} with GST</span>` : ""}</td><td>${r.razorpayPlanId ? `<code>${esc(r.razorpayPlanId)}</code>` : `<span class="muted">none yet</span>`}</td></tr>`).join("");
+  const o = Object.entries(S.orgs).map(([k, n]) => `${n} ${esc(k)}`).join(" · ");
+  return `<div class="bl-sec-h"><h2>Billing status</h2><span class="muted">Operators only. Read from our own config and database.</span></div><section class="bl-card" id="billStatus"><div style="padding:16px 20px">
+    <p class="muted sm" style="margin:0 0 6px">Razorpay: ${S.razorpay.mode ? `${esc(S.razorpay.mode)} keys (${esc(S.razorpay.keyId)})` : "no keys"} · Webhook URL: <code>${esc(S.webhookUrl || "set PUBLIC_ORIGIN")}</code> · Webhooks (24h): ${S.webhooks.last24h}${S.webhooks.failed24h ? `, ${S.webhooks.failed24h} failed` : ""} · Organisations: ${o || "none"}${S.trialsEndingSoon ? ` · ${S.trialsEndingSoon} trial(s) end within 2 days` : ""}</p>
+    <ul style="list-style:none;margin:0;padding:0">${rows}</ul>
+    <table class="tbl" style="margin-top:10px"><thead><tr><th>Plan</th><th>Currency</th><th>Price</th><th>Razorpay plan id</th></tr></thead><tbody>${grid}</tbody></table>
+    <p class="muted sm" style="margin:10px 0 0">Find them in Razorpay${S.razorpay.mode ? ` (${esc(S.razorpay.mode)} mode)` : ""}: ${[["Plan ids (plan_…)", "subscriptions/plans"], ["Subscription ids (sub_…)", "subscriptions"], ["Webhooks", "webhooks"], ["API keys", "keys"]].map(([l, path]) => `<a href="https://dashboard.razorpay.com/app/${path}" target="_blank" rel="noopener">${l}</a>`).join(" · ")}</p>
+    <div class="bl-form-f" style="margin-top:12px"><button type="button" class="btn sm" data-syncplans="create">Create missing Razorpay plans</button><button type="button" class="btn ghost sm" data-syncplans="verify">Verify all with Razorpay</button><span class="msg" data-syncmsg></span></div>
+    <div data-syncout class="muted sm" style="margin-top:8px"></div></div></section>`;
+}
+function billCatalogue() {
+  const A = BILL.admin; if (!A) return "";
+  return `<div class="bl-sec-h"><h2>Plan catalogue</h2><span class="muted">Operators only. Saved to the database; takes effect straight away.</span></div><section class="bl-card" id="billCatalogue"><div class="bl-cat-h"><b>${A.plans.length} plans</b><span class="muted sm">Paste the Razorpay plan id next to each price to make a plan buyable.</span><span class="sp"></span><button type="button" class="btn ghost sm" data-newplan>Add plan</button></div>${A.plans.map((p) => planEditor(p, A)).join("")}</section>`;
+}
+function collectPlan(box) {
+  const f = (k) => box.querySelector(`[data-f="${k}"]`), out = { limits: {}, engines: [], schedules: [], integrations: [], prices: {} };
+  out.name = f("name").value; out.description = f("description").value; out.sort = Number(f("sort").value);
+  out.aiCapUsd = f("aiCapUsd").value === "" ? null : Number(f("aiCapUsd").value);
+  for (const k of ["public", "selfServe", "featured", "active"]) out[k] = f(k).checked;
+  box.querySelectorAll("[data-limit]").forEach((i) => { out.limits[i.dataset.limit] = i.value === "" ? null : Number(i.value); });
+  box.querySelectorAll("[data-list]").forEach((i) => { if (i.checked) out[i.dataset.list].push(i.value); });
+  if (out.integrations.includes("*")) out.integrations = ["*"];
+  box.querySelectorAll("[data-ccy-row]").forEach((row) => { const a = row.querySelector("[data-amount]").value; if (a === "") return; out.prices[row.dataset.ccyRow] = { amount: Math.round(Number(a) * 100), razorpayPlanId: row.querySelector("[data-rzp]").value.trim() || null }; });
+  const nc = box.querySelector("[data-newccy]").value.trim().toUpperCase(); if (nc && !out.prices[nc]) out.prices[nc] = { amount: 0, razorpayPlanId: null };
+  return out;
+}
+
+
+async function catalogueClick(t) {
+  const sv = t.closest("[data-saveplan]");
+  if (sv) {
+    const box = sv.closest("[data-plan]"), code = box.dataset.plan, msg = box.querySelector("[data-planmsg]"); msg.className = "msg"; msg.textContent = "Saving…";
+    try { await api("PUT", `/api/admin/plans/${encodeURIComponent(code)}`, collectPlan(box)); toast("Plan saved."); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); $(`#billCatalogue [data-plan="${code}"]`)?.scrollIntoView({ block: "center" }); }
+    catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+    return true;
+  }
+  const sy = t.closest("[data-syncplans]");
+  if (sy) {
+    const msg = $("#billStatus [data-syncmsg]"), out = $("#billStatus [data-syncout]"), act = sy.dataset.syncplans; msg.className = "msg"; msg.textContent = act === "create" ? "Creating in Razorpay…" : "Checking with Razorpay…"; out.textContent = "";
+    try {
+      const r = await api("POST", "/api/admin/billing/sync-plans", { action: act });
+      const bad = r.rows.filter((x) => ["error", "mismatch", "missing"].includes(x.status)).length;
+      msg.className = "msg " + (bad ? "err" : "ok"); msg.textContent = bad ? `${bad} of ${r.rows.length} need attention.` : `All ${r.rows.length} done.`;
+      out.innerHTML = r.rows.map((x) => `${esc((BILL.status.prices.find((p) => p.plan === x.plan) || {}).name || x.plan)} ${esc(x.currency)}: ${esc(x.status)}${x.razorpayPlanId ? ` (${esc(x.razorpayPlanId)})` : ""}${x.detail ? ` — ${esc(x.detail)}` : ""}`).join("<br>");
+      if (act === "create") { BILL.status = await api("GET", "/api/admin/billing/status"); BILL.admin = await api("GET", "/api/admin/plans"); const keep = out.innerHTML, km = msg.textContent, kc = msg.className; paintTeam(); const o2 = $("#billStatus [data-syncout]"), m2 = $("#billStatus [data-syncmsg]"); if (o2) { o2.innerHTML = keep; m2.textContent = km; m2.className = kc; } }
+    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+    return true;
+  }
+  const rz = t.closest("[data-rzp-create],[data-rzp-verify]");
+  if (rz) {
+    const box = rz.closest("[data-plan]"), code = box.dataset.plan, msg = box.querySelector("[data-planmsg]"), create = rz.hasAttribute("data-rzp-create"), ccy = rz.dataset.rzpCreate || rz.dataset.rzpVerify;
+    msg.className = "msg"; msg.textContent = create ? "Creating the plan in Razorpay…" : "Checking with Razorpay…";
+    try {
+      const r = await api("POST", `/api/admin/plans/${encodeURIComponent(code)}/razorpay`, { currency: ccy, action: create ? "create" : "verify" });
+      if (create) { toast(r.linked ? `Linked your existing Razorpay plan ${esc(r.razorpayPlanId)}.` : `Created ${esc(r.razorpayPlanId)} in Razorpay.`); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); }
+      else if (r.ok) { msg.className = "msg ok"; msg.textContent = `Matches Razorpay: ${money(r.razorpay.amount, r.razorpay.currency)} monthly in ${r.razorpay.currency}.`; }
+      else { msg.className = "msg err"; msg.textContent = "Doesn't match Razorpay: " + r.mismatches.join("; ") + "."; }
+    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
+    return true;
+  }
+  if (t.closest("[data-newplan]")) {
+    const f = await confirmBox({ title: "Add a plan", ok: "Create plan", body: `${field("Short code (lowercase letters, digits, - or _)", `<input class="inp" name="code" placeholder="partner">`)}${field("Name shown to customers", `<input class="inp" name="name" placeholder="Partner">`)}` });
+    if (!f) return true;
+    const code = f.code.toLowerCase(), name = f.name || code; if (!code) return true;
+    await api("PUT", `/api/admin/plans/${encodeURIComponent(code)}`, { name, description: "", sort: 50, public: false, selfServe: false, active: true, limits: { brands: 1, questions: 10, competitors: 3, seats: 1, drafts: 10, samples: 1 }, engines: ["chatgpt"], schedules: ["off"], integrations: [], prices: {} });
+    toast("Plan created. Fill in its limits and prices, then save."); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); return true;
+  }
+  return false;
+}
+/* ---- shared actions (payment page, account page, team page) ---- */
+async function billAction(t) {
+  if (t.closest("[data-openbilling]")) { await openBilling(); return true; }
+  if (t.closest("[data-openaccount]")) { await openAccount(); return true; }
+  const cc = t.closest("[data-ccy]"); if (cc) { BILL.ccy = cc.dataset.ccy; paintBilling(); return true; }
+  const tr = t.closest("[data-trial]"); if (tr) { await chooseTrialPlan(tr.dataset.trial); return true; }
+  const buy = t.closest("[data-buy]"); if (buy) { await buyPlan(buy.dataset.buy); return true; }
+  const chg = t.closest("[data-change]"); if (chg) { await changePlan(chg.dataset.change); return true; }
+  if (t.closest("[data-cancelsub]")) { await cancelSub(); return true; }
+  if (t.closest("[data-canceltrial]")) { await cancelTrial(); return true; }
+  if (t.closest("[data-rmpay]")) { await removePaymentMethod(); return true; }
+  if (t.closest("[data-billrefresh]")) { await api("POST", "/api/billing/refresh"); await openBilling({ firstRun: BILL.first }); toast("Up to date with Razorpay.", "ok"); return true; }
+  if (t.closest("[data-scrollplans]")) { $("#billPlans")?.scrollIntoView({ behavior: "smooth", block: "start" }); return true; }
+  if (t.closest("[data-paylink]")) { const r = await api("GET", "/api/billing/payment-link"); r.url ? window.open(r.url, "_blank", "noopener") : toast("No link is available from here. Check the email Razorpay sent, or choose a plan above to start again."); return true; }
+  if (t.closest("[data-skipfirst]")) { try { sessionStorage.setItem("wp_skip_plan", "1"); } catch {} await home(); if (!DATA.list.length) $("#startUrl")?.focus(); return true; }
+  return false;
+}
+async function chooseTrialPlan(plan) {
+  const b = await api("POST", "/api/billing/start-trial", { plan });
+  BILL.b = b; await loadBill(); paintBilling(); toast(`Your free trial runs until ${esc(fmtDay(b.trialEndsAt))}. <b>${esc(planName(plan))}</b> starts after it.`, "ok");
+  APP.cfg.billing = BILL.b; paintTrialPill();
+}
+// An in-app confirm instead of the browser's: resolves true on the main button, false on Cancel, Escape or a click outside.
+// `body` is HTML, so the caller escapes anything that came from outside. Fields with a name come back as { name: value } on confirm.
+function confirmBox({ title, body = "", ok = "Confirm", cancel = "Cancel", danger = false, icon: ic = "", tone = "", safe = false, sub = "" }) {
+  return new Promise((res) => {
+    const m = document.createElement("div"); m.className = "modal light cbox";
+    const yes = `<button class="btn${danger ? " danger" : ""}${safe ? " ghost" : ""}" type="button" data-y>${esc(ok)}</button>`, no = cancel ? `<button class="btn${safe ? "" : " ghost"}" type="button" data-n>${esc(cancel)}</button>` : "";
+    m.innerHTML = `<div class="box sheet ${tone ? "s-" + tone : ""}" role="alertdialog" aria-modal="true" aria-labelledby="askT">${ic ? `<span class="sh-ic" aria-hidden="true">${icon(ic, 20)}</span>` : ""}<div class="sh-t"><h3 id="askT">${esc(title)}</h3>${sub ? `<p>${sub}</p>` : ""}</div><div class="sh-b">${body}</div><div class="sh-f">${safe ? `${yes}${no}` : `${no}${yes}`}</div></div>`;
+    const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); done(false); } };
+    const done = (v) => { const f = Object.fromEntries([...m.querySelectorAll("[name]")].map((i) => [i.name, i.value.trim()])); document.removeEventListener("keydown", key, true); m.remove(); res(v && f); };
+    m.addEventListener("click", (e) => { if (e.target === m || e.target.closest("[data-n]")) done(false); else if (e.target.closest("[data-y]")) done(true); });
+    document.addEventListener("keydown", key, true); document.body.append(m); (m.querySelector("[name]") || m.querySelector("[data-y]")).focus();
+  });
+}
+const PLANS_LABEL = (c) => ({ legacy: "Legacy (unlimited, no billing)", trial: "Trial" })[c] || (c[0].toUpperCase() + c.slice(1));
+const field = (label, input) => `<label style="display:grid;gap:4px;margin-top:10px"><span class="muted sm">${label}</span>${input}</label>`;
+// Building blocks for the plan sheets: before → after, what happens when, and the money.
+const shCompare = (a, b) => `<div class="sh-cmp"><div><span>${esc(a.k)}</span><b>${esc(a.name)}</b><em>${a.price}</em></div><i aria-hidden="true">${icon("arrow", 16)}</i><div class="to"><span>${esc(b.k)}</span><b>${esc(b.name)}</b><em>${b.price}</em></div></div>`;
+const shSteps = (rows) => `<ol class="sh-steps">${rows.map(([when, what, t = ""]) => `<li class="${t}"><b>${esc(when)}</b><span>${what}</span></li>`).join("")}</ol>`;
+const shMoney = (minor, ccy) => `<dl class="sh-money">${taxRate(ccy) ? `<div><dt>Plan price</dt><dd>${esc(money(minor, ccy))}</dd></div><div><dt>GST ${taxRate(ccy) * 100}%</dt><dd>${esc(moneyExact(charged(minor, ccy) - minor, ccy))}</dd></div>` : ""}<div class="t"><dt>Every month</dt><dd>${esc(moneyExact(charged(minor, ccy), ccy))}</dd></div></dl>`;
+const perMonth = (minor, ccy) => `${esc(moneyExact(charged(minor, ccy), ccy))}<small>/mo</small>`;
+const askList = (items) => `<ul style="margin:8px 0 0;padding-left:18px">${items.map((x) => `<li>${x}</li>`).join("")}</ul>`;
+async function removePaymentMethod() {
+  const b = BILL.b;
+  if (!(await confirmBox({ title: "Remove your payment method?", icon: "card", tone: "warn", ok: "Remove it", cancel: "Keep it", danger: true, safe: true, sub: "Nothing has been charged, and nothing will be.",
+    body: shSteps([["Now", "Your trial carries on as it is."], [fmtDay(b.trialEndsAt), "Without a payment method the account becomes read-only. Your reports stay readable.", "warn"]]) }))) return;
+  await api("POST", "/api/billing/remove-payment-method"); await loadBill(); paintBilling(); toast("Payment method removed. You can connect one again any time.", "info");
+}
+$("#billing").addEventListener("click", async (e) => { try { await billAction(e.target); } catch (err) { toast(esc(err.message), "bad"); } });
+$("#account").addEventListener("click", async (e) => { try { await billAction(e.target); } catch (err) { toast(esc(err.message), "bad"); } });
+$("#navBilling").addEventListener("click", () => openBilling());
+$("#navAccount").addEventListener("click", () => openAccount());
+$("#billBack").addEventListener("click", () => backFromSide());
+$("#accBack").addEventListener("click", () => backFromSide());
+
+
+/* The profile menu, top right on every screen: who you are, your plan and where it stands, and the account pages. It replaces
+   the separate trial pill, Account and Team buttons and the email, so the corner always looks the same. */
+const initialsOf = (s) => (String(s).trim().split(/[\s@._-]+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("") || "?").toUpperCase();
+function planLine(b) {
+  if (!b || !billingOn() || b.plan.status === "internal") return { text: APP.org?.name || "", tone: "", cta: "" };
+  const p = b.plan, n = Math.max(0, dayDiff(b.trialEndsAt)), name = b.trialChosen ? p.name : "Free trial";
+  if (p.status === "new") return { text: "Choose a plan", tone: "warn", cta: "Choose a plan", detail: b.trialAvailable ? `Start your ${BILL.cat?.trialDays || 7}-day free trial.` : "Your free trial has been used." };
+  if (b.mode === "read") return { text: p.status === "trialing" ? "Trial ended" : "Payment needed", tone: "bad", cta: "Choose a plan", detail: "Reports stay readable. Pick a plan to carry on." };
+  if (p.status === "past_due") return { text: "Payment failed", tone: "bad", cta: "Fix payment", detail: `Fix it by ${fmtDay(b.graceEndsAt)} to keep everything running.` };
+  if (p.status === "trialing") return { text: `Free trial · ${n} day${n === 1 ? "" : "s"} left`, tone: n <= 2 ? "warn" : "info", cta: !b.trialChosen ? "Choose a plan" : b.paymentMethod.connected ? "Manage plan" : "Add payment method",
+    detail: !b.trialChosen ? `Free until ${fmtDay(b.trialEndsAt)}. Pick the plan that starts after.` : `${p.name} starts ${fmtDay(b.trialEndsAt)}.${b.paymentMethod.connected ? "" : " No card yet."}` };
+  if (p.status === "active") return p.cancelAtPeriodEnd ? { text: `${p.name} · ends ${fmtDay(b.periodEnd)}`, tone: "warn", cta: "Keep my plan", detail: `Full access until ${fmtDay(b.periodEnd)}.` }
+    : { text: p.name, tone: "good", cta: "Manage plan", detail: `Next charge ${fmtDay(b.periodEnd)}.` };
+  return { text: p.name, tone: "", cta: "Manage plan", detail: "" };
+}
+function paintProfile() {
+  paintAccount();
+  const slots = ["#lpUser", "#teamUser", "#billUser", "#accUser", "#obProfile", "#readyProfile"].map((s) => $(s)).filter(Boolean);
+  if (!DATA.server()) { slots.forEach((el) => (el.innerHTML = "")); return; }
+  const who = APP.user.name || APP.user.email.split("@")[0], st = planLine(APP.cfg.billing);
+  const html = `<div class="pf"><button type="button" class="pf-btn" data-pf aria-haspopup="menu" aria-expanded="false" aria-label="Account menu for ${esc(who)}"><span class="pf-av ${st.tone}">${esc(initialsOf(who))}</span><span class="pf-tx"><b>${esc(who)}</b>${st.text ? `<span class="${st.tone}">${esc(st.text)}</span>` : ""}</span>${icon("down", 14)}</button></div>`;
+  slots.forEach((el) => (el.innerHTML = html));
+}
+const paintTrialPill = paintProfile; // the older name, still called after billing changes
+function openProfileMenu(btn) {
+  closeProfileMenu();
+  const who = APP.user.name || APP.user.email.split("@")[0], b = APP.cfg.billing, st = planLine(b), bill = billingOn() && b && b.plan.status !== "internal";
+  const m = document.createElement("div"); m.className = "pf-menu"; m.setAttribute("role", "menu");
+  m.innerHTML = `<div class="pf-h"><span class="pf-av lg ${st.tone}">${esc(initialsOf(who))}</span><div><b>${esc(who)}</b><span>${esc(APP.user.email)}</span>${APP.org ? `<em>${esc(APP.org.name)}</em>` : ""}</div></div>
+    ${bill ? `<div class="pf-plan ${st.tone}"><div><span class="bl-kicker">Plan</span><b>${esc(b.plan.status === "new" ? "No plan yet" : b.plan.status === "trialing" ? "Free trial" : b.plan.name)}</b><span>${esc(st.detail || st.text)}</span></div>${st.cta ? `<button type="button" class="btn sm" data-pfgo="billing">${esc(st.cta)}</button>` : ""}</div>` : ""}
+    <div class="pf-items">${bill ? `<button type="button" class="navlike" role="menuitem" data-pfgo="account">${icon("overview", 15)}Account &amp; usage</button><button type="button" class="navlike" role="menuitem" data-pfgo="billing">${icon("card", 15)}Plans &amp; payment</button>` : ""}
+    <button type="button" class="navlike" role="menuitem" data-pfgo="team">${icon("team", 15)}Team &amp; keys</button>${DATA.list.length ? `<button type="button" class="navlike" role="menuitem" data-pfgo="brands">${icon("list", 15)}Your brands</button>` : ""}</div>
+    <button type="button" class="navlike pf-out" role="menuitem" data-pfgo="out">${icon("out", 15)}Sign out</button>`;
+  btn.closest(".pf").append(m); btn.setAttribute("aria-expanded", "true"); m.querySelector("button")?.focus();
+}
+function closeProfileMenu() { $$(".pf-menu").forEach((x) => x.remove()); $$("[data-pf]").forEach((x) => x.setAttribute("aria-expanded", "false")); }
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-pf]");
+  if (btn) { const open = btn.getAttribute("aria-expanded") === "true"; return open ? closeProfileMenu() : openProfileMenu(btn); }
+  const go = e.target.closest("[data-pfgo]");
+  if (go) { closeProfileMenu(); const k = go.dataset.pfgo;
+    if (k === "billing") return openBilling(); if (k === "account") return openAccount(); if (k === "team") return openTeam(); if (k === "brands") return goHome(); if (k === "out") return $("#signOut").click(); }
+  if (!e.target.closest(".pf-menu")) closeProfileMenu();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && $(".pf-menu")) { closeProfileMenu(); $("[data-pf]")?.focus(); } });
+
+const loadRazorpay = () => (window.Razorpay ? Promise.resolve() : new Promise((ok, no) => { const s = document.createElement("script"); s.src = "https://checkout.razorpay.com/v1/checkout.js"; s.onload = ok; s.onerror = () => no(new Error("Couldn't load the payment window. Check your connection and try again.")); document.head.append(s); }));
+// Subscribing, connecting a card, or approving a new mandate opens a full-page checkout first: the plan, the money with GST, what
+// happens today and on which date, and how they can pay. "Continue to secure payment" then hands over to Razorpay.
+function buyPlan(plan, { switching = false } = {}) {
+  const b = BILL.b, p = b.plan, x = BILL.cat.plans.find((y) => y.code === plan), ccy = p.currency || BILL.ccy, price = x.prices[ccy];
+  const later = (t) => t && new Date(t).getTime() - Date.now() > 30 * 60e3;
+  const starts = p.status === "trialing" && later(b.trialEndsAt) && !trialDone(b) ? "trial" : p.status === "active" && (p.cancelAtPeriodEnd || switching) && later(b.periodEnd) ? "resume" : "now";
+  const on = starts === "trial" ? b.trialEndsAt : starts === "resume" ? b.periodEnd : null, upi = ccy === "INR" && charged(price, ccy) <= (BILL.cat.upiMax || 0);
+  const title = starts === "trial" ? "Connect a payment method" : switching ? `Switch to ${x.name}` : starts === "resume" ? (plan === p.code ? "Keep your subscription" : `Continue on ${x.name}`) : `Subscribe to ${x.name}`;
+  const lede = starts === "trial" ? `Your trial stays free until ${esc(fmtDay(on))}. Connect a payment method now so ${esc(x.name)} carries on without a break.`
+    : starts === "resume" ? `You've already paid until ${esc(fmtDay(on))}. Nothing more is charged until then.` : `${esc(x.name)} starts as soon as the payment goes through.`;
+  const amt = `<b>${esc(moneyExact(charged(price, ccy), ccy))}</b>`;
+  const steps = starts === "now" ? [["Today", `Razorpay charges ${amt} and ${esc(x.name)} starts.`, "go"], ["Every month", `${amt} again, until you cancel. Cancel any time.`]]
+    : [["Today", `A refundable ₹5 check confirms your payment method. ${starts === "trial" ? "Your trial carries on." : `You stay on ${esc(p.name)}.`}`, "go"], [fmtDay(on), `First charge of ${amt}, then monthly. Cancel before then and you pay nothing.`]];
+  const methods = [["UPI Autopay", upi], ["Cards", true], ["Net banking", ccy === "INR"]];
+  const m = document.createElement("div"); m.className = "ck light"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true"); m.setAttribute("aria-label", title);
+  m.innerHTML = `<aside class="ck-side"><div class="ck-brand">${$(".ob-logo svg")?.outerHTML || ""}<span>Perfstaq</span></div>
+      <div class="ck-plan"><span class="bl-kicker">${x.featured ? "Most popular" : "Your plan"}</span><h2>${esc(x.name)}</h2><p>${esc(x.description || "")}</p>
+      <ul>${planFacts(x.entitlements).map((l) => `<li>${esc(l)}</li>`).join("")}<li>${esc(x.entitlements.engines.length > 3 ? "All AI engines" : x.entitlements.engines.map(engLabel).join(", "))}</li></ul></div>
+      <p class="ck-safe">${icon("lock", 14)} Billed by Perfstaq. Payments are handled by Razorpay; we never see your card or bank details.</p></aside>
+    <main class="ck-main"><button type="button" class="pillbtn ck-back" data-ckback>${icon("arrow", 14)} Back to plans</button>
+      <div class="ck-body"><span class="bl-kicker">Checkout</span><h1>${esc(title)}</h1><p class="ck-lede">${lede}</p>
+      ${shSteps(steps)}${shMoney(price, ccy)}
+      <div class="ck-pay"><span>Pay with</span>${methods.map(([n, ok]) => `<em class="${ok ? "" : "off"}">${esc(n)}</em>`).join("")}</div>
+      ${!upi && ccy === "INR" ? `<p class="ck-note">UPI Autopay covers payments up to ₹15,000 a month, so ${esc(x.name)} is paid by card or net banking.</p>` : ""}
+      <button type="button" class="btn ck-go" data-ckgo>${icon("lock", 15)} Continue to secure payment</button>
+      <p class="ck-fine">You'll confirm on Razorpay's secure page and come straight back here.</p></div></main>`;
+  const close = () => { document.removeEventListener("keydown", key, true); m.remove(); document.body.classList.remove("sheet-open"); };
+  const key = (e) => { if (e.key === "Escape" && !document.querySelector(".razorpay-container")) { e.stopPropagation(); close(); } };
+  m.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-ckback]")) return close();
+    const go = e.target.closest("[data-ckgo]"); if (!go || go.getAttribute("aria-disabled")) return;
+    go.setAttribute("aria-disabled", "true"); go.innerHTML = "Opening secure payment…";
+    try { await payWithRazorpay(plan, switching); }
+    catch (err) { toast(esc(err.message), "bad"); }
+    finally { go.removeAttribute("aria-disabled"); go.innerHTML = `${icon("lock", 15)} Continue to secure payment`; }
+  });
+  $(".toast")?.remove(); // the checkout says it all; no leftover message on top of it
+  document.addEventListener("keydown", key, true); document.body.append(m); document.body.classList.add("sheet-open"); m.querySelector("[data-ckgo]").focus();
+}
+async function payWithRazorpay(plan, switching) {
+  const c = await api("POST", "/api/billing/checkout", { plan, currency: BILL.b?.plan?.currency || BILL.ccy || guessCcy(), switch: switching });
+  await loadRazorpay();
+  const starts = c.starts || (c.startsAt ? "trial" : "now"), trial = starts === "trial"; // trial / resume: nothing is charged until the covered time ends
+  const description = starts === "trial" ? `${c.name} · free until ${fmtDay(c.startsAt)}, then monthly` : starts === "resume" ? `${c.name} · from ${fmtDay(c.startsAt)}, monthly` : `${c.name} · monthly`;
+  // UPI only up to the ₹15,000 recurring limit (the server decides): larger plans are offered card and net banking.
+  const config = c.upi === false ? { display: { hide: [{ method: "upi" }], preferences: { show_default_blocks: true } } } : undefined;
+  // After paying, Razorpay posts back to /api/billing/callback, which brings the person back here (?billing=…).
+  try { sessionStorage.setItem("wp_pay", JSON.stringify({ plan, trial, resumeAt: starts === "resume" ? c.startsAt : null })); } catch {}
+  new window.Razorpay({ key: c.keyId, subscription_id: c.subscriptionId, name: "Perfstaq", description: `AI Visibility · ${description}`, prefill: { email: APP.user.email }, theme: { color: "#E8742A" }, ...(config ? { config } : {}),
+    ...(c.callbackUrl ? { callback_url: c.callbackUrl, redirect: true } : {}),
+    handler: async (r) => { try { await api("POST", "/api/billing/verify", r); } catch (e) { toast(esc(e.message), "bad"); } $(".ck")?.remove(); document.body.classList.remove("sheet-open"); confirmPayment(plan, trial, starts === "resume" ? c.startsAt : null); },
+    modal: { ondismiss: () => toast("Payment window closed. Nothing was charged.", "info") } }).open();
+}
+async function confirmPayment(plan, trial = false, resumeAt = null) {
+  toast(trial || resumeAt ? "Connecting your payment method…" : "Confirming your payment with Razorpay…", "info");
+  for (let i = 0; i < 20; i++) {
+    await new Promise((r) => setTimeout(r, 3000));
+    const b = await api(i % 2 ? "POST" : "GET", i % 2 ? "/api/billing/refresh" : "/api/billing").catch(() => null);
+    const done = b && ((resumeAt && b.plan.status === "active" && !b.plan.cancelAtPeriodEnd && (b.plan.pendingPlan === plan || (b.plan.code === plan && !b.plan.pendingPlan)))
+      || (trial && b.plan.code === plan && b.paymentMethod.connected) || (!trial && !resumeAt && b.plan.code === plan && b.plan.status === "active"));
+    if (done) { await reloadConfig(); $(".toast")?.remove(); return paySuccess(b, plan, trial ? "trial" : resumeAt ? "resume" : "paid"); }
+  }
+  toast(trial ? "Still connecting. It shows here as soon as Razorpay confirms it." : "Still confirming. If you were charged, your plan updates as soon as Razorpay confirms it. Contact us if it doesn't.", "warn");
+}
+// The moment it's done: a full page that says so, what happens next, and one obvious way on. Someone who hasn't checked a
+// website yet goes to add one; anyone with brands goes back to their dashboard.
+function paySuccess(b, plan, kind) {
+  $$(".ck,.paid").forEach((x) => x.remove());
+  const x = BILL.cat?.plans.find((y) => y.code === plan), name = x?.name || b.plan.name, ccy = b.plan.currency || BILL.ccy, price = x?.prices?.[ccy];
+  const amt = price != null ? moneyExact(charged(price, ccy), ccy) : "";
+  const title = kind === "trial" ? "You're all set" : kind === "resume" ? "Your subscription continues" : b.plan.status === "active" && plan === b.plan.code ? `Welcome to ${name}` : "Payment received";
+  const lede = kind === "trial" ? `Your payment method is connected. ${esc(name)} stays free until ${esc(fmtDay(b.trialEndsAt))}.`
+    : kind === "resume" ? `Nothing more is charged until ${esc(fmtDay(b.periodEnd))}.` : `${esc(name)} is active and its limits apply right away.`;
+  const rows = [["Plan", esc(name)], ...(amt ? [["Every month", `${esc(amt)}${taxRate(ccy) ? ` <small>incl. ${taxRate(ccy) * 100}% GST</small>` : ""}`]] : []),
+    [kind === "trial" ? "First charge" : "Next charge", esc(fmtDay(kind === "trial" ? b.trialEndsAt : b.periodEnd))], ["Payments by", "Razorpay"]];
+  const hasBrands = DATA.list.length > 0;
+  const m = document.createElement("div"); m.className = "paid light"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true"); m.setAttribute("aria-labelledby", "paidT");
+  m.innerHTML = `<div class="paid-card"><div class="paid-mark" aria-hidden="true">${icon("check", 30)}</div><span class="bl-kicker">${kind === "trial" ? "Payment method connected" : "Payment confirmed"}</span><h1 id="paidT">${esc(title)}</h1><p>${lede}</p>
+    <dl class="paid-sum">${rows.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${v}</dd></div>`).join("")}</dl>
+    <button type="button" class="btn paid-go" data-paidgo>${hasBrands ? "Go to your dashboard" : "Add your website"} ${icon("arrow", 15)}</button>
+    <button type="button" class="lnk" data-paidplan>View plan &amp; usage</button>
+    <p class="paid-fine">Razorpay emails a confirmation to ${esc(APP.user.email)}. You can cancel any time from Plans &amp; payment.</p></div>`;
+  m.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-paidgo]")) { m.remove(); document.body.classList.remove("sheet-open"); if (hasBrands) return home(); goHome(); return setTimeout(() => $("#startUrl")?.focus(), 50); }
+    if (e.target.closest("[data-paidplan]")) { m.remove(); document.body.classList.remove("sheet-open"); return openAccount(); }
+  });
+  document.body.append(m); document.body.classList.add("sheet-open"); m.querySelector("[data-paidgo]").focus();
+}
+async function changePlan(plan) {
+  const cat = BILL.cat, b = BILL.b, ccy = b.plan.currency, name = cat.plans.find((x) => x.code === plan)?.name || plan;
+  if (plan === b.plan.code) { await api("POST", "/api/billing/change-plan", { plan }); await openBilling(); return toast(`You're staying on <b>${esc(name)}</b>. The scheduled change is cancelled.`, "ok"); }
+  const now = cat.plans.find((x) => x.code === b.plan.code), to = cat.plans.find((x) => x.code === plan), up = to.prices[ccy] > (now?.prices[ccy] || 0);
+  const price = `<b>${esc(withGst(to.prices[ccy], ccy))}</b> a month`;
+  const cmp = shCompare({ k: "Now", name: now?.name || b.plan.name, price: perMonth(now?.prices[ccy] || 0, ccy) }, { k: up ? "Upgrade to" : "Moving to", name, price: perMonth(to.prices[ccy], ccy) });
+  const okd = await confirmBox(up
+    ? { title: `Upgrade to ${name}`, icon: "spark", tone: "up", ok: "Upgrade now", cancel: "Not now", sub: "More room for brands, questions and fixes, straight away.",
+        body: cmp + shSteps([["Today", `${esc(name)}'s limits switch on. Razorpay charges the difference for the rest of this period to your saved payment method.`, "go"], [fmtDay(b.periodEnd), `Renews at ${perMonth(to.prices[ccy], ccy)}, then monthly. Your renewal date doesn't change.`]]) }
+    : { title: `Move to ${name}`, icon: "down", tone: "down", ok: "Schedule the change", cancel: "Keep my plan", safe: true, sub: "Nothing changes until your renewal.",
+        body: cmp + shSteps([["Today", `Nothing is charged or refunded. You keep everything in ${esc(now?.name || "your plan")}.`, "go"], [fmtDay(b.periodEnd), `You move to ${esc(name)} at ${perMonth(to.prices[ccy], ccy)}. You can undo it any time before then.`]]) + `<p class="sh-note">${icon("info", 14)} Your usage has to fit ${esc(name)}'s limits. We check that now.</p>` });
+  if (!okd) return;
+  try { await api("POST", "/api/billing/change-plan", { plan }); }
+  catch (err) {
+    if (err.code === "needs_new_mandate") {
+      const go = await confirmBox({ title: `Switch to ${name} at your renewal`, icon: "card", tone: "info", ok: "Approve a new mandate", cancel: "Not now", sub: esc(err.message),
+        body: cmp + shSteps([["Today", `Nothing is charged. You keep ${esc(now?.name || "your plan")}.`, "go"], [fmtDay(b.periodEnd), `${esc(name)} starts at ${perMonth(to.prices[ccy], ccy)} and your old mandate stops.`]]) });
+      if (go) await buyPlan(plan, { switching: true }); return;
+    }
+    const over = err.code === "over_plan" && err.data?.blockers?.length;
+    await confirmBox({ title: over ? `A little too much for ${name}` : up ? "Couldn't upgrade" : "Couldn't make that change", icon: over ? "info" : "x", tone: "bad", ok: over ? "Got it" : "OK", cancel: "",
+      sub: over ? `Nothing is deleted for you. Trim these first, then come back to move to ${esc(name)}:` : esc(err.message), body: over ? `<ul class="sh-list">${err.data.blockers.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>` : "" }); return;
+  }
+  if (up) return confirmPayment(plan);
+  await openBilling(); toast(`Done. You'll move to <b>${esc(name)}</b> on ${esc(fmtDay(b.periodEnd))}.`, "ok");
+}
+async function operatorPlan(slug) {
+  const f = await confirmBox({ title: "Set this organisation's plan", ok: "Set plan", body: `<p class="muted sm">For invoiced contracts, extended trials and fixes. Recorded in the audit log.</p>
+    ${field("Plan", `<select class="inp" name="plan">${["enterprise", "agency", "growth", "starter", "trial", "legacy"].map((c) => `<option value="${c}">${esc(PLANS_LABEL(c))}</option>`).join("")}</select>`)}
+    ${field("Days of access from today (trial: its length; legacy: ignored)", `<input class="inp" name="days" type="number" min="1" value="365">`)}
+    ${field("Why?", `<input class="inp" name="reason" placeholder="invoiced contract">`)}` });
+  if (!f) return;
+  const plan = f.plan, days = plan === "legacy" ? 0 : Number(f.days), reason = f.reason;
+  if (plan !== "legacy" && !(days > 0)) return toast("Enter a number of days.");
+  if (reason.length < 3) return toast("A reason is needed.");
+  const end = new Date(Date.now() + days * 864e5).toISOString();
+  const body = plan === "legacy" ? { plan, status: "internal", reason } : plan === "trial" ? { plan, status: "trialing", trialEndsAt: end, reason } : { plan, status: "active", periodEndsAt: end, reason };
+  await api("PATCH", `/api/admin/orgs/${encodeURIComponent(slug)}/billing`, body); toast("Plan set."); return openTeam("#teamOps");
+}
+async function cancelTrial() {
+  const b = BILL.b || (await api("GET", "/api/billing")), card = b.paymentMethod?.connected;
+  if (!(await confirmBox({ title: "Cancel your free trial?", icon: "x", tone: "bad", ok: "Cancel free trial", cancel: "Keep my trial", danger: true, safe: true,
+    sub: card ? "Your payment method is removed too. Nothing has been charged, and nothing will be." : "Nothing has been charged, and nothing will be.",
+    body: `<div class="sh-two"><div><b>Stays</b><ul class="sh-list ok">${["Your reports and past checks stay readable", "Subscribe any time to pick up where you left off"].map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div><b>Ends now</b><ul class="sh-list no">${["New checks, drafts and invites", "The trial can't be started again"].map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>` }))) return;
+  try { await api("POST", "/api/billing/cancel-trial"); } catch (err) { await confirmBox({ title: "Couldn't cancel", icon: "x", tone: "bad", sub: esc(err.message), ok: "OK", cancel: "" }); return; }
+  await refreshBilling(); await openBilling(); toast("Free trial cancelled. Your reports stay readable.", "warn");
+}
+async function cancelSub() {
+  const b = BILL.b, end = fmtDay(b.periodEnd);
+  if (!(await confirmBox({ title: "Cancel your subscription?", icon: "x", tone: "bad", ok: "Cancel subscription", cancel: `Keep ${b.plan.name}`, danger: true, safe: true, sub: "You won't be charged again. Before you go, here's what changes.",
+    body: `<div class="sh-two"><div><b>Until ${esc(end)}</b><ul class="sh-list ok">${["Everything in " + b.plan.name + " keeps working", "Scheduled checks keep running", "Your team keeps its access"].map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div><b>After ${esc(end)}</b><ul class="sh-list no">${["Reports stay readable", "New checks, drafts and invites are paused", "Subscribe again any time to pick up where you left off"].map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div></div>` }))) return;
+  try { await api("POST", "/api/billing/cancel"); } catch (err) { await confirmBox({ title: "Couldn't cancel", icon: "x", tone: "bad", sub: esc(err.message), ok: "OK", cancel: "" }); return; }
+  await openBilling(); toast(`Subscription cancelled. You keep full access until ${esc(end)}.`, "warn");
+}
+
+function billingLink() {
+  const b = TEAM.bill; if (!b || !billingOn() || (b.plan.status === "internal" && !b.checkout.enabled)) return "";
+  return planPanel(b, TEAM.d?.org?.role === "owner" && !TEAM.d?.org?.operatorVisit, "team");
+}
 async function openTeam(focus) {
   if (!DATA.server()) return;
-  screen("team"); $("#teamUser").innerHTML = `<span class="muted">${esc(APP.user.email)}</span>`;
+  screen("team"); paintProfile();
   $("#teamBody").innerHTML = `<p class="muted pad">Loading…</p>`;
   try {
     TEAM.d = await api("GET", "/api/org");
+    TEAM.bill = await api("GET", "/api/billing"); if (!BILL.cat) BILL.cat = await fetch("/api/billing/plans").then((r) => r.json());
+    if (!BILL.ccy || !BILL.cat.currencies.includes(BILL.ccy)) BILL.ccy = BILL.cat.currencies.includes(guessCcy()) ? guessCcy() : BILL.cat.currencies[0];
+    if (APP.operator) { BILL.status = await api("GET", "/api/admin/billing/status"); BILL.admin = await api("GET", "/api/admin/plans"); BILL.cat = await fetch("/api/billing/plans").then((r) => r.json()); }
     TEAM.audit = canAdmin() ? (await api("GET", "/api/org/audit")).log : null;
     TEAM.adminOrgs = APP.operator ? (await api("GET", "/api/admin/orgs")).orgs : null;
   } catch (e) { $("#teamBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
@@ -2163,8 +2807,8 @@ function paintTeam() {
       ${TEAM.lastLink ? `<div class="team-link"><span class="muted sm">${TEAM.lastLink.emailed ? `Emailed to ${esc(TEAM.lastLink.email)}. You can also share this link:` : `Email isn't set up yet, so share this link with ${esc(TEAM.lastLink.email)} yourself:`}</span><div class="srow"><code class="ell">${esc(TEAM.lastLink.link)}</code><button type="button" class="btn ghost sm" data-copy="${esc(TEAM.lastLink.link)}">Copy link</button></div></div>` : ""}
       ${d.invites.length ? `<table class="tbl"><thead><tr><th>Waiting for</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody>${d.invites.map((i) => `<tr><td>${esc(i.email)}<div class="muted sm">invited by ${esc(i.invited_by || "–")}</div></td><td><span class="pillx">${ROLE_LABEL[i.role]}</span></td><td class="muted sm">${fmtDay(i.expires_at)}</td><td class="r"><button type="button" class="lnk sm" data-revoke="${esc(i.id)}">Cancel</button></td></tr>`).join("")}</tbody></table>` : ""}
     </div></div>` : "";
-  const keys = d.keys ? `<div class="card" id="teamKeys"><div class="card-h">${icon("key", 15)}<b>AI keys</b><span class="muted">${o.allowPlatformKeys ? "Keys you add here are used first; the rest fall back to White Petal's" : "Checks run on these keys only, so the spend is on your accounts"}</span></div><div class="pad set">
-      <table class="tbl"><thead><tr><th>Service</th><th>Status</th><th>New value</th><th></th></tr></thead><tbody>${d.keys.map((k) => `<tr><td><b>${esc(k.label)}</b><div class="muted sm"><code>${esc(k.name)}</code></div></td><td>${k.set ? `<span class="pillx ok">Set ${esc(k.hint)}</span>` : k.platform ? `<span class="pillx">Using White Petal's</span>` : `<span class="pillx no">Not set</span>`}</td><td><input class="inp" type="password" autocomplete="off" data-key="${esc(k.name)}" placeholder="${k.set ? "Paste to replace" : "Paste key"}"></td><td class="r">${k.set ? `<button type="button" class="lnk sm" data-clearkey="${esc(k.name)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table>
+  const keys = d.keys ? `<div class="card" id="teamKeys"><div class="card-h">${icon("key", 15)}<b>AI keys</b><span class="muted">${o.allowPlatformKeys ? "Keys you add here are used first; the rest fall back to Perfstaq's" : "Checks run on these keys only, so the spend is on your accounts"}</span></div><div class="pad set">
+      <table class="tbl"><thead><tr><th>Service</th><th>Status</th><th>New value</th><th></th></tr></thead><tbody>${d.keys.map((k) => `<tr><td><b>${esc(k.label)}</b><div class="muted sm"><code>${esc(k.name)}</code></div></td><td>${k.set ? `<span class="pillx ok">Set ${esc(k.hint)}</span>` : k.platform ? `<span class="pillx">Using Perfstaq's</span>` : `<span class="pillx no">Not set</span>`}</td><td><input class="inp" type="password" autocomplete="off" data-key="${esc(k.name)}" placeholder="${k.set ? "Paste to replace" : "Paste key"}"></td><td class="r">${k.set ? `<button type="button" class="lnk sm" data-clearkey="${esc(k.name)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table>
       <div class="srow"><span class="muted sm">Keys are encrypted at rest and never shown again in full. ChatGPT needs OpenAI; Gemini is free at aistudio.google.com/apikey.</span><button type="button" class="btn sm" data-savekeys>Save keys</button></div>
     </div></div>` : "";
   const u = d.usage || {}, cap = u.cap || {};
@@ -2175,20 +2819,21 @@ function paintTeam() {
       <div class="srow"><span>Monthly AI budget (USD)</span><span class="team-cap"><input class="inp" id="capIn" type="number" min="0" step="1" placeholder="No limit" value="${o.monthlyCapUsd ?? ""}"><button type="button" class="btn ghost sm" data-savecap>Save</button></span></div>
       <div class="grid2">${usageTbl(u.byEngine, "Engine or task")}${usageTbl(u.byPerson, "Person")}</div>${usageTbl(u.byBrand, "Brand")}
     </div></div>` : `<div class="card"><div class="card-h"><b>Budget</b></div><div class="pad set">${cap.cap ? meter : `<p class="muted sm">No monthly limit set.</p>`}</div></div>`;
-  const audit = TEAM.audit ? `<div class="card"><div class="card-h"><b>Activity</b><span class="muted">Who changed what</span></div><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${TEAM.audit.slice(0, 60).map((a) => `<tr><td class="muted sm">${fmtWhen(a.at)}</td><td class="sm">${esc(a.who || "White Petal")}</td><td class="sm">${esc(auditWords(a))}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Nothing yet.</td></tr>`}</tbody></table></div>` : "";
-  const ops = TEAM.adminOrgs ? `<div class="card" id="teamOps"><div class="card-h"><b>All organisations</b><span class="muted">Only White Petal operators see this</span></div><div class="pad set">
+  const audit = TEAM.audit ? `<div class="card"><div class="card-h"><b>Activity</b><span class="muted">Who changed what</span></div><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${TEAM.audit.slice(0, 60).map((a) => `<tr><td class="muted sm">${fmtWhen(a.at)}</td><td class="sm">${esc(a.who || "Perfstaq")}</td><td class="sm">${esc(auditWords(a))}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Nothing yet.</td></tr>`}</tbody></table></div>` : "";
+  const ops = TEAM.adminOrgs ? `<div class="card" id="teamOps"><div class="card-h"><b>All organisations</b><span class="muted">Only Perfstaq operators see this</span></div><div class="pad set">
       <form class="team-inv" id="newOrgForm"><input class="inp" id="newOrgName" placeholder="Client name, e.g. AI Xccelerate" required><input class="inp" id="newOrgOwner" type="email" placeholder="Owner's email (they get an invite)"><button class="btn sm" type="submit">Create organisation</button></form>
-      <table class="tbl"><thead><tr><th>Organisation</th><th>Owner</th><th class="r">People</th><th class="r">Brands</th><th class="r">This month</th><th></th></tr></thead><tbody>${TEAM.adminOrgs.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted sm">${esc(x.slug)}${x.allow_platform_keys ? " · platform keys" : ""}</div></td><td class="sm">${esc(x.owner || "invite pending")}</td><td class="r">${x.members}</td><td class="r">${x.brands}</td><td class="r">${usd(x.spent)}</td><td class="r">${x.slug === o.slug ? '<span class="tagx">Open</span>' : `<button type="button" class="lnk sm" data-org="${esc(x.slug)}">Open</button>`}</td></tr>`).join("")}</tbody></table>
+      <table class="tbl"><thead><tr><th>Organisation</th><th>Owner</th><th class="r">People</th><th class="r">Brands</th><th class="r">This month</th><th></th></tr></thead><tbody>${TEAM.adminOrgs.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted sm">${esc(x.slug)}${x.allow_platform_keys ? " · platform keys" : ""} <button type="button" class="lnk sm" data-opplan="${esc(x.slug)}">Set plan…</button> · ${esc(x.plan_code)}/${esc(x.billing_status)}${x.billing_status === "trialing" ? " until " + esc(fmtDay(x.trial_ends_at)) : x.billing_status === "active" ? " to " + esc(fmtDay(x.current_period_end)) : ""}</div></td><td class="sm">${esc(x.owner || "invite pending")}</td><td class="r">${x.members}</td><td class="r">${x.brands}</td><td class="r">${usd(x.spent)}</td><td class="r">${x.slug === o.slug ? '<span class="tagx">Open</span>' : `<button type="button" class="lnk sm" data-org="${esc(x.slug)}">Open</button>`}</td></tr>`).join("")}</tbody></table>
     </div></div>` : "";
   const verify = APP.user && !APP.user.verified ? `<div class="card note"><div class="pad">${icon("info", 16)} <b>Confirm your email.</b> <span class="muted">We sent a link to ${esc(APP.user.email)} when you signed up. Some things, like operator access, wait for it.</span><button type="button" class="btn ghost sm" data-sendverify>Send it again</button></div></div>` : "";
-  $("#teamBody").innerHTML = verify + `<div class="team-head"><div><span class="lp-kicker">Organisation</span><h1>${esc(o.name)}</h1><p class="muted">You're ${o.operatorVisit ? "visiting as a White Petal operator (logged)" : `${{ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[o.role]}`} · ${d.members.length} ${d.members.length === 1 ? "person" : "people"}</p></div>${switcher}</div>
+  $("#teamBody").innerHTML = verify + `<div class="team-head"><div><span class="lp-kicker">Organisation</span><h1>${esc(o.name)}</h1><p class="muted">You're ${o.operatorVisit ? "visiting as a Perfstaq operator (logged)" : `${{ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[o.role]}`} · ${d.members.length} ${d.members.length === 1 ? "person" : "people"}</p></div>${switcher}</div>
     <div class="card"><div class="card-h">${icon("team", 15)}<b>People</b><span class="muted">Owner and admins manage people and keys; editors do the work; viewers watch</span></div><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th class="hide-sm">Joined</th><th class="hide-sm">Last sign-in</th><th></th></tr></thead><tbody>${memberRows}</tbody></table></div>
-    ${invites}${keys}${budget}${audit}${ops}`;
+    ${billingLink()}${invites}${keys}${budget}${audit}${ops}${APP.operator ? billHealth() + billCatalogue() : ""}`;
 }
 const AUDIT_WORDS = { "org.created": "created the organisation", "invite.sent": "invited", "invite.accepted": "joined", "invite.revoked": "cancelled the invite for", "role.changed": "changed the role of", "owner.transferred": "handed ownership to", "member.removed": "removed", "member.left": "left", "keys.changed": "changed AI keys:", "org.updated": "changed settings", "brand.deleted": "deleted the brand", "brand.moved_in": "moved in the brand", "brand.moved_out": "moved out the brand", "integration.saved": "connected", "integration.removed": "disconnected", "check.queued": "queued a check of", "check.skipped": "skipped a scheduled check of", "operator.visit": "opened the organisation as an operator" };
 function auditWords(a) {
   const d = a.detail || {};
   const extra = a.action === "role.changed" ? ` (${ROLE_LABEL[d.from] || d.from} → ${ROLE_LABEL[d.to] || d.to})` : a.action === "invite.sent" || a.action === "invite.accepted" ? ` as ${ROLE_LABEL[d.role] || d.role || ""}` : a.action === "check.skipped" ? ": monthly budget reached" : a.action === "org.updated" ? `: ${Object.keys(d).join(", ").replace("monthly_cap_usd", "monthly budget")}` : "";
+  if (HIST[a.action]) return HIST[a.action][0] + (BILL.cat?.plans.some((x) => x.code === a.target) ? ` · ${planName(a.target)}` : ""); // plan and payment events, in words
   return [AUDIT_WORDS[a.action] || a.action, a.action === "operator.visit" ? "" : a.target || ""].filter(Boolean).join(" ") + extra;
 }
 async function switchOrg(slug) {
@@ -2201,6 +2846,9 @@ $("#team").addEventListener("click", async (e) => {
   const t = e.target;
   try {
     const org = t.closest("[data-org]"); if (org) return switchOrg(org.dataset.org);
+    if (await billAction(t)) return;
+    if (await catalogueClick(t)) return;
+    const op = t.closest("[data-opplan]"); if (op) return await operatorPlan(op.dataset.opplan);
     if (t.closest("[data-sendverify]")) { const r = await api("POST", "/api/auth/verify/send"); return toast(r.already ? "Your email is already confirmed." : r.emailed ? `Sent to ${esc(APP.user.email)}.` : "Email isn't set up on this server yet, so the link is in the server log."); }
     const cp = t.closest("[data-copy]"); if (cp) { await navigator.clipboard.writeText(cp.dataset.copy).catch(() => {}); return toast("Link copied."); }
     const rv = t.closest("[data-revoke]"); if (rv) { TEAM.d.invites = (await api("DELETE", `/api/org/invitations/${rv.dataset.revoke}`)).invites; return paintTeam(); }
@@ -2246,8 +2894,8 @@ $("#team").addEventListener("submit", async (e) => {
     }
   } catch (err) { toast(esc(err.message)); }
 });
-$("#teamBack").addEventListener("click", () => home());
-$("#lpTeam").addEventListener("click", () => openTeam());
+$("#teamBack").addEventListener("click", () => backFromSide());
+
 $("#navTeam").addEventListener("click", () => openTeam());
 document.addEventListener("click", (e) => { if (e.target.id === "toTeamKeys") openTeam("#teamKeys"); });
 
@@ -2272,16 +2920,62 @@ document.addEventListener("visibilitychange", () => {
   if (!$("#mission").hidden) { G.sim?.alpha(0.3).restart(); if (APP.M) renderMatrix($("#matrix"), APP.M); scrollFeed(); }
 });
 
+/* Pricing-page links (/?plan=growth&currency=INR[&trial=1]) are remembered across sign-up or Google sign-in, then acted on once. */
+const INTENT = "wp_intent";
+function captureIntent() {
+  const p = new URLSearchParams(location.search), plan = p.get("plan"); if (!plan) return;
+  try { sessionStorage.setItem(INTENT, JSON.stringify({ plan, currency: (p.get("currency") || "").toUpperCase(), trial: p.get("trial") === "1" })); } catch {}
+  history.replaceState(null, "", location.pathname + location.hash);
+}
+const readIntent = () => { try { return JSON.parse(sessionStorage.getItem(INTENT) || "null"); } catch { return null; } };
+async function resumeIntent() {
+  const it = readIntent(); if (!it || !APP.user || !billingOn()) return false;
+  try { sessionStorage.removeItem(INTENT); } catch {}
+  if (!["starter", "growth", "agency"].includes(it.plan)) return false;
+  const owner = APP.org?.role === "owner" && !APP.org?.operatorVisit; if (!owner) return false;
+  BILL.ccy = null; await openBilling({ firstRun: true });
+  const b = BILL.b; if (!b) return true;
+  if (it.currency && BILL.cat?.currencies?.includes(it.currency) && !b.plan.currency) { BILL.ccy = it.currency; paintBilling(); }
+  // From the pricing page: the trial starts on the plan they clicked. They can connect a payment method now or later.
+  if ((b.plan.status === "trialing" && !b.paymentMethod.connected) || (b.plan.status === "new" && b.trialAvailable)) await chooseTrialPlan(it.plan).catch((e) => toast(esc(e.message)));
+  else if (b.checkout.enabled && b.plan.status !== "active") await buyPlan(it.plan).catch((e) => toast(esc(e.message)));
+  return true;
+}
+// Everyone starts with a 7-day free trial. Right after signing up, until they have picked a plan, the plans page comes first
+// (once per session: "Skip for now" keeps it out of the way, and the dashboard pill still reminds them).
+// Back from Razorpay's full-page checkout (?billing=ok|failed): land on the plans page and finish what was started.
+async function payReturn() {
+  const q = new URLSearchParams(location.search), r = q.get("billing"); if (!r) return false;
+  history.replaceState(null, "", location.pathname + location.hash);
+  let s = null; try { s = JSON.parse(sessionStorage.getItem("wp_pay") || "null"); sessionStorage.removeItem("wp_pay"); } catch {}
+  if (!APP.user || !billingOn()) return false;
+  await openBilling();
+  if (r === "ok") { if (s) confirmPayment(s.plan, s.trial, s.resumeAt); else toast("Payment received. Updating your plan…", "info"); }
+  else { const why = q.get("why"); toast(why && why !== "unverified" ? `Payment didn't go through: ${esc(why)}` : "Payment didn't go through. Nothing was charged.", "bad"); }
+  return true;
+}
+async function maybeFirstRun() {
+  const b = APP.cfg.billing; if (!b || !billingOn() || !["new", "trialing"].includes(b.plan.status) || b.trialChosen) return false;
+  if (!(APP.org?.role === "owner" && !APP.org?.operatorVisit)) return false;
+  if (b.plan.status !== "new") try { if (sessionStorage.getItem("wp_skip_plan")) return false; } catch {}
+  await openBilling({ firstRun: true }); return true;
+}
+
 /* =================================================================== BOOT */
 (async () => {
   paintIcons();
   $$(".wordmark .pq").forEach((m) => m.classList.add("anim"));
   try { const r = await fetch("/api/config", { cache: "no-store" }); if (!r.ok) throw 0; } catch { $("#startErr").textContent = "Can't reach the server."; }
+  captureIntent();
   await reloadConfig();
   if (APP.cfg.access) { $("#accessRow").hidden = false; $("#accessCode").value = APP.code || ""; }
   paintLanding();
   if (DATA.server()) { try { await DATA.refresh(); } catch {} }
   if (await handleAuthHash()) return;
+  if (readIntent() && !APP.user && APP.cfg.auth) return showAuth("signup"); // coming from the pricing page: sign up first
+  if (await payReturn()) return;
+  if (await resumeIntent()) return;
+  if (await maybeFirstRun()) return;
   if (APP.cfg.engines && !APP.cfg.engines.length) $("#startErr").innerHTML = DATA.server() ? (canAdmin() ? `This organisation has no AI keys yet. Add them in <button type="button" class="lnk" id="toTeamKeys">Team &amp; keys</button>.` : "This organisation has no AI keys yet. Ask an admin to add them in Team & keys.") : "The server has no AI keys yet. Add GEMINI_API_KEY (free) in the environment variables.";
   // This tab was running a check when it navigated away or reloaded: carry on without asking.
   let auto = null; try { auto = sessionStorage.getItem(AUTO); sessionStorage.removeItem(AUTO); } catch {}
@@ -2290,6 +2984,10 @@ document.addEventListener("visibilitychange", () => {
   // A link back from Google sign-in lands on the brand's settings.
   const hm = location.hash.match(/^#settings\/([^?]+)(?:\?(.*))?/);
   if (hm && DATA.server()) { history.replaceState(null, "", location.pathname); if (await openBrand(decodeURIComponent(hm[1]), { quiet: true })) { DASH.page = "settings"; dashRender(); if (/google=connected/.test(hm[2] || "")) toast("Google connected. Choose your Search Console and GA4 properties."); return; } }
+  // Links from our emails: #plans opens Plans & payment, #brand/<slug> opens that brand's report.
+  if (DATA.server() && location.hash === "#plans") { history.replaceState(null, "", location.pathname); return openBilling(); }
+  const hb = location.hash.match(/^#brand\/(.+)/);
+  if (hb && DATA.server()) { history.replaceState(null, "", location.pathname); if (await openBrand(decodeURIComponent(hb[1]), { quiet: true })) return; }
   if (DATA.server() && DATA.list.length) return home();
   renderRecent(); $("#startUrl").focus();
 })();

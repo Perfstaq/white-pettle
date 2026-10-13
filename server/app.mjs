@@ -7,9 +7,12 @@ import zlib from "node:zlib";
 import { pathToFileURL } from "node:url";
 import { ROOT } from "./env.mjs";
 
-import { connect, migrate, ping, hasDb, close } from "./db.mjs";
+import { connect, migrate, ping, hasDb, close, q } from "./db.mjs";
+import { loadCatalogue, catalogueStamp } from "./plans.mjs";
 import { ROUTES, aiAuth, aiAllow, currentUser, isLocalDev } from "./routes.mjs";
 import * as O from "./orgs.mjs";
+import * as B from "./billing.mjs";
+import { billingConfig } from "./razorpay.mjs";
 import { HttpError, sendJson, readBody, fail } from "./http.mjs";
 import { limited } from "./security.mjs";
 
@@ -64,8 +67,17 @@ async function handleAi(req, res, name, url) {
   const chat = name === "write" && body.kind === "chat";
   if (who && chat && !O.can(who.role, "editor") && limited("chat:" + who.user.id, 40, 3600e3)) fail(429, "That's a lot of questions for one hour. Try again a bit later.");
   const ctx = await aiAllow(who, req, chat ? "viewer" : "editor");
+  // Check the plan's limits and the AI allowance and record this call as ONE step under the organisation's lock, so a burst of
+  // simultaneous requests can't all pass the check before any of them is counted.
+  if (ctx) {
+    const kind = name, engine = String(body.engine || ""), writeKind = String(body.kind || "");
+    await B.guarded(ctx.org.id, async (c, st) => {
+      B.checkAi(st, { kind, engine, writeKind });
+      await O.needBudget(ctx.org.id, c);
+      await O.meter({ orgId: ctx.org.id, workspaceId: ctx.workspaceId, userId: ctx.user.id, kind, engine: kind === "ask" ? engine || null : null, sub: kind === "write" ? writeKind.slice(0, 40) || null : null, bytes: raw.length, c, periodStart: st.since });
+    }, B.aiUsage(kind, writeKind));
+  }
   const run = async () => {
-    if (ctx) O.meter({ orgId: ctx.org.id, workspaceId: ctx.workspaceId, userId: ctx.user.id, kind: name, engine: name === "ask" ? String(body.engine || "") || null : null, bytes: raw.length });
     const headers = { ...req.headers }; if (process.env.ACCESS_CODE) headers["x-access-code"] = process.env.ACCESS_CODE;
     const request = new Request(url, { method: req.method, headers, body: ["GET", "HEAD"].includes(req.method) ? undefined : raw });
     const out = await (await aiHandler(name))(request);
@@ -87,10 +99,12 @@ async function sendConfig(req, res, url) {
   const get = async () => (await (await aiHandler("config"))(new Request(url))).json();
   const cfg = ctx?.org ? await O.withOrgKeys(ctx.org.id, get) : await get();
   const budget = ctx?.org ? await O.capState(ctx.org.id) : null;
-  return sendJson(res, 200, { ...cfg, db: hasDb(), auth: hasDb(), access: hasDb() || isLocalDev(req) ? false : cfg.access, invite: hasDb() && !!process.env.ACCESS_CODE,
+  return sendJson(res, 200, { ...cfg, db: hasDb(), auth: hasDb(), access: hasDb() || isLocalDev(req) ? false : cfg.access, invite: hasDb() && !!process.env.ACCESS_CODE && billingConfig().enabled !== "1",
     user: user ? { id: user.id, email: user.email, name: user.name, verified: !!user.email_verified_at } : null,
     org: ctx ? O.orgOut(ctx) : null, orgs: ctx ? ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })) : [], operator: !!ctx?.operator,
-    budget: budget ? { warn: budget.warn, over: budget.over, pct: budget.pct } : null,
+    budget: budget ? { warn: budget.warn, over: budget.over, pct: budget.pct, source: budget.source } : null, billing: ctx?.org ? await B.billingSummary(ctx.org.id) : null,
+    // Billing screens show only when billing is open: "1" for everyone, "operators" for platform operators, nothing at "0".
+    billingUi: billingConfig().enabled === "1" || (billingConfig().enabled === "operators" && !!ctx?.operator),
     googleLogin: hasDb() && !!(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET),
     serp: cfg.engines.includes("aio"), googleOAuth: !!process.env.GOOGLE_OAUTH_CLIENT_ID, version: process.env.K_REVISION || "dev" });
 }
@@ -98,7 +112,7 @@ async function sendConfig(req, res, url) {
 export async function start({ port = Number(process.env.PORT || 3000), quiet = false } = {}) {
 if (process.env.DATABASE_URL) {
   connect();
-  try { await migrate(); if (!quiet) console.log("[db] migrations up to date"); }
+  try { await migrate(); if (!quiet) console.log("[db] migrations up to date"); await loadCatalogue(q); }
   catch (e) { console.error("[db] migration failed:", e.message); if (process.env.NODE_ENV === "production") process.exit(1); throw e; }
 } else if (!quiet) console.log("[db] no DATABASE_URL: running without accounts (data stays in the browser)");
 
@@ -130,15 +144,22 @@ const server = http.createServer(async (req, res) => {
 // Long SSE streams (a live AI answer can take a minute) must not be cut by Node's defaults.
 server.requestTimeout = 0; server.headersTimeout = 65000; server.keepAliveTimeout = 65000;
 
+// The plan catalogue is edited in the database: pick up a change made on another instance within seconds.
+let stamp = null, catTimer = null;
+if (hasDb()) {
+  stamp = await catalogueStamp(q).catch(() => null);
+  catTimer = setInterval(async () => { try { const s = await catalogueStamp(q); if (s !== stamp) { await loadCatalogue(q); stamp = s; } } catch {} }, 15000);
+  catTimer.unref();
+}
 await new Promise((ok) => server.listen(port, ok));
 if (!quiet) {
   const { engines } = await import("../api/_lib.js");
   const keys = engines();
-  console.log(`\n  White Petal → http://localhost:${server.address().port}`);
+  console.log(`\n  Perfstaq AI Visibility → http://localhost:${server.address().port}`);
   console.log(`  accounts: ${hasDb() ? "on (Postgres)" : "off (no DATABASE_URL, data stays in the browser)"}`);
   console.log(`  engines:  ${keys.length ? keys.join(", ") : "none: add GEMINI_API_KEY or OPENAI_API_KEY to .env.local"}`);
   if (process.env.ACCESS_CODE) console.log(`  access code: ${hasDb() ? "required at sign-up" : "required, except from this machine"}`);
   console.log("");
 }
-return { server, port: server.address().port, stop: () => new Promise((ok) => server.close(() => close().finally(ok))) };
+return { server, port: server.address().port, stop: () => new Promise((ok) => { clearInterval(catTimer); server.close(() => close().finally(ok)); }) };
 }

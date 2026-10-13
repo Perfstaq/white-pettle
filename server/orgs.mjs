@@ -9,6 +9,10 @@ import { q, one, tx } from "./db.mjs";
 import { seal, unseal, newToken, tokenId } from "./security.mjs";
 import { fail } from "./http.mjs";
 import { slugify, normEmail } from "./util.mjs";
+import { PLANS } from "./plans.mjs";
+import { billingConfig } from "./razorpay.mjs";
+import { periodStart as periodStart_ } from "./billing.mjs";
+import { record, readCounters } from "./usage.mjs";
 
 export const ROLES = ["viewer", "editor", "admin", "owner"];
 export const rank = (r) => ROLES.indexOf(r);
@@ -134,27 +138,40 @@ export function keyStatus({ keys, allowPlatform }) {
   return KEY_NAMES.map((k) => ({ name: k, label: KEY_LABELS[k], set: !!keys[k], hint: keys[k] ? "••••" + String(keys[k]).slice(-4) : null, platform: !keys[k] && allowPlatform && !!process.env[k] }));
 }
 
-// ── usage and the monthly cap ─────────────────────────────────────────────────
-// Estimated list prices per call (USD), from docs/gcp-cost-plan.md. Real bills come from each provider; these
-// exist to show the trend and stop runaway spend, so they err high.
-export const COST = { ask: { chatgpt: 0.0145, perplexity: 0.0065, gemini: 0.004, groq: 0, aio: 0.003, aimode: 0.003, claude: 0.012 }, write: 0.002, inspect: 0.0005, site: 0.001, serp: 0.002, entity: 0 };
-// Writing is priced by the size of what was sent too (about $1 per million input tokens, ~4 characters a token),
-// so a huge prompt counts for what it costs rather than as one flat call.
-export const costOf = (kind, engine, bytes = 0) => { const c = COST[kind]; const base = typeof c === "number" ? c : c?.[engine] ?? 0.01; return kind === "write" ? base + (bytes / 4) * 1e-6 : base; };
-export async function meter({ orgId, workspaceId = null, userId = null, kind, engine = null, n = 1, bytes = 0 }) {
+// ── usage and the AI allowance ────────────────────────────────────────────────
+// Recording is server/usage.mjs (events + per-period counters); this is the thin wrapper the routes call, and the AI allowance that
+// reads the counters. The cost table lives with the recorder.
+export { COST, costOf } from "./usage.mjs";
+// `periodStart` is passed by callers that already know it (the locked AI check); otherwise it is looked up. `c` is a transaction client.
+export async function meter({ orgId, workspaceId = null, userId = null, kind, engine = null, sub = null, n = 1, bytes = 0, c = null, periodStart = null }) {
   if (!orgId || !n) return;
-  await q(`insert into usage (org_id, workspace_id, user_id, kind, engine, n, cost_usd) values ($1, $2, $3, $4, $5, $6, $7)`,
-    [orgId, workspaceId, userId, kind, engine, n, +(costOf(kind, engine, bytes) * n).toFixed(5)]).catch((e) => console.warn("[usage]", e.message));
+  try {
+    let start = periodStart;
+    if (!start) {
+      const row = c ? (await c.query(`select billing_status, trial_started_at, current_period_start from organizations where id = $1`, [orgId])).rows[0]
+        : await one(`select billing_status, trial_started_at, current_period_start from organizations where id = $1`, [orgId]);
+      start = row ? periodStart_(row) : null;
+    }
+    await record({ c, orgId, periodStart: start, workspaceId, userId, kind, engine, sub, n, bytes });
+  } catch (e) { if (c) throw e; console.warn("[usage]", e.message); } // outside a transaction a failed record must not break the request it describes
 }
-export async function capState(orgId) {
-  const r = await one(`select o.monthly_cap_usd as cap, (select coalesce(sum(cost_usd), 0) from usage u where u.org_id = o.id and u.at >= date_trunc('month', now())) as spent
-                       from organizations o where o.id = $1`, [orgId]);
-  const cap = r?.cap == null ? null : Number(r.cap), spent = Number(r?.spent || 0);
-  return { cap, spent: +spent.toFixed(2), pct: cap ? Math.min(1, spent / cap) : null, warn: cap != null && spent >= 0.8 * cap, over: cap != null && spent >= cap };
+// The plan's AI-cost allowance is the margin guard and counts from the plan's own billing period; an admin may set a lower cap, never
+// a higher one. BILLING_ENABLED=0 switches the plan cap off. Without a plan cap this is the monthly cap it always was.
+export async function capState(orgId, c = null) {
+  const get = (text, params) => (c ? c.query(text, params).then((r) => r.rows[0] || null) : one(text, params));
+  const r = await get(`select monthly_cap_usd as cap, plan_code, billing_status, trial_started_at, current_period_start from organizations where id = $1`, [orgId]);
+  const planCap = billingConfig().enabled === "0" ? null : PLANS[r?.billing_status === "trialing" ? "trial" : r?.plan_code]?.capUsd ?? null; // the trial's allowance during the trial
+  const adminCap = r?.cap == null ? null : Number(r.cap);
+  const caps = [adminCap, planCap].filter((v) => v != null), cap = caps.length ? Math.min(...caps) : null;
+  const spent = r ? (await readCounters(orgId, periodStart_(r), c)).ai_usd || 0 : 0;
+  return { cap, spent: +spent.toFixed(2), pct: cap ? Math.min(1, spent / cap) : null, warn: cap != null && spent >= 0.8 * cap, over: cap != null && spent >= cap,
+    source: cap == null ? null : planCap != null && (adminCap == null || planCap <= adminCap) ? "plan" : "admin" };
 }
-export async function needBudget(orgId) {
-  const s = await capState(orgId);
-  if (s.over) fail(402, `This organisation has used its monthly AI budget ($${s.spent} of $${s.cap}). An admin can raise it in Team & keys.`, { code: "cap" });
+export async function needBudget(orgId, c = null) {
+  const s = await capState(orgId, c);
+  if (s.over) fail(402, s.source === "plan"
+    ? "This plan's AI allowance for the period is used up. Upgrade in Team & keys, or it resets with your next billing period."
+    : `This organisation has used its monthly AI budget ($${s.spent} of $${s.cap}). An admin can raise it in Team & keys.`, { code: "cap", source: s.source });
   return s;
 }
 export async function usageSummary(orgId) {

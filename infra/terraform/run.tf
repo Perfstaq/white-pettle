@@ -184,6 +184,26 @@ resource "google_cloud_run_v2_service" "whitepetal" {
         value = var.email_from
       }
 
+      # Paid plans. Off by default: with "0" checkout is closed and every organisation keeps the access it has.
+      # The Razorpay plan ids are not secret; the keys and webhook secret are Secret Manager values.
+      env {
+        name  = "BILLING_ENABLED"
+        value = var.billing_enabled
+      }
+
+      env {
+        name  = "BILLING_CONTACT_EMAIL"
+        value = var.billing_contact_email
+      }
+
+      dynamic "env" {
+        for_each = var.razorpay_plan_ids
+        content {
+          name  = "RAZORPAY_PLAN_${env.key}"
+          value = env.value
+        }
+      }
+
       # No PORT: Cloud Run reserves it, injects 8080, and rejects a service
       # that sets it.
 

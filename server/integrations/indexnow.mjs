@@ -12,7 +12,7 @@ export const meta = {
   auth: "none",
   free: true,
   fields: [
-    { key: "key", label: "IndexNow key", secret: false, placeholder: "Leave blank to generate one", help: "8–128 characters (a-z, A-Z, 0-9, -). White Petal generates one if empty; host it as https://yoursite.com/<key>.txt containing only the key." },
+    { key: "key", label: "IndexNow key", secret: false, placeholder: "Leave blank to generate one", help: "8–128 characters (a-z, A-Z, 0-9, -). Perfstaq generates one if empty; host it as https://yoursite.com/<key>.txt containing only the key." },
     { key: "keyLocation", label: "Key file URL (optional)", secret: false, placeholder: "https://brand.com/<key>.txt", help: "Only if the key file isn't at your site root. It then only covers URLs under that folder." },
   ],
   blurb: "Pings Bing and other IndexNow search engines the moment you publish or update a page, so AI search answers pick up changes in hours, not weeks.",
