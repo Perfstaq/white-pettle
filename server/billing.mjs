@@ -290,6 +290,14 @@ export async function beginTrial(orgId, userId, days = 7) {
     await c.query(`update organizations set billing_status = 'trialing', trial_started_at = $2, trial_ends_at = $3, updated_at = now() where id = $1 and billing_status = 'new'`, [orgId, u.trial_started_at, u.trial_ends_at]);
   });
 }
+// A new self-serve organisation starts its free trial straight away (no plan pick first). If the person's one trial is already
+// spent it stays 'new' (read-only) until they subscribe. Returns when the trial ends, or null when none started.
+export async function startDefaultTrial(orgId, userId, days = 7) {
+  await awaitPlan(orgId);
+  try { await beginTrial(orgId, userId, days); }
+  catch (e) { if (e.extra?.code !== "trial_used") throw e; return null; }
+  return (await q(`select trial_ends_at from organizations where id = $1 and billing_status = 'trialing'`, [orgId]))[0]?.trial_ends_at || null;
+}
 // Whether this organisation's owner can still start (or join) a trial. Shown so the plans page offers "free trial" or "subscribe".
 async function trialAvailable(orgId) {
   const r = (await q(`select u.trial_ends_at from memberships m join users u on u.id = m.user_id where m.org_id = $1 and m.role = 'owner' limit 1`, [orgId]))[0];
