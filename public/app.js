@@ -224,7 +224,7 @@ function billingToast(b) {
   const left = b.trialEndsAt ? Math.ceil((new Date(b.trialEndsAt) - Date.now()) / 864e5) : null;
   if (b.mode === "read") toast(b.plan.status === "trialing" ? "Your trial has ended. Choose a plan in Plans &amp; payment to keep running checks. Your reports stay readable." : "This organisation is read-only until the plan is paid. See Plans &amp; payment.");
   else if (b.mode === "manual") toast(`Your last payment failed. Update your payment method by ${new Date(b.graceEndsAt).toLocaleDateString()} to keep scheduled checks running.`);
-  else if (b.plan.status === "trialing" && !b.paymentMethod?.connected && left != null && left <= 2) toast(`Your trial ends ${left <= 0 ? "today" : left === 1 ? "tomorrow" : "in 2 days"}. Choose a plan in Plans &amp; payment to keep going.`);
+  else if (b.plan.status === "trialing" && !b.paymentMethod?.connected && left != null && left <= 2 && !PAY_HIDDEN) toast(`Your trial ends ${left <= 0 ? "today" : left === 1 ? "tomorrow" : "in 2 days"}. Choose a plan in Plans &amp; payment to keep going.`); // PAY_HIDDEN: no "choose a plan" reminder
 }
 // Invite links (#invite=…), password resets (#reset=…) and Google sign-in errors (#auth-error=…).
 async function handleAuthHash() {
@@ -1147,6 +1147,9 @@ let OB = null;
 const splitList = (s) => String(s || "").split(/,|;|\/|\band\b/).map((x) => x.trim()).filter((x) => x.length > 1).slice(0, 6);
 
 const billingOn = () => !!APP.cfg.billingUi && DATA.server(); // BILLING_ENABLED: billing screens, reminders and the first-run plan page exist only when it is on
+// PAY_HIDDEN (for now): everyone starts on the free trial at sign-up, and the payment side is hidden: the Plans & payment page
+// (pricing cards), "Add / Connect payment method" and the payment-method details. Nothing is removed; set false to bring it all back.
+const PAY_HIDDEN = true;
 
 /* What the current plan allows, so setup only OFFERS and GENERATES what can be saved. The server enforces the same limits (and stays the
    authority); this keeps people from generating 25 prompts and then being refused at 15. Unlimited without accounts or when the plan has no limit. */
@@ -1724,7 +1727,7 @@ function dashRender() {
   $("#rerun").hidden = !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
-  $("#navTeam").hidden = !DATA.server(); $("#navBilling").hidden = !billingOn(); $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
+  $("#navTeam").hidden = !DATA.server(); $("#navBilling").hidden = !billingOn() || PAY_HIDDEN; /* PAY_HIDDEN: no Plans & payment in the nav */ $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
   const m = metrics(M, DASH.eng), pm = prevMetrics(M, DASH.eng);
   $("#pages").innerHTML = `<div class="pg">${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
   if (DASH.page === "actions") drawDeck();
@@ -2258,7 +2261,7 @@ const planFacts = (e) => [`${plural(e.brands, "brand")}`, `${e.questions} tracke
 
 function billBanners(b) {
   const p = b.plan, out = [], r = b.report, owner = APP.org?.role === "owner" && !APP.org?.operatorVisit;
-  const go = owner ? `<button type="button" class="btn sm" data-openbilling>Choose a plan</button>` : "";
+  const go = owner && !PAY_HIDDEN ? `<button type="button" class="btn sm" data-openbilling>Choose a plan</button>` : ""; // PAY_HIDDEN: no plan button
   const add = (tone, title, text, acts = "") => out.push(`<div class="bl-banner ${tone}"><div class="tx"><b>${title}</b><span>${text}</span></div><div class="acts">${acts}</div></div>`);
   if (b.mode === "read" && p.status === "trialing") add("bad", "Your trial has ended", "New checks, drafts, edits and invites are paused. Your reports stay readable. Choose a plan to carry on.", go);
   else if (b.mode === "read" && p.status === "past_due") add("bad", "Payment failed: the organisation is read-only", "Razorpay emailed the owner a link to fix it. You can also start again with a new plan; the old subscription is cancelled once the new one is confirmed.", owner ? `<button type="button" class="btn ghost sm" data-paylink>Find payment link</button>${go}` : "");
@@ -2289,27 +2292,29 @@ function planPanel(b, owner, where = "account") {
   const name = p.status === "new" ? "No plan yet" : p.status === "trialing" ? "Free trial" : p.name;
   const desc = p.status === "new" ? (b.trialAvailable ? `Pick a plan to start your ${BILL.cat?.trialDays || 7}-day free trial. No card needed.` : "Your free trial has been used. Choose a plan to subscribe.")
     : trialDone(b) && !pm.connected ? "Your free trial check is done. Subscribe and your plan starts today."
+    : p.status === "trialing" && PAY_HIDDEN ? `Your free trial runs until ${fmtDay(b.trialEndsAt)}.` // PAY_HIDDEN: no "pick a plan" wording
     : p.status === "trialing" ? (chosen ? `The same trial for every plan. ${p.name} starts when it ends, on ${fmtDay(b.trialEndsAt)}.` : "The same trial for every plan. Pick the plan that starts after it.") : p.description || "";
   const priceHtml = ["active", "past_due"].includes(p.status) && price != null ? `<b>${esc(total)}</b><span>a month${taxRate(ccy) ? ` · ${esc(money(price, ccy))} + ${taxRate(ccy) * 100}% GST` : ""}</span>`
-    : p.status === "trialing" ? `<b>Free</b><span>until ${esc(fmtDay(b.trialEndsAt))}${chosen && total ? `, then ${esc(total)} a month incl. GST` : ""}</span>`
+    : p.status === "trialing" ? `<b>Free</b><span>until ${esc(fmtDay(b.trialEndsAt))}${chosen && total && !PAY_HIDDEN /* PAY_HIDDEN: no price after the trial */ ? `, then ${esc(total)} a month incl. GST` : ""}</span>`
     : p.status === "internal" ? `<b>Included</b><span>no charge</span>` : "";
   const meta = [];
-  if (p.status === "trialing") meta.push(["Trial ends", fmtDay(b.trialEndsAt)], ...(chosen ? [["Then", p.name]] : []), ["Payment method", pm.connected ? "Connected" : "Not connected", pm.connected ? "good" : "warn"]);
-  if (p.status === "trialing" && pm.connected) meta.push(["First charge", fmtDay(pm.firstChargeAt || b.trialEndsAt)]);
-  if (p.status === "active") meta.push([p.cancelAtPeriodEnd ? "Access until" : "Next charge", fmtDay(b.periodEnd)], ["Payment method", "Connected", "good"]);
+  // PAY_HIDDEN: the payment-method and first-charge rows are left out.
+  if (p.status === "trialing") meta.push(["Trial ends", fmtDay(b.trialEndsAt)], ...(chosen ? [["Then", p.name]] : []), ...(PAY_HIDDEN ? [] : [["Payment method", pm.connected ? "Connected" : "Not connected", pm.connected ? "good" : "warn"]]));
+  if (p.status === "trialing" && pm.connected && !PAY_HIDDEN) meta.push(["First charge", fmtDay(pm.firstChargeAt || b.trialEndsAt)]);
+  if (p.status === "active") meta.push([p.cancelAtPeriodEnd ? "Access until" : "Next charge", fmtDay(b.periodEnd)], ...(PAY_HIDDEN ? [] : [["Payment method", "Connected", "good"]]));
   if (p.pendingPlan) meta.push([`From ${fmtDay(b.periodEnd)}`, planName(p.pendingPlan)]);
   if (p.status === "past_due") meta.push(["Fix by", fmtDay(b.graceEndsAt), "bad"]);
   if (p.status === "canceled") meta.push(["Ended", fmtDay(b.periodEnd)]);
   const A = [], L = [];
   if (!owner) L.push(`<span class="muted sm">Only the owner can change the plan.</span>`);
   else {
-    if (p.status === "trialing" && chosen && !pm.connected && b.checkout.enabled) A.push(`<button class="btn" type="button" data-buy="${esc(p.code)}">${icon("card", 15)} ${trialDone(b) ? `Subscribe to ${esc(p.name)}` : "Connect payment method"}</button>`);
+    if (p.status === "trialing" && chosen && !pm.connected && b.checkout.enabled && !PAY_HIDDEN) A.push(`<button class="btn" type="button" data-buy="${esc(p.code)}">${icon("card", 15)} ${trialDone(b) ? `Subscribe to ${esc(p.name)}` : "Connect payment method"}</button>`);
     if (p.status === "active" && p.cancelAtPeriodEnd) A.push(`<button class="btn" type="button" data-buy="${esc(p.code)}">Keep my subscription</button>`);
     if (p.status === "active" && p.pendingPlan) A.push(`<button class="btn ghost" type="button" data-change="${esc(p.code)}">Keep ${esc(p.name)}</button>`);
     if (p.status === "past_due") A.push(`<button class="btn" type="button" data-paylink>Fix payment</button>`);
     if (where === "plans") { if (p.status === "active" && !p.cancelAtPeriodEnd) A.push(`<button class="btn ghost" type="button" data-scrollplans>Change plan</button>`); }
-    else A.push(`<button class="btn${A.length ? " ghost" : ""}" type="button" data-openbilling>${p.status === "new" ? "Choose a plan" : "Plans & payment"}</button>`);
-    if (p.status === "trialing" && pm.connected) L.push(`<button class="lnk" type="button" data-rmpay>Remove payment method</button>`);
+    else if (!PAY_HIDDEN) A.push(`<button class="btn${A.length ? " ghost" : ""}" type="button" data-openbilling>${p.status === "new" ? "Choose a plan" : "Plans & payment"}</button>`); // PAY_HIDDEN: no link to the payment page
+    if (p.status === "trialing" && pm.connected && !PAY_HIDDEN) L.push(`<button class="lnk" type="button" data-rmpay>Remove payment method</button>`);
     if (p.status === "trialing") L.push(`<button class="lnk danger" type="button" data-canceltrial>Cancel free trial</button>`);
     if (p.status === "active" && !p.cancelAtPeriodEnd) L.push(`<button class="lnk" type="button" data-billrefresh>Check with Razorpay</button>`, `<button class="lnk danger" type="button" data-cancelsub>Cancel subscription</button>`);
   }
@@ -2417,6 +2422,7 @@ async function loadBill(extra = {}) {
 }
 async function openBilling(opts = {}) {
   if (!billingOn()) return home();
+  if (PAY_HIDDEN) return openAccount(); // PAY_HIDDEN: the plans/payment page is hidden; anything that opens it lands on Account & usage
   screen("billing"); paintProfile();
   $("#billBody").innerHTML = `<p class="muted pad">Loading…</p>`;
   try { await loadBill(); } catch (e) { $("#billBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
@@ -2593,6 +2599,8 @@ function planLine(b) {
   if (p.status === "new") return { text: "Choose a plan", tone: "warn", cta: "Choose a plan", detail: b.trialAvailable ? `Start your ${BILL.cat?.trialDays || 7}-day free trial.` : "Your free trial has been used." };
   if (b.mode === "read") return { text: p.status === "trialing" ? "Trial ended" : "Payment needed", tone: "bad", cta: "Choose a plan", detail: "Reports stay readable. Pick a plan to carry on." };
   if (p.status === "past_due") return { text: "Payment failed", tone: "bad", cta: "Fix payment", detail: `Fix it by ${fmtDay(b.graceEndsAt)} to keep everything running.` };
+  // PAY_HIDDEN: the trial line has no plan/payment button and no "pick a plan" wording.
+  if (p.status === "trialing" && PAY_HIDDEN) return { text: `Free trial · ${n} day${n === 1 ? "" : "s"} left`, tone: n <= 2 ? "warn" : "info", cta: "", detail: `Free until ${fmtDay(b.trialEndsAt)}.` };
   if (p.status === "trialing") return { text: `Free trial · ${n} day${n === 1 ? "" : "s"} left`, tone: n <= 2 ? "warn" : "info", cta: !b.trialChosen ? "Choose a plan" : b.paymentMethod.connected ? "Manage plan" : "Add payment method",
     detail: !b.trialChosen ? `Free until ${fmtDay(b.trialEndsAt)}. Pick the plan that starts after.` : `${p.name} starts ${fmtDay(b.trialEndsAt)}.${b.paymentMethod.connected ? "" : " No card yet."}` };
   if (p.status === "active") return p.cancelAtPeriodEnd ? { text: `${p.name} · ends ${fmtDay(b.periodEnd)}`, tone: "warn", cta: "Keep my plan", detail: `Full access until ${fmtDay(b.periodEnd)}.` }
@@ -2614,7 +2622,7 @@ function openProfileMenu(btn) {
   const m = document.createElement("div"); m.className = "pf-menu"; m.setAttribute("role", "menu");
   m.innerHTML = `<div class="pf-h"><span class="pf-av lg ${st.tone}">${esc(initialsOf(who))}</span><div><b>${esc(who)}</b><span>${esc(APP.user.email)}</span>${APP.org ? `<em>${esc(APP.org.name)}</em>` : ""}</div></div>
     ${bill ? `<div class="pf-plan ${st.tone}"><div><span class="bl-kicker">Plan</span><b>${esc(b.plan.status === "new" ? "No plan yet" : b.plan.status === "trialing" ? "Free trial" : b.plan.name)}</b><span>${esc(st.detail || st.text)}</span></div>${st.cta ? `<button type="button" class="btn sm" data-pfgo="billing">${esc(st.cta)}</button>` : ""}</div>` : ""}
-    <div class="pf-items">${bill ? `<button type="button" class="navlike" role="menuitem" data-pfgo="account">${icon("overview", 15)}Account &amp; usage</button><button type="button" class="navlike" role="menuitem" data-pfgo="billing">${icon("card", 15)}Plans &amp; payment</button>` : ""}
+    <div class="pf-items">${bill ? `<button type="button" class="navlike" role="menuitem" data-pfgo="account">${icon("overview", 15)}Account &amp; usage</button>${PAY_HIDDEN ? "" : `<button type="button" class="navlike" role="menuitem" data-pfgo="billing">${icon("card", 15)}Plans &amp; payment</button>`}` : ""}
     <button type="button" class="navlike" role="menuitem" data-pfgo="team">${icon("team", 15)}Team &amp; keys</button>${DATA.list.length ? `<button type="button" class="navlike" role="menuitem" data-pfgo="brands">${icon("list", 15)}Your brands</button>` : ""}</div>
     <button type="button" class="navlike pf-out" role="menuitem" data-pfgo="out">${icon("out", 15)}Sign out</button>`;
   btn.closest(".pf").append(m); btn.setAttribute("aria-expanded", "true"); m.querySelector("button")?.focus();
@@ -2933,6 +2941,7 @@ const readIntent = () => { try { return JSON.parse(sessionStorage.getItem(INTENT
 async function resumeIntent() {
   const it = readIntent(); if (!it || !APP.user || !billingOn()) return false;
   try { sessionStorage.removeItem(INTENT); } catch {}
+  if (PAY_HIDDEN) return false; // PAY_HIDDEN: a ?plan= link from the pricing site no longer opens plans or checkout; the trial already started at sign-up
   if (!["starter", "growth", "agency"].includes(it.plan)) return false;
   const owner = APP.org?.role === "owner" && !APP.org?.operatorVisit; if (!owner) return false;
   BILL.ccy = null; await openBilling({ firstRun: true });
@@ -2957,6 +2966,13 @@ async function payReturn() {
   return true;
 }
 async function maybeFirstRun() {
+  // PAY_HIDDEN: no first-run plans page; the trial starts at sign-up. An owner who signed up before that (still waiting on a
+  // plan, trial unused) gets the default trial started here instead of the plans page.
+  if (PAY_HIDDEN) {
+    const w = APP.cfg.billing, own = APP.org?.role === "owner" && !APP.org?.operatorVisit;
+    if (w && billingOn() && own && w.plan.status === "new" && w.trialAvailable) try { APP.cfg.billing = await api("POST", "/api/billing/start-trial", {}); paintProfile(); } catch {}
+    return false;
+  }
   const b = APP.cfg.billing; if (!b || !billingOn() || !["new", "trialing"].includes(b.plan.status) || b.trialChosen) return false;
   if (!(APP.org?.role === "owner" && !APP.org?.operatorVisit)) return false;
   if (b.plan.status !== "new") try { if (sessionStorage.getItem("wp_skip_plan")) return false; } catch {}

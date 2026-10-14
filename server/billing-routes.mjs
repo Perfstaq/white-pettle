@@ -186,6 +186,13 @@ export function makeBillingRoutes({ needCtx, needUser }) {
     ["POST", "/api/billing/start-trial", async (req, res) => {
       const ctx = await ownerOnly(req), b = await readJson(req, 5000);
       const plan = String(b.plan || "");
+      // No plan: start the default free trial on an organisation still waiting on a plan (made before the trial began at sign-up).
+      if (!plan) {
+        if ((await one(`select billing_status from organizations where id = $1`, [ctx.org.id])).billing_status !== "new") fail(409, "Your free trial isn't waiting to start.", { code: "not_new" });
+        const ends = await B.startDefaultTrial(ctx.org.id, ctx.user.id, billingConfig().trialDays);
+        if (ends) void N.notify(ctx.org.id, "trial_started", "trial", { plan: "trial", ends });
+        return sendJson(res, 200, await B.billingSummary(ctx.org.id));
+      }
       if (!SELF_SERVE.includes(plan)) fail(400, `Choose ${names()}.`, { code: "bad_plan" });
       let org = await one(`select plan_code, billing_status, razorpay_subscription_id from organizations where id = $1`, [ctx.org.id]);
       const fresh = org.billing_status === "new";

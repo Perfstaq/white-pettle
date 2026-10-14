@@ -21,7 +21,8 @@ const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`);
 const T = {
   trial_started: (d) => ({ subject: "Your Perfstaq free trial has started", title: "Your free trial has started",
     paras: [`You have until ${day(d.ends)} to try Perfstaq. The trial includes one check of up to 20 prompts across ChatGPT, Perplexity and Gemini.`,
-      `${planName(d.plan)} starts when the trial ends. Nothing is charged until you connect a payment method.`],
+      // Started at sign-up with no plan picked (plan 'trial'): nothing to say about a plan or a payment method.
+      ...(d.plan && d.plan !== "trial" ? [`${planName(d.plan)} starts when the trial ends. Nothing is charged until you connect a payment method.`] : [])],
     cta: "Add your website", link: appUrl() }),
   trial_check_used: (d) => ({ subject: "Your free trial check is done", title: "Your free trial check is done",
     paras: ["Your report is ready and stays readable. The free trial includes one check, so running your prompts again needs a plan.",

@@ -31,7 +31,10 @@ const nextRun = (schedule, from = Date.now()) => (schedule === "daily" ? new Dat
 export const selfServe = () => billingConfig().enabled === "1";
 async function newPersonalOrg(u) {
   const org = await O.createOrg({ name: personalOrgName(u), by: u.id, allowPlatformKeys: platformKeysForSignups() });
-  if (selfServe()) await B.awaitPlan(org.id); // the plans page comes first; choosing a plan starts the trial
+  if (selfServe()) { // the free trial starts at sign-up
+    const ends = await B.startDefaultTrial(org.id, u.id, billingConfig().trialDays);
+    if (ends) void N.notify(org.id, "trial_started", "trial", { plan: "trial", ends });
+  }
   return org;
 }
 const personalOrgName = (u) => `${(u.name || "").trim() || u.email.split("@")[0]}'s brands`;
@@ -466,7 +469,7 @@ export const ROUTES = [
     if (ownerEmail && !emailOk(ownerEmail)) fail(400, "Enter a valid email for the owner.");
     const selfOwner = !ownerEmail || ownerEmail === normEmail(u.email);
     const org = await O.createOrg({ name, by: u.id, role: selfOwner ? "owner" : "admin", allowPlatformKeys: operator && !!b.allowPlatformKeys });
-    if (selfServe() && !operator) await B.awaitPlan(org.id); // its trial is the person's one trial (joined, not restarted)
+    if (selfServe() && !operator) await B.startDefaultTrial(org.id, u.id, billingConfig().trialDays); // its trial is the person's one trial (joined, not restarted)
     await O.audit(org.id, u.id, "org.created", org.name, { owner: ownerEmail || u.email });
     const invite = selfOwner ? null : await sendInvite(req, u, org, ownerEmail, "owner");
     await setSessionOrg(u, org.id);

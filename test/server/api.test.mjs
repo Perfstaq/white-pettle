@@ -643,13 +643,13 @@ test("self-serve: with billing open, anyone signs up, chooses a plan, and that s
   process.env.BILLING_ENABLED = "1";
   assert.equal((await call("x", "GET", "/api/config")).data.invite, false);
   const s = await call("st", "POST", "/api/auth/signup", { email: "trial@x.co", password: "longenough1" }, ip); assert.equal(s.status, 200);
-  // Signing up starts nothing: no plan, no trial, read-only until a plan is chosen.
+  // Signing up starts the 7-day free trial straight away, with no plan picked yet.
   let me = (await call("st", "GET", "/api/me")).data;
-  assert.equal(me.billing.plan.status, "new"); assert.equal(me.billing.trialEndsAt, null); assert.equal(me.billing.mode, "read"); assert.equal(me.billing.trialAvailable, true);
-  assert.equal((await call("st", "PUT", "/api/workspaces/early", { name: "early", setup: { questions: [] } })).data.code, "billing_read_only");
-  // Choosing a plan starts the 7-day trial on that plan; switching keeps the same window.
+  assert.equal(me.billing.plan.status, "trialing"); assert.equal(me.billing.mode, "write"); assert.equal(me.billing.trialChosen, false);
+  const days = (new Date(me.billing.trialEndsAt) - Date.now()) / 864e5; assert.ok(days > 6.9 && days < 7.1, String(days));
+  // Picking a plan puts the running trial on that plan; switching keeps the same window.
   let r = await call("st", "POST", "/api/billing/start-trial", { plan: "growth" }); assert.equal(r.status, 200); assert.equal(r.data.plan.status, "trialing"); assert.equal(r.data.mode, "write");
-  const days = (new Date(r.data.trialEndsAt) - Date.now()) / 864e5; assert.ok(days > 6.9 && days < 7.1, String(days));
+  assert.equal(r.data.trialEndsAt, me.billing.trialEndsAt);
   r = await call("st", "POST", "/api/billing/start-trial", { plan: "starter" }); assert.equal(r.data.plan.code, "starter"); assert.equal(r.data.trialEndsAt, (await call("st", "GET", "/api/me")).data.billing.trialEndsAt);
   me = (await call("st", "GET", "/api/me")).data; const window = me.billing.trialEndsAt;
   assert.equal(me.billing.limits.brands, 1);
@@ -665,6 +665,11 @@ test("self-serve: with billing open, anyone signs up, chooses a plan, and that s
   await assert.rejects(beginTrial(other, uid, 7), (e) => e.extra?.code === "trial_used" || /already used your free trial/.test(e.message));
   assert.equal((await sql(`select billing_status from organizations where id = $1`, [other]))[0].billing_status, "new");
   await sql(`delete from organizations where id = $1`, [other]);
+  // An organisation from before the trial began at sign-up (still waiting on a plan): starting with no plan gives the default trial, once.
+  assert.equal((await call("st", "POST", "/api/billing/start-trial", {})).data.code, "not_new", "a running trial isn't restarted");
+  await sql(`update users set trial_started_at = null, trial_ends_at = null where id = $1`, [uid]);
+  await sql(`update organizations set plan_code = 'trial', billing_status = 'new', trial_started_at = null, trial_ends_at = null where id = $1`, [me.org.id]);
+  r = await call("st", "POST", "/api/billing/start-trial", {}); assert.equal(r.status, 200); assert.equal(r.data.plan.status, "trialing"); assert.equal(r.data.trialChosen, false); assert.equal(r.data.mode, "write");
   // Existing and operator-created organisations are never turned into trials.
   assert.equal((await call("b", "GET", "/api/me")).data.billing.plan.code, "legacy");
   process.env.ACCESS_CODE = ""; delete process.env.BILLING_ENABLED;
@@ -820,6 +825,7 @@ test("operators: set a plan by hand with a reason; trial is once per person", { 
   process.env.PLATFORM_OPERATORS = process.env.PLATFORM_OPERATORS.replace(",plans@x.co", ""); // operators are exempt; this is a normal user now
   process.env.ORG_CREATION = "open"; process.env.BILLING_ENABLED = "1";
   await sql(`update organizations set plan_code = 'trial', billing_status = 'trialing', trial_started_at = now() - interval '6 days', trial_ends_at = now() + interval '1 day' where id = $1`, [org]);
+  await sql(`update users set trial_started_at = now() - interval '6 days', trial_ends_at = now() + interval '1 day' where email = 'plans@x.co'`); // the person's one trial window
   const made = await call("pl", "POST", "/api/orgs", { name: "Second org" }); assert.equal(made.status, 200);
   const second = (await sql(`select trial_started_at, trial_ends_at, plan_code from organizations where slug = $1`, [made.data.created.slug]))[0];
   assert.equal(second.plan_code, "trial"); assert.ok(new Date(second.trial_ends_at) - Date.now() < 1.1 * 864e5, "inherits the remaining day, not a new week");
@@ -865,12 +871,12 @@ test("google sign-in: start, callback, linking, takeover protection, trial and t
     assert.match(s1.loc, /#auth-error=.*invite/i); assert.equal(s1.session, undefined);
     assert.equal((await sql(`select count(*)::int as n from users where email = 'goog@x.co'`))[0].n, 0);
 
-    // Billing open (self-serve): the same person signs up and gets a verified account and a personal organisation, waiting on a plan choice.
+    // Billing open (self-serve): the same person signs up and gets a verified account and a personal organisation on the free trial.
     process.env.BILLING_ENABLED = "1";
     const s2 = await google(good());
     assert.equal(s2.loc, "/"); assert.ok(s2.session); assert.equal(tokenCalls.at(-1).grant_type, "authorization_code"); assert.equal(tokenCalls.at(-1).redirect_uri, `${base}/api/auth/google/callback`);
     let m = await me(s2.session); assert.equal(m.user.email, "goog@x.co"); assert.equal(m.user.verified, true); assert.equal(m.user.name, "Goog Person");
-    assert.equal(m.billing.plan.status, "new"); assert.equal(m.billing.trialAvailable, true); assert.equal(m.org.role, "owner");
+    assert.equal(m.billing.plan.status, "trialing"); assert.equal(m.billing.trialAvailable, true); assert.equal(m.org.role, "owner");
     // Signing in again is the same user and the same organisation, not a second trial.
     const s3 = await google(good()); const m3 = await me(s3.session); assert.equal(m3.user.id, m.user.id); assert.equal(m3.org.id, m.org.id);
     assert.equal((await sql(`select count(*)::int as n from organizations o join memberships x on x.org_id = o.id where x.user_id = $1`, [m.user.id]))[0].n, 1);
@@ -1442,7 +1448,6 @@ test("trial: the owner can cancel the free trial; a connected card is cancelled 
   const cancelled = []; setClient({ cancelSubscription: async (id, a) => { cancelled.push([id, a.atCycleEnd]); return {}; }, fetchSubscription: async (id) => ({ id, status: "authenticated" }), createSubscription: async () => ({ id: "sub_ct" }) });
   Object.assign(process.env, { BILLING_ENABLED: "1", RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: "whsec_test", RAZORPAY_PLAN_GROWTH_INR: "plan_G_INR" });
   assert.equal((await call("ct", "POST", "/api/auth/signup", { email: "canceltrial@x.co", password: "longenough1" }, { "x-forwarded-for": "10.6.6.6" })).status, 200);
-  assert.equal((await call("ct", "POST", "/api/billing/cancel-trial")).data.code, "not_trialing", "nothing to cancel before a plan is picked");
   assert.equal((await call("ct", "POST", "/api/billing/start-trial", { plan: "growth" })).status, 200);
   const org = (await call("ct", "GET", "/api/me")).data.org.id;
   await sql(`update organizations set razorpay_subscription_id = 'sub_card' where id = $1`, [org]);
@@ -1470,12 +1475,15 @@ test("emails: every account and billing notice goes to the owner once, with a li
   const settle = async (n) => { for (let i = 0; i < 50 && mine().length < n; i++) await new Promise((r) => setTimeout(r, 20)); return mine(); };
   const last = () => mine().at(-1);
   assert.equal((await call("ml", "POST", "/api/auth/signup", { email, password: "longenough1" }, { "x-forwarded-for": "10.5.5.5" })).status, 200);
-  const org = (await call("ml", "GET", "/api/me")).data.org.id; mails.splice(0, mails.length);
+  const org = (await call("ml", "GET", "/api/me")).data.org.id;
 
-  // Trial started, once (switching plan inside the trial doesn't send it again).
+  // Trial started at sign-up, once (picking or switching the plan inside the trial doesn't send it again).
+  for (let i = 0; i < 50 && !mine().some((m) => m.subject === "Your Perfstaq free trial has started"); i++) await new Promise((r) => setTimeout(r, 20));
+  const started = mine().filter((m) => m.subject === "Your Perfstaq free trial has started");
+  assert.equal(started.length, 1); assert.match(started[0].html, /https:\/\/app\.example\//); assert.match(started[0].text, /one check of up to 20 prompts/); assert.doesNotMatch(started[0].text, /payment method/);
+  mails.splice(0, mails.length, started[0]); // keep only the trial email, so the counts below go 1, 2, 3, 4
   await call("ml", "POST", "/api/billing/start-trial", { plan: "growth" }); await call("ml", "POST", "/api/billing/start-trial", { plan: "starter" });
-  await settle(1); await new Promise((r) => setTimeout(r, 100));
-  assert.equal(mine().length, 1); assert.equal(last().subject, "Your Perfstaq free trial has started"); assert.match(last().html, /https:\/\/app\.example\//); assert.match(last().text, /one check of up to 20 prompts/);
+  await new Promise((r) => setTimeout(r, 100)); assert.equal(mine().length, 1);
   // The trial's one check is done.
   await call("ml", "PUT", "/api/workspaces/mailco", { name: "Mailco", setup: { profile: { name: "Mailco" }, questions: [{ text: "q" }] } });
   await call("ml", "PUT", "/api/runs/mail1", { slug: "mailco", data: { id: "mail1", slug: "mailco", startedAt: Date.now(), finishedAt: Date.now() } });
