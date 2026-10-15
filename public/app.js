@@ -2304,7 +2304,9 @@ function planPanel(b, owner, where = "account") {
   // PAY_HIDDEN: the payment-method and first-charge rows are left out.
   if (p.status === "trialing") meta.push(["Trial ends", fmtDay(b.trialEndsAt)], ...(chosen ? [["Then", p.name]] : []), ...(PAY_HIDDEN ? [] : [["Payment method", pm.connected ? "Connected" : "Not connected", pm.connected ? "good" : "warn"]]));
   if (p.status === "trialing" && pm.connected && !PAY_HIDDEN) meta.push(["First charge", fmtDay(pm.firstChargeAt || b.trialEndsAt)]);
-  if (p.status === "active") meta.push([p.cancelAtPeriodEnd ? "Access until" : "Next charge", fmtDay(b.periodEnd)], ...(PAY_HIDDEN ? [] : [["Payment method", "Connected", "good"]]));
+  // Active without a subscription: assigned by the team, or a month paid once. Nothing renews, so no next charge or payment method.
+  const renews = !!pm.connected;
+  if (p.status === "active") meta.push(renews ? [p.cancelAtPeriodEnd ? "Access until" : "Next charge", fmtDay(b.periodEnd)] : [p.oneTime ? "Paid until" : "Active until", fmtDay(b.periodEnd)], ...(PAY_HIDDEN || !renews ? [] : [["Payment method", "Connected", "good"]]));
   if (p.pendingPlan) meta.push([`From ${fmtDay(b.periodEnd)}`, planName(p.pendingPlan)]);
   if (p.status === "past_due") meta.push(["Fix by", fmtDay(b.graceEndsAt), "bad"]);
   if (p.status === "canceled") meta.push(["Ended", fmtDay(b.periodEnd)]);
@@ -2319,7 +2321,7 @@ function planPanel(b, owner, where = "account") {
     else if (!PAY_HIDDEN) A.push(`<button class="btn${A.length ? " ghost" : ""}" type="button" data-openbilling>${p.status === "new" ? "Choose a plan" : "Plans & payment"}</button>`); // PAY_HIDDEN: no link to the payment page
     if (p.status === "trialing" && pm.connected && !PAY_HIDDEN) L.push(`<button class="lnk" type="button" data-rmpay>Remove payment method</button>`);
     if (p.status === "trialing") L.push(`<button class="lnk danger" type="button" data-canceltrial>Cancel free trial</button>`);
-    if (p.status === "active" && !p.cancelAtPeriodEnd) L.push(`<button class="lnk" type="button" data-billrefresh>Check with Razorpay</button>`, `<button class="lnk danger" type="button" data-cancelsub>Cancel subscription</button>`);
+    if (p.status === "active" && !p.cancelAtPeriodEnd && renews) L.push(`<button class="lnk" type="button" data-billrefresh>Check with Razorpay</button>`, `<button class="lnk danger" type="button" data-cancelsub>Cancel subscription</button>`);
   }
   const metaHtml = meta.length ? `<dl class="bl-meta">${meta.map(([k, v, t]) => `<div><dt>${esc(k)}</dt><dd${t ? ` class="${t}"` : ""}>${t ? `<i></i>` : ""}${esc(v)}</dd></div>`).join("")}</dl>` : "";
   return `<section class="bl-card bl-plan pp-${where}"><div class="bl-plan-top"><div><span class="bl-kicker">Current plan</span><h2>${esc(name)}</h2>${where === "team" ? "" : `<p class="desc">${esc(desc)}</p>`}</div><span class="bl-status ${tone}">${esc(label)}</span></div>
@@ -2348,7 +2350,7 @@ function billUsage(b) {
   const ai = r.ai && r.ai.pct != null ? `<div class="bl-card bl-tile ${r.ai.state === "over" ? "over" : r.ai.state === "warn" ? "warn" : ""}"><div class="bl-tile-h"><span>AI allowance</span><em>this period</em></div><div class="bl-num"><b>${Math.round(r.ai.pct * 100)}%</b><span>used</span></div><div class="bl-bar" role="progressbar" aria-label="AI allowance" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r.ai.pct * 100)}"><i style="width:${Math.round(r.ai.pct * 100)}%"></i></div><div class="bl-tile-f">${r.ai.state === "over" ? "Used up: AI checks are paused" : `${100 - Math.round(r.ai.pct * 100)}% left · checks, engines and writing`}</div></div>` : "";
   return `<div class="bl-sec-h"><h2>Usage</h2><span class="muted">${esc(resets)}</span></div><div class="bl-usage">${r.metrics.map(tile).join("")}${ai}</div>`;
 }
-const HIST = { "billing.checkout_started": ["Started connecting a payment method", "info"], "billing.payment_verified": ["Payment method verified", "good"], "billing.payment_confirmed": ["Confirmed with Razorpay", "good"], "billing.authenticated": ["Payment method connected", "good"], "billing.trial_plan_chosen": ["Trial plan chosen", "info"], "billing.payment_method_removed": ["Payment method removed", "warn"], "billing.activated": ["Subscription started", "good"], "billing.charged": ["Payment received", "good"],
+const HIST = { "billing.onetime_paid": ["One month paid", "good"], "billing.onetime_link_sent": ["Payment link sent", "info"], "billing.link_sent": ["Payment link sent", "info"], "billing.checkout_started": ["Started connecting a payment method", "info"], "billing.payment_verified": ["Payment method verified", "good"], "billing.payment_confirmed": ["Confirmed with Razorpay", "good"], "billing.authenticated": ["Payment method connected", "good"], "billing.trial_plan_chosen": ["Trial plan chosen", "info"], "billing.payment_method_removed": ["Payment method removed", "warn"], "billing.activated": ["Subscription started", "good"], "billing.charged": ["Payment received", "good"],
   "billing.pending": ["A payment failed", "bad"], "billing.halted": ["Payments stopped after retries", "bad"], "billing.paused": ["Subscription paused", "warn"], "billing.cancelled": ["Subscription ended", "warn"], "billing.completed": ["Subscription completed", "warn"], "billing.resumed": ["Subscription resumed", "good"],
   "billing.cancel_requested": ["Cancellation requested", "warn"], "billing.upgrade_requested": ["Upgrade requested", "info"], "billing.downgrade_scheduled": ["Downgrade scheduled", "info"], "billing.downgrade_withdrawn": ["Downgrade withdrawn", "info"], "billing.reconciled": ["Synced with Razorpay", ""], "billing.operator_set": ["Plan set by Perfstaq", "info"] };
 function billHistory() {
@@ -2382,7 +2384,7 @@ function payPlans(b, owner) {
     else if (trialing && trialDone(b) && !connected) action = avail && open ? `<button type="button" class="btn ${mine || (x.featured && !chosen) ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">Not available yet</div>`;
     else if (trialing) {
       if (mine && connected) action = `<div class="bl-pill">Connected · first charge ${esc(fmtDay(b.trialEndsAt))}</div>`;
-      else if (mine) action = `<div class="bl-pill">Starts after your trial · ${esc(fmtDay(b.trialEndsAt))}</div>`;
+      else if (mine) action = avail && open ? `<button type="button" class="btn" data-buy="${esc(x.code)}">Start ${esc(x.name)} now</button>` : `<div class="bl-pill">Starts after your trial · ${esc(fmtDay(b.trialEndsAt))}</div>`;
       else if (connected) action = avail && open ? `<button type="button" class="btn ghost" data-buy="${esc(x.code)}">Switch and reconnect</button>` : `<div class="bl-pill">Not available yet</div>`;
       else if (td === 0) action = avail && open ? `<button type="button" class="btn ghost" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">No free trial</div>`;
       else action = `<button type="button" class="btn ${x.featured && !chosen ? "" : "ghost"}" data-trial="${esc(x.code)}">${chosen ? `Switch to ${esc(x.name)}` : `Start ${esc(String(td))}-day free trial`}</button>`;
@@ -2522,7 +2524,9 @@ function planLine(b) {
   if (p.status === "trialing") return { text: `Free trial · ${n} day${n === 1 ? "" : "s"} left`, tone: n <= 2 ? "warn" : "info", cta: !b.trialChosen ? "Choose a plan" : b.paymentMethod.connected ? "Manage plan" : "Add payment method",
     detail: !b.trialChosen ? `Free until ${fmtDay(b.trialEndsAt)}. Pick the plan that starts after.` : `${p.name} starts ${fmtDay(b.trialEndsAt)}.${b.paymentMethod.connected ? "" : " No card yet."}` };
   if (p.status === "active") return p.cancelAtPeriodEnd ? { text: `${p.name} · ends ${fmtDay(b.periodEnd)}`, tone: "warn", cta: "Keep my plan", detail: `Full access until ${fmtDay(b.periodEnd)}.` }
-    : { text: p.name, tone: "good", cta: "Manage plan", detail: `Next charge ${fmtDay(b.periodEnd)}.` };
+    : b.paymentMethod?.connected ? { text: p.name, tone: "good", cta: "Manage plan", detail: `Next charge ${fmtDay(b.periodEnd)}.` }
+    // Assigned by the team (no card) or a one-time month: nothing renews, so say until when it runs.
+    : { text: p.name, tone: "good", cta: "", detail: b.periodEnd ? `${b.plan.oneTime ? "Paid for one month" : "Active"} until ${fmtDay(b.periodEnd)}. It doesn't renew by itself.` : "Active." };
   return { text: p.name, tone: "", cta: "Manage plan", detail: "" };
 }
 function paintProfile() {
@@ -2564,7 +2568,8 @@ function buyPlan(plan, { switching = false } = {}) {
   const cycle = p.status === "active" && p.currency ? p.cycle || "monthly" : BILL.cycle === "annual" && x.annualPrices?.[ccy] != null ? "annual" : "monthly", yearly = cycle === "annual";
   const price = yearly ? x.annualPrices[ccy] : x.prices[ccy];
   const later = (t) => t && new Date(t).getTime() - Date.now() > 30 * 60e3;
-  const starts = p.status === "trialing" && later(b.trialEndsAt) && !trialDone(b) ? "trial" : p.status === "active" && (p.cancelAtPeriodEnd || switching) && later(b.periodEnd) ? "resume" : "now";
+  // Buying during the free trial starts the plan today (the trial ends); only a cancelled, still paid-up plan waits for its end.
+  const starts = p.status === "active" && (p.cancelAtPeriodEnd || switching) && later(b.periodEnd) ? "resume" : "now";
   const on = starts === "trial" ? b.trialEndsAt : starts === "resume" ? b.periodEnd : null, upi = !yearly && ccy === "INR" && charged(price, ccy) <= (BILL.cat.upiMax || 0);
   const title = starts === "trial" ? "Connect a payment method" : switching ? `Switch to ${x.name}` : starts === "resume" ? (plan === p.code ? "Keep your subscription" : `Continue on ${x.name}`) : `Subscribe to ${x.name}`;
   const lede = starts === "trial" ? `Your trial stays free until ${esc(fmtDay(on))}. Connect a payment method now so ${esc(x.name)} carries on without a break.`

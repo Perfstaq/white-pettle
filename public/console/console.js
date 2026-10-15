@@ -581,7 +581,7 @@ const PAGES = {
     const steps = [["Signed up", f.signups], ["Added a brand", f.brand], ["Completed a check", f.checked], ["Started a trial", f.trial], ["Paying by card", f.paid]];
     return `${pageHead("Revenue", `Recurring revenue, plan mix and the sign-up funnel. USD converts at ₹${d.usdInr}.`)}
       <div class="kpis cdk">
-        ${kpi("MRR", inr(d.mrrInr), "before tax, active and past due", "", { cls: "dark" })}${kpi("ARR run rate", inr(d.mrrInr * 12), "MRR × 12")}${kpi("Average per paying org", inr(d.arpaInr), "ARPA")}
+        ${kpi("MRR", inr(d.mrrInr), "before tax, active and past due", "", { cls: "dark" })}${kpi("ARR run rate", inr(d.mrrInr * 12), "MRR × 12")}${kpi("Average per paying org", inr(d.arpaInr), "ARPA")}${d.oneTime ? kpi("One-time payments", inr(d.oneTime.inr), `${num(d.oneTime.count)} paid in ${d.oneTime.days} days · with tax`, "One-month payment links. Revenue, but not in MRR: they don't renew.") : ""}
         ${kpi("Past due", num(d.status.past_due || 0), "renewal not paid")}${kpi("Trials", num(d.status.trialing || 0), "running now")}${kpi("Cancelled", num(d.status.canceled || 0), "subscription ended")}
       </div>
       <div class="grid2">
@@ -1044,11 +1044,21 @@ function billingActions(d) {
   // 2. Not paying (or cancelling): send a Razorpay subscription link.
   if (can && rzp && !(paying && !o.cancel_at_period_end)) parts.push(d.offers.length ? `
     <details class="cd-act" open><summary>Send subscription link</summary><form id="subForm" class="cd-form">
-      <p class="muted">Razorpay emails <b>${esc(o.owner || "the owner")}</b> a link to authorise it. The plan changes only when Razorpay confirms the payment.${o.billing_status === "trialing" ? " The first charge waits for the trial to end." : ""}</p>
+      <p class="muted">Razorpay emails <b>${esc(o.owner || "the owner")}</b> a link to authorise it. Razorpay charges when they pay and the plan starts at once${o.billing_status === "trialing" ? ", ending their free trial" : ""}; it renews every period until cancelled.</p>
       <label for="subOffer">Plan</label><select id="subOffer">${d.offers.map(opt).join("")}</select>
       <label for="subReason">Reason</label><input id="subReason" maxlength="200" placeholder="e.g. agreed on call">
       <button class="btn sm" type="submit">Send subscription link</button><div id="subOut" role="status"></div></form></details>`
     : `<p class="muted">No plan has a Razorpay plan id yet. Create one on the Plans page.</p>`);
+  // 2b. One month, paid once: a Razorpay Payment Link at the plan's monthly price (+ tax). No renewal.
+  const once = (STATE.allPlans || []).filter((p) => p.active && p.code !== "trial" && p.code !== "legacy").flatMap((p) => Object.entries(p.prices || {}).filter(([, x]) => x?.amount > 0).map(([c, x]) => ({ plan: p.code, name: p.name, currency: c, amount: x.amount })));
+  const links = d.paymentLinks || [], LST = { created: ["info", "sent"], paid: ["good", "paid"], cancelled: ["", "cancelled"], expired: ["", "expired"] };
+  if (can && rzp && !paying) parts.push(`
+    <details class="cd-act"${links.some((l) => l.status === "created") ? " open" : ""}><summary>One month, one-time payment</summary><form id="oneForm" class="cd-form">
+      <p class="muted">Razorpay emails <b>${esc(o.owner || "the owner")}</b> a payment link for one month. When it's paid the plan is active for a month from that day${o.billing_status === "trialing" ? " (their free trial ends)" : ""}, with no renewal; paying again adds a month. The link works for 7 days.</p>
+      <label for="oneOffer">Plan</label><select id="oneOffer">${once.map((x) => `<option value="${esc(x.plan)}|${esc(x.currency)}">${esc(x.name)} · ${esc(money(x.amount, x.currency))} for one month + tax</option>`).join("")}</select>
+      <label for="oneReason">Reason</label><input id="oneReason" maxlength="200" placeholder="e.g. pays monthly by link, no card">
+      <button class="btn sm" type="submit">Send one-month payment link</button><div id="oneOut" role="status"></div></form>
+      ${links.length ? `<div class="cd-tl" style="margin-top:10px">${links.map((l) => `<div><time>${esc(dtm(l.created_at))}</time><span>${esc(l.plan_code)} · ${esc(money(l.amount, l.currency))} <span class="cd-st ${LST[l.status]?.[0] || ""}">${esc(LST[l.status]?.[1] || l.status)}</span>${l.status === "paid" && l.period_end ? ` <span class="muted">until ${esc(dt(l.period_end))}</span>` : ""}${l.status === "created" && l.short_url ? ` <a href="${esc(l.short_url)}" target="_blank" rel="noopener">link</a>` : ""}</span></div>`).join("")}</div>` : ""}</details>`);
   // 3. Assign a plan without Razorpay: an invoiced contract, a longer trial, an internal account, with optional custom limits.
   if (can && !paying) parts.push(`
     <details class="cd-act"${rzp ? "" : " open"}><summary>Assign a plan (no card)</summary><form id="asgForm" class="cd-form">
@@ -1084,6 +1094,12 @@ function bindBilling(slug, after = route) {
     const r = await api("POST", `customers/${S}/subscription`, { plan, currency, cycle, reason: $("#subReason").value });
     out.innerHTML = `<p class="cd-ok">Link sent to ${esc(r.sentTo)}.</p>${r.url ? `<div class="cd-copy"><input id="subLink" readonly value="${esc(r.url)}" aria-label="Payment link"><button class="btn ghost sm" type="button" id="copyLink">Copy</button></div>` : ""}`;
     $("#copyLink")?.addEventListener("click", () => { const i = $("#subLink"); navigator.clipboard?.writeText(i.value).then(() => toast("Link copied."), () => i.select()); });
+  });
+  form("#oneForm", async (out) => {
+    const [plan, currency] = $("#oneOffer").value.split("|");
+    const r = await api("POST", `customers/${S}/one-time`, { plan, currency, reason: $("#oneReason").value });
+    out.innerHTML = `<p class="cd-ok">Link for ${esc(money(r.amount, r.currency))} (with tax) sent to ${esc(r.sentTo)}. It works until ${esc(dt(r.expiresAt))}.</p>${r.url ? `<div class="cd-copy"><input id="oneLink" readonly value="${esc(r.url)}" aria-label="Payment link"><button class="btn ghost sm" type="button" id="copyOne">Copy</button></div>` : ""}`;
+    $("#copyOne")?.addEventListener("click", () => { const i = $("#oneLink"); navigator.clipboard?.writeText(i.value).then(() => toast("Link copied."), () => i.select()); });
   });
   form("#chgForm", async () => {
     const r = await api("POST", `customers/${S}/change-plan`, { plan: $("#chgPlan").value.split("|")[0], reason: $("#chgReason").value });

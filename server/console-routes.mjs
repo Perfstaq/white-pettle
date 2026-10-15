@@ -11,7 +11,7 @@ import * as C from "./console.mjs";
 import * as F from "./console-founder.mjs";
 import { PLANS, withTax, LIMIT_METRICS } from "./plans.mjs";
 import { billingConfig, client, razorpayLink, planIdFor } from "./razorpay.mjs";
-import { syncOrg, changePlan, cancelPlan, chargeSeats, withdrawSeats } from "./billing-routes.mjs";
+import { syncOrg, changePlan, cancelPlan, chargeSeats, withdrawSeats, cancelOpenPaymentLinks } from "./billing-routes.mjs";
 
 export const CONSOLE_ROLES = ["founder", "finance", "support", "analyst"];
 
@@ -49,6 +49,10 @@ const redact = (role, v) => role !== "analyst" ? v : JSON.parse(JSON.stringify(v
 // A Razorpay link an operator or checkout left on an organisation stays payable for days; before the organisation goes, withdraw it,
 // so nobody can pay into an organisation that no longer exists. A link already paid (webhook not yet seen) stops the deletion.
 async function withdrawPendingLink(orgId, subscriptionId) {
+  if ((await one(`select 1 from payment_links where org_id = $1 and status = 'created' limit 1`, [orgId]))) {
+    if (!billingConfig().ready) fail(409, "This organisation has an unpaid one-time payment link, and Razorpay keys aren't configured here to cancel it.", { code: "pending_link" });
+    await cancelOpenPaymentLinks(orgId, { strict: true });
+  }
   if (!subscriptionId) return;
   if (!billingConfig().ready) fail(409, "This organisation has an unpaid Razorpay link, and Razorpay keys aren't configured here to withdraw it.", { code: "pending_link" });
   let s; try { s = await client().fetchSubscription(subscriptionId); } catch (e) { fail(502, "Razorpay didn't answer about this organisation's payment link: " + String(e.message).slice(0, 120)); }
@@ -197,14 +201,42 @@ export function makeConsoleRoutes({ needUser }) {
       if (!org.owner) fail(409, "This organisation has no owner to send the link to.");
       const rzp = client();
       if (org.pending) await rzp.cancelSubscription(org.pending, { atCycleEnd: false }).catch((e) => console.warn("[console] could not cancel the previous link:", e.message));
-      // During a running trial the first charge waits for the trial's end, as in self-serve checkout.
-      const startAt = org.billing_status === "trialing" && org.trial_ends_at && new Date(org.trial_ends_at) - Date.now() > 30 * 60e3 ? Math.floor(new Date(org.trial_ends_at) / 1000) : null;
+      await cancelOpenPaymentLinks(org.id); // one way to pay at a time: an open one-time link goes
+      // Paying starts the plan at once, even during a free trial (the trial ends there).
+      const startAt = null;
       let sub;
       try { sub = await rzp.createSubscription({ planId, orgId: org.id, plan, cycle, startAt, notifyEmail: org.owner, validFor: 7 * 86400 }); }
       catch (e) { console.warn("[console] subscription:", e.message); fail(502, "Razorpay didn't accept the request. Nothing was created or charged."); }
       await q(`update organizations set razorpay_checkout_subscription_id = $2, updated_at = now() where id = $1`, [org.id, sub.id]);
       await O.audit(org.id, user.id, "billing.link_sent", plan, { currency, cycle, subscription: sub.id, to: org.owner, reason, amount: withTax((cycle === "annual" ? PLANS[plan].annualPrices : PLANS[plan].prices)[currency], currency) });
       sendJson(res, 200, { subscriptionId: sub.id, url: razorpayLink(sub.short_url), sentTo: org.owner, startsAt: startAt ? new Date(startAt * 1000) : null });
+    }],
+    // One month of a plan, paid once (a Razorpay Payment Link, emailed to the owner by Razorpay). Paying makes the organisation active on
+    // that plan for a month from then (added on to a month still running), with no renewal; it ends a free trial. The amount comes from the
+    // catalogue's monthly price with tax, never from the browser. Not while a subscription is live: one way to pay at a time.
+    ["POST", "/api/admin/console/customers/:slug/one-time", async (req, res, p) => {
+      const { user } = await needConsole(req, "founder", "finance");
+      const b = await readJson(req, 4000), plan = String(b.plan || ""), currency = String(b.currency || "").toUpperCase(), reason = needReason(b);
+      if (!billingConfig().ready) fail(503, "Razorpay keys aren't configured on this server.", { code: "billing_unconfigured" });
+      const price = PLANS[plan]?.prices?.[currency];
+      if (!(price > 0)) fail(400, `${PLANS[plan]?.name || "That plan"} has no monthly price in ${currency || "that currency"}.`, { code: "plan_unavailable" });
+      if (limited("console-sub:" + p.slug, 10, 3600e3)) fail(429, "Too many links for this organisation. Try again in a bit.");
+      const org = await one(`select o.id, o.name, o.billing_status, o.razorpay_subscription_id as main, o.razorpay_checkout_subscription_id as pending,
+          (select u.email from memberships m join users u on u.id = m.user_id where m.org_id = o.id and m.role = 'owner' limit 1) as owner from organizations o where o.slug = $1`, [p.slug]);
+      if (!org) fail(404, "No such organisation.");
+      if (org.main && ["active", "past_due"].includes(org.billing_status)) fail(409, "This organisation pays by subscription. Cancel it first, or change its plan instead.", { code: "has_subscription" });
+      if (!org.owner) fail(409, "This organisation has no owner to send the link to.");
+      const rzp = client(), amount = withTax(price, currency), expireBy = Math.floor(Date.now() / 1000) + 7 * 86400;
+      if (org.pending) { await rzp.cancelSubscription(org.pending, { atCycleEnd: false }).catch((e) => console.warn("[console] could not cancel the subscription link:", e.message)); await q(`update organizations set razorpay_checkout_subscription_id = null where id = $1`, [org.id]); }
+      await cancelOpenPaymentLinks(org.id);
+      let link;
+      try { link = await rzp.createPaymentLink({ amount, currency, email: org.owner, expireBy, description: `${PLANS[plan].name} plan, one month (${org.name})`.slice(0, 2048),
+        notes: { white_petal_org_id: org.id, white_petal_plan: plan, kind: "one_month" } }); }
+      catch (e) { console.warn("[console] payment link:", e.message); fail(502, "Razorpay didn't accept the request. Nothing was created or charged."); }
+      await q(`insert into payment_links (id, org_id, plan_code, currency, amount_minor, months, short_url, created_by) values ($1, $2, $3, $4, $5, 1, $6, $7)`,
+        [link.id, org.id, plan, currency, amount, link.short_url || null, user.id]);
+      await O.audit(org.id, user.id, "billing.onetime_link_sent", plan, { link: link.id, currency, amount, to: org.owner, reason });
+      sendJson(res, 200, { linkId: link.id, url: razorpayLink(link.short_url), sentTo: org.owner, amount, currency, expiresAt: new Date(expireBy * 1000) });
     }],
     // Change a paying organisation's plan for them (upgrade now, downgrade at the cycle end, same rules as the owner's own change).
     ["POST", "/api/admin/console/customers/:slug/change-plan", async (req, res, p) => {

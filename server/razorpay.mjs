@@ -54,6 +54,13 @@ export function makeClient({ keyId, keySecret, fetch: doFetch = globalThis.fetch
     createPlan: ({ name, amount, currency, description = "", period = "monthly" }) => request("POST", "/plans", { period, interval: 1, item: { name, amount, currency, description } }),
     // A one-off charge added to the subscription's next invoice (Razorpay "add-ons"): how extra seats are billed, in arrears, each cycle.
     createAddon: (id, { name, amount, currency, description = "" }) => request("POST", `${sub(id)}/addons`, { item: { name, amount, currency, description }, quantity: 1 }),
+    // A one-time Payment Link (razorpay.com/docs/api/payments/payment-links): Razorpay emails it to `email`; it lapses at expireBy (unix s).
+    createPaymentLink: ({ amount, currency, description, email, name = "", notes = {}, expireBy }) => request("POST", "/payment_links", {
+      amount, currency, accept_partial: false, description, customer: { email, ...(name ? { name } : {}) }, notify: { email: true, sms: false },
+      reminder_enable: true, notes, expire_by: expireBy,
+    }),
+    fetchPaymentLink: (id) => request("GET", `/payment_links/${encodeURIComponent(id)}`),
+    cancelPaymentLink: (id) => request("POST", `/payment_links/${encodeURIComponent(id)}/cancel`),
     // Only an add-on not yet on an invoice can be deleted; Razorpay refuses the rest.
     deleteAddon: (id) => request("DELETE", `/addons/${encodeURIComponent(id)}`),
     fetchPlan: (id) => request("GET", `/plans/${encodeURIComponent(id)}`),

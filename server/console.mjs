@@ -11,7 +11,7 @@ export const usdInr = () => Number(process.env.CONSOLE_USD_INR || 84);
 // Monthly price before tax, in minor units of the organisation's currency. Only paying organisations count. An annual plan counts a
 // twelfth of its yearly price; extra seats count at the plan's seat price unless the plan has none.
 export function mrrOf(org) {
-  if (!PAYING.includes(org.billing_status)) return 0;
+  if (!PAYING.includes(org.billing_status) || org.one_time) return 0; // a one-time month is revenue, not recurring
   const ccy = org.billing_currency || "INR", base = monthlyEquivalent(org.plan_code, ccy, org.billing_cycle || "monthly") ?? 0;
   return base + (org.extra_seats || 0) * (PLANS[org.plan_code]?.seatPrices?.[ccy] ?? 0);
 }
@@ -69,6 +69,7 @@ export async function orgRows(scope = null) {
       o.cancel_at_period_end, o.pending_plan_code, o.razorpay_subscription_id, o.billing_reconciled_at, o.monthly_cap_usd, o.allow_platform_keys, o.paused_at, o.billing_cycle, o.extra_seats, o.extra_seats_billing,
       (select u.email from memberships m join users u on u.id = m.user_id where m.org_id = o.id and m.role = 'owner' limit 1) as owner,
       (select count(*)::int from memberships m where m.org_id = o.id) as members,
+      exists (select 1 from payment_links p where p.org_id = o.id and p.status = 'paid' and p.period_end = o.current_period_end) as one_time,
       (select count(*)::int from workspaces w where w.org_id = o.id) as brands,
       (select count(*)::int from runs r join workspaces w on w.id = r.workspace_id where w.org_id = o.id and r.status = 'done' and r.started_at > now() - interval '14 days') as checks14,
       (select count(*)::int from runs r join workspaces w on w.id = r.workspace_id where w.org_id = o.id and r.status = 'done') as checks_all,
@@ -159,7 +160,7 @@ export async function customers(scope = null) {
 export async function customer(slug) {
   const o = (await orgRows()).find((x) => x.slug === slug);
   if (!o) return null;
-  const [members, brands, runs, usage, audit, notes, emails, invites] = await Promise.all([
+  const [members, brands, runs, usage, audit, notes, emails, invites, paymentLinks] = await Promise.all([
     q(`select u.id, u.email, u.name, m.role, u.last_login_at, m.created_at as joined_at, u.email_verified_at is not null as verified from memberships m join users u on u.id = m.user_id where m.org_id = $1
        order by case m.role when 'owner' then 0 when 'admin' then 1 when 'editor' then 2 else 3 end, u.email`, [o.id]),
     q(`select w.slug, w.name, w.site, w.schedule, w.last_run_at, w.next_run_at,
@@ -171,13 +172,14 @@ export async function customer(slug) {
     q(`select n.id, n.body, n.at, u.email as by from org_notes n left join users u on u.id = n.by_user where n.org_id = $1 order by n.pinned desc, n.at desc limit 50`, [o.id]),
     q(`select kind, status, created_at from email_log where org_id = $1 order by created_at desc limit 20`, [o.id]),
     q(`select i.id, i.email, i.role, i.created_at, i.expires_at from invitations i where i.org_id = $1 and i.accepted_at is null and i.revoked_at is null and i.expires_at > now() order by i.created_at desc`, [o.id]),
+    q(`select id, plan_code, currency, amount_minor::float as amount, status, short_url, created_at, paid_at, period_end from payment_links where org_id = $1 order by created_at desc limit 10`, [o.id]),
   ]);
   const { id, ...org } = o;
   // Prices an operator can send as a Razorpay subscription link: any catalogue price with a Razorpay plan id.
   const offers = Object.values(PLANS).flatMap((p) => Object.keys(p.prices || {}).flatMap((currency) => [
     ...(p.razorpayIds?.[currency] || planIdFor(p.code, currency) ? [{ plan: p.code, name: p.name, currency, cycle: "monthly", amount: p.prices[currency] }] : []),
     ...(p.annualPrices?.[currency] != null && (p.annualRazorpayIds?.[currency] || planIdFor(p.code, currency, "annual")) ? [{ plan: p.code, name: p.name, currency, cycle: "annual", amount: p.annualPrices[currency] }] : [])]));
-  return { org, members, invites, brands, runs, usage, audit, notes, emails, offers, billingReady: billingConfig().ready };
+  return { org, members, invites, brands, runs, usage, audit, notes, emails, offers, paymentLinks, billingReady: billingConfig().ready };
 }
 
 export async function revenue(scope = null) {
@@ -200,7 +202,10 @@ export async function revenue(scope = null) {
         from generate_series(date_trunc('month', now()) - interval '5 months', date_trunc('month', now()), interval '1 month') m order by m`),
     q(`select a.at, a.action, o.slug, o.name from audit_log a join organizations o on o.id = a.org_id where a.action like 'billing.%' order by a.at desc limit 25`),
   ]);
-  return { usdInr: usdInr(), mrrInr: paying.reduce((t, o) => t + o.mrrInr, 0), byPlan: Object.values(byPlan).sort((a, b) => b.mrrInr - a.mrrInr), status, funnel, months, events,
+  // One-time payments (payment links) in the period: revenue, not MRR. Amounts include tax, as charged.
+  const days = scope?.days || 30, links = (await q(`select org_id, amount_minor, currency from payment_links where status = 'paid' and paid_at > now() - make_interval(days => $1)`, [days])).filter((l) => !scope || scope.has(l.org_id));
+  const oneTime = { count: links.length, inr: links.reduce((t, l) => t + toInrMinor(Number(l.amount_minor), l.currency), 0), days };
+  return { oneTime, usdInr: usdInr(), mrrInr: paying.reduce((t, o) => t + o.mrrInr, 0), byPlan: Object.values(byPlan).sort((a, b) => b.mrrInr - a.mrrInr), status, funnel, months, events,
     arpaInr: paying.length ? Math.round(paying.reduce((t, o) => t + o.mrrInr, 0) / paying.length) : 0 };
 }
 
