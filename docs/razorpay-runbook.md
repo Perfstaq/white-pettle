@@ -188,3 +188,25 @@ Set in the plan catalogue (Command Deck → Plan catalogue, or `PUT /api/admin/p
   the webhook sets `billing_cycle = annual`, add razorpay-billed seats and check the add-on appears on the next invoice.
 - The customer plans page shows a Monthly/Annual switch and each plan's trial length, but it is hidden while `PAY_HIDDEN = true` in
   `public/app.js` (the current product decision).
+
+## Immediate upgrades from a trial, and one-month payment links (added 2026-10-16)
+
+- **Upgrading during a free trial is immediate**, whoever starts it. Self-serve checkout and the console's *Send subscription link* no
+  longer set `start_at` to the trial's end: Razorpay charges when the customer pays, the webhook's `subscription.activated` /
+  `subscription.charged` makes the organisation `active` on the plan, and the trial ends there. The card's authorisation alone
+  (`subscription.authenticated` with no future `start_at`) changes nothing. Subscriptions connected before this change, which start at
+  the trial's end, keep working as before. *Assign a plan (no card)* was already immediate.
+- **One month, one-time** (console → account drawer → *One month, one-time payment*, founder/finance, reason required): a Razorpay
+  **Payment Link** for the plan's monthly catalogue price with tax, emailed to the owner by Razorpay, payable for 7 days. On
+  `payment_link.paid` the organisation is `active` on that plan for one calendar month from payment, with no subscription and no
+  renewal; paying another month while one runs adds a month from its end. When the month ends it is read-only like any active plan
+  without a subscription. It ends a running trial. Not offered while a subscription is live; sending one cancels an open subscription
+  link and vice versa; deleting the organisation cancels an open link. Links live in `payment_links` (migration 013). A one-time
+  month is revenue, not MRR: the console's Revenue page shows it as *One-time payments*.
+- **Activation resets usage.** Every activation (assigned, subscription, one-time) starts a new period (`current_period_start`), and
+  checks, drafted fixes and AI spend count from it. Brands, questions and seats are what exists now, checked against the new plan.
+- **Razorpay setup (once, test mode first):** Dashboard → Webhooks → the White Petal webhook → also enable `payment_link.paid`,
+  `payment_link.cancelled`, `payment_link.expired`. Then: send a one-month link from the console, pay it with a test card, and check
+  the organisation is *active until* a month later and `billing_events` shows the event `processed`. A missed webhook is caught by
+  the hourly reconcile for organisations with an open link, or by *Sync with Razorpay* in the drawer.
+- Refunding a one-time payment: from the Razorpay dashboard for now (the console's refund lists subscription invoices).

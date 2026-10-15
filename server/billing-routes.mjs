@@ -54,9 +54,60 @@ async function applyRemote(orgId, remote, { promote = false, cfg }) {
   if (before) await N.billingChanged(before, saved);
   return { changed, retire };
 }
+// ── One-time payments (a Razorpay Payment Link for N months of a plan, no renewal) ──
+// Paid: the organisation is active on that plan from now (or from the end of a month still running) for `months` calendar months, with
+// no subscription, so it turns read-only when that time ends (accessMode: active without a subscription ends on its date). Usage counts
+// from a fresh period. Runs inside the caller's transaction; returns { org, patch } or { ignored: reason }.
+export async function activateOneTime(c, linkId, { paymentId = null, amountPaid = null, orgNote = null } = {}) {
+  const link = (await c.query(`select * from payment_links where id = $1 for update`, [linkId])).rows[0];
+  if (!link) return { ignored: "not one of our payment links" };
+  if (link.status === "paid") return { ignored: "already applied" };
+  if (!link.org_id) return { ignored: "its organisation was deleted" };
+  if (orgNote && orgNote !== link.org_id) return { ignored: "organisation note doesn't match" };
+  if (amountPaid != null && Number(amountPaid) < Number(link.amount_minor)) return { ignored: "paid less than the link's amount" };
+  const org = (await c.query(`select * from organizations where id = $1 for update`, [link.org_id])).rows[0];
+  if (!org) return { ignored: "no organisation" };
+  if (org.razorpay_subscription_id && ["active", "past_due"].includes(org.billing_status)) return { ignored: "organisation pays by subscription", org };
+  const now = new Date(), running = org.billing_status === "active" && !org.razorpay_subscription_id && org.current_period_end && new Date(org.current_period_end) > now && org.plan_code === link.plan_code;
+  const from = running ? new Date(org.current_period_end) : now, end = new Date(from); end.setMonth(end.getMonth() + link.months);
+  const patch = { plan_code: link.plan_code, billing_status: "active", billing_currency: link.currency, billing_cycle: "monthly", current_period_end: end,
+    current_period_start: running ? org.current_period_start : now, grace_ends_at: null, cancel_at_period_end: false, pending_plan_code: null };
+  await apply(c, org.id, patch, org);
+  await c.query(`update payment_links set status = 'paid', paid_at = now(), payment_id = $2, period_end = $3 where id = $1`, [link.id, paymentId, end]);
+  await c.query(`insert into audit_log (org_id, action, target, detail) values ($1, 'billing.onetime_paid', $2, $3)`,
+    [org.id, link.plan_code, { link: link.id, payment: paymentId, amount: Number(link.amount_minor), currency: link.currency, until: end, extended: running }]);
+  return { org, patch };
+}
+// Unpaid one-time links of an organisation: cancel them upstream (a new link, a subscription link, or deleting the organisation).
+// `strict`: refuse when one was paid meanwhile, or when Razorpay can't be asked (the caller must not go on as if nothing was payable).
+export async function cancelOpenPaymentLinks(orgId, { strict = false } = {}) {
+  const open = await q(`select id from payment_links where org_id = $1 and status = 'created'`, [orgId]);
+  for (const l of open) {
+    let r = null;
+    try { r = await client().fetchPaymentLink(l.id); } catch (e) { if (strict) fail(502, "Razorpay didn't answer about an open one-time payment link: " + String(e.message).slice(0, 120)); continue; }
+    if (r.status === "paid") { if (strict) fail(409, "A one-time payment link was just paid. Sync billing first.", { code: "link_paid" }); continue; }
+    if (["created", "partially_paid"].includes(r.status)) {
+      try { await client().cancelPaymentLink(l.id); } catch (e) { if (strict) fail(502, "Couldn't cancel an open one-time payment link: " + String(e.message).slice(0, 120)); continue; }
+    }
+    await q(`update payment_links set status = $2 where id = $1 and status = 'created'`, [l.id, r.status === "expired" ? "expired" : "cancelled"]);
+  }
+}
+// A missed payment_link.paid webhook: ask Razorpay about each open link and apply a paid one.
+async function syncPaymentLinks(orgId) {
+  let changed = 0;
+  for (const l of await q(`select id from payment_links where org_id = $1 and status = 'created'`, [orgId])) {
+    const r = await client().fetchPaymentLink(l.id);
+    if (r.status === "paid") {
+      const out = await tx((c) => activateOneTime(c, l.id, { paymentId: r.payments?.[0]?.payment_id || null, amountPaid: r.amount_paid }));
+      if (out.patch) { changed++; await N.billingChanged(out.org, out.patch); }
+    } else if (["cancelled", "expired"].includes(r.status)) await q(`update payment_links set status = $2 where id = $1 and status = 'created'`, [l.id, r.status]);
+  }
+  return changed;
+}
+
 export async function syncOrg(orgId, { log = console.log } = {}) {
   const cfg = billingConfig(); if (!cfg.ready) return { changed: 0 };
-  const rzp = client(); let changed = 0, retire = null;
+  const rzp = client(); let changed = await syncPaymentLinks(orgId), retire = null;
   const ids = await one(`select razorpay_subscription_id as main, razorpay_checkout_subscription_id as pending from organizations where id = $1`, [orgId]);
   if (!ids) return { changed: 0 };
   if (ids.pending) {
@@ -81,6 +132,8 @@ export async function reconcile({ limit = 20, log = console.log } = {}) {
       (((razorpay_subscription_id is not null and billing_status in ('active','past_due')) or razorpay_checkout_subscription_id is not null)
         and (billing_reconciled_at is null or billing_reconciled_at < now() - interval '1 day'))
       or (billing_status = 'trialing' and razorpay_subscription_id is not null and trial_ends_at < now()
+        and (billing_reconciled_at is null or billing_reconciled_at < now() - interval '1 hour'))
+      or (exists (select 1 from payment_links p where p.org_id = organizations.id and p.status = 'created')
         and (billing_reconciled_at is null or billing_reconciled_at < now() - interval '1 hour'))
     order by billing_reconciled_at nulls first limit $1`, [limit]);
   let changed = 0;
@@ -276,16 +329,15 @@ export function makeBillingRoutes({ needCtx, needUser }) {
       if (org.main && org.billing_status === "active" && !org.cancel_at_period_end && !switching) fail(409, "This organisation already has a subscription. Change plan instead.", { code: "has_subscription" });
       const rzp = client();
       if (org.pending) await rzp.cancelSubscription(org.pending, { atCycleEnd: false }).catch((e) => console.warn("[billing] could not cancel the previous checkout:", e.message));
+      await cancelOpenPaymentLinks(ctx.org.id); // buying a subscription withdraws an unpaid one-time link the team sent
       let sub;
-      // Nothing is charged for time already covered: during the free trial the subscription starts when the trial ends, and after a
-      // cancellation that is still paid up it starts when the paid period ends (no double charge). Within half an hour, it simply starts.
+      // Buying during the free trial starts the plan today: Razorpay charges now and the trial ends there. After a cancellation that is
+      // still paid up the subscription starts when the paid period ends (no double charge). Within half an hour, it simply starts.
       if (switching && PRICE(plan, currency, cycle) < PRICE(org.plan_code, currency, cycle)) {
         const blockers = await B.downgradeBlockers(ctx.org.id, plan);
         if (blockers.length) fail(409, `Before moving to ${PLANS[plan].name}, reduce: ${blockers.join("; ")}.`, { code: "over_plan", blockers });
       }
-      // Once the trial's own check is used up there is nothing left to wait for, so paying starts the plan today.
-      const trialLeft = org.billing_status === "trialing" && !(await B.trialUsedUp(ctx.org.id));
-      const covered = trialLeft ? org.trial_ends_at : org.billing_status === "active" && (org.cancel_at_period_end || switching) ? org.current_period_end : null;
+      const covered = org.billing_status === "active" && (org.cancel_at_period_end || switching) ? org.current_period_end : null;
       const startAt = covered && new Date(covered).getTime() - Date.now() > 30 * 60e3 ? Math.floor(new Date(covered).getTime() / 1000) : null;
       const starts = !startAt ? "now" : org.billing_status === "trialing" ? "trial" : "resume";
       try { sub = await rzp.createSubscription({ planId, orgId: ctx.org.id, plan, cycle, startAt }); }
@@ -564,8 +616,21 @@ export function makeBillingRoutes({ needCtx, needUser }) {
           const sub = evt.payload?.subscription?.entity, sid = sub?.id;
           const ignore = async (reason, orgId = null, extra = {}) => {
             await c.query(`update billing_events set status = 'ignored', org_id = $2, processed_at = now(), error = $3 where event_id = $1`, [eventId, orgId, reason]);
-            return { ignored: true, status: "ignored", reason, money: MONEY_EVENTS.has(evt.event), sid, ...extra };
+            return { ignored: true, status: "ignored", reason, money: MONEY_EVENTS.has(evt.event) || evt.event === "payment_link.paid", sid: sid || evt.payload?.payment_link?.entity?.id, ...extra };
           };
+          // One-time payment links: paid -> the plan for its months; cancelled / expired -> just the link's state.
+          if (String(evt.event).startsWith("payment_link.")) {
+            const pl = evt.payload?.payment_link?.entity;
+            if (!pl?.id) return ignore("no payment link in the event");
+            if (evt.event !== "payment_link.paid") {
+              if (["payment_link.cancelled", "payment_link.expired"].includes(evt.event)) await c.query(`update payment_links set status = $2 where id = $1 and status = 'created'`, [pl.id, evt.event.split(".")[1]]);
+              return ignore("payment link " + evt.event.split(".")[1]);
+            }
+            const r = await activateOneTime(c, pl.id, { paymentId: evt.payload?.payment?.entity?.id || null, amountPaid: pl.amount_paid ?? evt.payload?.payment?.entity?.amount, orgNote: pl.notes?.white_petal_org_id || null });
+            if (r.ignored) return ignore(r.ignored, r.org?.id || null);
+            await c.query(`update billing_events set status = 'processed', org_id = $2, processed_at = now() where event_id = $1`, [eventId, r.org.id]);
+            return { status: "processed", org: r.org, patch: r.patch, oneTime: true };
+          }
           let org = sid ? (await c.query(`select * from organizations where razorpay_subscription_id = $1 or razorpay_checkout_subscription_id = $1 for update`, [sid])).rows[0] : null;
           // Our own note on the subscription is a fallback for an event that beats the checkout write.
           if (!org && sid && /^[0-9a-f-]{36}$/i.test(String(sub?.notes?.white_petal_org_id || ""))) org = (await c.query(`select * from organizations where id = $1 for update`, [sub.notes.white_petal_org_id])).rows[0];
@@ -575,7 +640,8 @@ export function makeBillingRoutes({ needCtx, needUser }) {
           if (adopting) {
             // Authorised but not yet charged counts only while the time is already covered: a trial, or a cancelled period still paid up
             // (then only when the new subscription starts in the future; one that charges at once is adopted on that charge).
-            const waiting = org.billing_status === "trialing" || (org.billing_status === "active" && Number(sub?.start_at) * 1000 > Date.now());
+            // A subscription that charges at once (bought or sent during a trial) is adopted on that charge, not on the card's authorisation.
+            const waiting = ["trialing", "active"].includes(org.billing_status) && Number(sub?.start_at) * 1000 > Date.now();
             if (!MONEY_EVENTS.has(evt.event) && !(evt.event === "subscription.authenticated" && waiting)) return ignore("subscription not confirmed yet", org.id);
             // A second subscription was paid while one is already active: stop it recurring (a refund is for a person to decide).
             if (MONEY_EVENTS.has(evt.event) && org.razorpay_subscription_id && org.billing_status === "active" && !org.cancel_at_period_end) return ignore("organisation already has an active subscription", org.id, { retire: sid });
@@ -593,7 +659,7 @@ export function makeBillingRoutes({ needCtx, needUser }) {
           return { status: "processed", org, patch, retire };
         });
         if (out.money) console.error(`[billing] ALERT: ${evtName} for ${out.sid} was not applied (${out.reason}). Money may have moved; check billing_events.`);
-        if (out.patch && (out.patch.plan_code || out.patch.billing_status)) await O.audit(out.org.id, null, "billing." + String(evt.event).replace("subscription.", ""), out.patch.plan_code || out.org.plan_code, { from: { plan: out.org.plan_code, status: out.org.billing_status }, to: { plan: out.patch.plan_code || out.org.plan_code, status: out.patch.billing_status || out.org.billing_status } });
+        if (out.patch && !out.oneTime && (out.patch.plan_code || out.patch.billing_status)) await O.audit(out.org.id, null, "billing." + String(evt.event).replace("subscription.", ""), out.patch.plan_code || out.org.plan_code, { from: { plan: out.org.plan_code, status: out.org.billing_status }, to: { plan: out.patch.plan_code || out.org.plan_code, status: out.patch.billing_status || out.org.billing_status } });
         if (out.patch && out.org) void N.billingChanged(out.org, out.patch);
         // A renewal was paid: put this cycle's extra seats on the next invoice. A failure here is logged, never fails the webhook.
         if (out.patch && out.org && evt.event === "subscription.charged") await chargeSeats(out.org.id).catch((e) => console.error(`[billing] ALERT: extra seats not charged for ${out.org.id}: ${e.message}`));

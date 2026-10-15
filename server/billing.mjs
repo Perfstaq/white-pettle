@@ -194,7 +194,10 @@ export const aiUsage = (kind, writeKind) => (needsDraftCount(kind, writeKind) ? 
 // What the browser shows: plan, status, mode, renewal and the reader's comparison of usage with limits. No provider ids.
 export async function billingSummary(orgId, { ai = null } = {}) {
   const st = await billingState(orgId, { usage: true }), o = st.org;
-  return { plan: { code: o.plan_code, name: st.plan.name, description: st.plan.description, status: o.billing_status, currency: o.billing_currency, cycle: o.billing_cycle || "monthly", extraSeats: o.extra_seats || 0, pendingPlan: o.pending_plan_code, cancelAtPeriodEnd: !!o.cancel_at_period_end },
+  // Paid by a one-time link (no renewal): the running period is the one a paid link set.
+  const oneTime = o.billing_status === "active" && !o.razorpay_subscription_id && !!o.current_period_end
+    && !!(await q(`select 1 from payment_links where org_id = $1 and status = 'paid' and period_end = $2 limit 1`, [orgId, o.current_period_end]))[0];
+  return { plan: { code: o.plan_code, name: st.plan.name, description: st.plan.description, status: o.billing_status, currency: o.billing_currency, cycle: o.billing_cycle || "monthly", extraSeats: o.extra_seats || 0, pendingPlan: o.pending_plan_code, cancelAtPeriodEnd: !!o.cancel_at_period_end, oneTime },
     mode: st.mode, trialStartedAt: o.trial_started_at, trialEndsAt: o.trial_ends_at, periodEnd: o.current_period_end, graceEndsAt: o.grace_ends_at, limits: finite(st.ent), used: st.used, nextPlan: nextPlan(o.plan_code), report: usageReport(st, ai),
     // The placeholder "trial" plan means no plan has been picked yet; picking one switches the trial to that plan's limits.
     trialChosen: o.plan_code !== "trial", trialAvailable: o.billing_status === "new" ? await trialAvailable(orgId) : o.billing_status === "trialing",
@@ -261,8 +264,9 @@ export function applyEvent(org, evt, { planOf, now = new Date(), graceDays = 3 }
 }
 // What we keep of a webhook: identifiers, statuses and timestamps. Never card, contact or payment-method details.
 export function eventSummary(evt) {
-  const s = evt?.payload?.subscription?.entity || {};
-  return { event: evt?.event, created_at: evt?.created_at, subscription: { id: s.id, plan_id: s.plan_id, status: s.status, current_start: s.current_start, current_end: s.current_end, paid_count: s.paid_count, has_scheduled_changes: s.has_scheduled_changes } };
+  const s = evt?.payload?.subscription?.entity || {}, l = evt?.payload?.payment_link?.entity;
+  return { event: evt?.event, created_at: evt?.created_at, subscription: { id: s.id, plan_id: s.plan_id, status: s.status, current_start: s.current_start, current_end: s.current_end, paid_count: s.paid_count, has_scheduled_changes: s.has_scheduled_changes },
+    ...(l ? { payment_link: { id: l.id, status: l.status, amount: l.amount, amount_paid: l.amount_paid, currency: l.currency } } : {}) };
 }
 
 // Why an organisation can't move to `code` yet: what it uses today that the cheaper plan doesn't allow. Nothing is

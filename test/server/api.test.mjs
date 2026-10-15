@@ -1138,10 +1138,11 @@ test("trial: choose the plan, connect a payment method (first charge at the tria
   assert.equal((await call("pl", "POST", "/api/billing/start-trial", { plan: "starter" })).data.limits.brands, 1, "and it can be switched freely until a payment method is connected");
   await call("pl", "POST", "/api/billing/start-trial", { plan: "growth" });
 
-  // Connecting a payment method: Razorpay is told the subscription starts when the trial ends, so nothing is charged before then.
-  r = await checkout("growth"); assert.equal(r.status, 200); assert.equal(calls.at(-1)[2], after.trial_unix, "start_at is the trial's last moment"); assert.equal(new Date(r.data.startsAt).getTime() / 1000, after.trial_unix);
+  // Buying during the trial now charges at once (no start_at): the plan starts when that charge lands, not at the trial's end.
+  r = await checkout("growth"); assert.equal(r.status, 200); assert.equal(calls.at(-1)[2], null, "no deferred start"); assert.equal(r.data.startsAt ?? null, null);
   assert.equal((await row()).plan_code, "growth", "paying for it changes nothing yet");
-  // Razorpay authorises the payment method: it becomes the organisation's subscription, the trial carries on, access is unchanged.
+  // Subscriptions connected before that change still start at the trial's end. Razorpay authorises one: it becomes the organisation's
+  // subscription, the trial carries on, access is unchanged.
   const startAt = after.trial_unix;
   assert.equal((await hook("subscription.authenticated", "plan_G_INR", "sub_t1", { start_at: startAt })).status, "processed");
   let o = await row(); assert.equal(o.razorpay_subscription_id, "sub_t1"); assert.equal(o.razorpay_checkout_subscription_id, null); assert.equal(o.billing_status, "trialing"); assert.equal(o.billing_currency, "INR"); assert.equal(o.trial_unix, startAt);
@@ -1155,7 +1156,7 @@ test("trial: choose the plan, connect a payment method (first charge at the tria
   await sql(`update organizations set trial_ends_at = to_timestamp($2) where id = $1`, [org, startAt]);
 
   // Switching plans means connecting again on the new one: the new subscription replaces the old, which is cancelled upstream.
-  assert.equal((await checkout("agency")).status, 200); const sw = calls.filter((c) => c[0] === "create").at(-1); assert.equal(sw[1], "plan_A_INR"); assert.equal(sw[2], startAt);
+  assert.equal((await checkout("agency")).status, 200); const sw = calls.filter((c) => c[0] === "create").at(-1); assert.equal(sw[1], "plan_A_INR"); assert.equal(sw[2], null);
   assert.equal((await hook("subscription.authenticated", "plan_A_INR", "sub_t2", { start_at: startAt })).status, "processed");
   o = await row(); assert.equal(o.razorpay_subscription_id, "sub_t2"); assert.equal(o.plan_code, "agency"); assert.equal(o.billing_status, "trialing"); assert.deepEqual(calls.at(-1), ["cancel", "sub_t1", false]);
 
@@ -2071,6 +2072,99 @@ test("plan parameters: annual checkout and renewal, per-plan trial length, extra
   assert.equal(r.status, 200); assert.equal(calls.at(-1)[1].planId, "plan_AgenYear01");
   // Clean up the catalogue for the tests after this one.
   await up("growth", g, {}); await up("starter", st, {}); await up("agency", ag, {});
+  setClient(null);
+  for (const k of ["BILLING_ENABLED", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]) delete process.env[k];
+  await sql(`update operators set role = 'support'`);
+});
+
+test("upgrading from a trial is immediate; one-month payment links activate a plan, stack, reset usage and stay out of MRR", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const crypto = await import("node:crypto");
+  const { setClient } = await import("../../server/razorpay.mjs");
+  const { PLANS, withTax } = await import("../../server/plans.mjs");
+  const SECRET = "wh_onetime", calls = []; let linkStatus = "created";
+  setClient({ createSubscription: async (a) => { calls.push(["sub", a]); return { id: "sub_now_" + calls.length }; }, cancelSubscription: async (id) => { calls.push(["cancel_sub", id]); return {}; },
+    fetchSubscription: async () => ({ status: "created" }), createPaymentLink: async (a) => { calls.push(["plink", a]); return { id: "plink_" + calls.length, short_url: "https://rzp.io/l/t" + calls.length }; },
+    fetchPaymentLink: async () => ({ status: linkStatus }), cancelPaymentLink: async (id) => { calls.push(["cancel_link", id]); return {}; } });
+  Object.assign(process.env, { BILLING_ENABLED: "1", RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: SECRET });
+  await sql(`update operators set role = 'finance', active = true`);
+  const plans = (await call("cs", "GET", "/api/admin/plans")).data.plans, g = plans.find((p) => p.code === "growth");
+  await call("cs", "PUT", "/api/admin/plans/growth", { ...g, prices: { ...g.prices, INR: { ...g.prices.INR, razorpayPlanId: "plan_GrowNow001" } } });
+  const sig = (raw) => crypto.createHmac("sha256", SECRET).update(raw).digest("hex");
+  const hook = (id, body) => { const raw = JSON.stringify(body); return fetch(base + "/api/webhooks/razorpay", { method: "POST", headers: { "x-razorpay-event-id": id, "x-razorpay-signature": sig(raw) }, body: raw }); };
+  const T = Math.floor(Date.now() / 1000);
+  const signup = async (who, email, ip) => { assert.equal((await call(who, "POST", "/api/auth/signup", { email, password: "longenough1" }, { "x-forwarded-for": ip })).status, 200); const me = (await call(who, "GET", "/api/me")).data; return { id: me.org.id, slug: me.org.slug }; };
+
+  // Self-serve: buying during a running trial charges now (no start_at); the card's authorisation alone changes nothing, the charge does.
+  const a = await signup("ua", "upgrade-now@x.co", "10.9.9.40");
+  let r = await call("ua", "POST", "/api/billing/checkout", { plan: "growth", currency: "INR" });
+  assert.equal(r.status, 200); assert.equal(calls.at(-1)[0], "sub"); assert.equal(calls.at(-1)[1].startAt, null, "no deferred start during the trial"); assert.equal(r.data.startsAt ?? null, null);
+  const sid = calls.at(-1)[1] && (await sql(`select razorpay_checkout_subscription_id as s from organizations where id = $1`, [a.id]))[0].s;
+  const subEvt = (event, extra = {}) => ({ event, created_at: T + 1, payload: { subscription: { entity: { id: sid, plan_id: "plan_GrowNow001", status: "active", current_start: T, current_end: T + 30 * 86400, notes: { white_petal_org_id: a.id }, ...extra } } } });
+  await hook("evt_now_auth", subEvt("subscription.authenticated", { status: "authenticated", start_at: T }));
+  assert.equal((await sql(`select billing_status from organizations where id = $1`, [a.id]))[0].billing_status, "trialing", "authorised only: still on the trial");
+  await hook("evt_now_charged", subEvt("subscription.charged"));
+  let bl = (await call("ua", "GET", "/api/me")).data.billing;
+  assert.deepEqual([bl.plan.status, bl.plan.code, bl.limits.questions], ["active", "growth", PLANS.growth.entitlements.questions], "the plan and its limits start at once");
+
+  // Console subscription link during a trial: also charged at once.
+  const c = await signup("uc", "link-now@x.co", "10.9.9.41");
+  r = await call("cs", "POST", `/api/admin/console/customers/${c.slug}/subscription`, { plan: "growth", currency: "INR", reason: "agreed on a call" });
+  assert.equal(r.status, 200); assert.equal(calls.at(-1)[1].startAt, null); assert.equal(r.data.startsAt, null);
+
+  // One month, paid once.
+  const o = await signup("uo", "one-time@x.co", "10.9.9.42");
+  assert.equal((await call("uo", "PUT", "/api/workspaces/once", { name: "once", setup: { profile: { name: "once", competitors: [] }, questions: [{ text: "q", on: true }] } })).status, 200);
+  await sql(`insert into runs (id, workspace_id, status, started_at, finished_at, updated_at) select 'run_before_pay', id, 'done', now(), now(), now() from workspaces where org_id = $1`, [o.id]);
+  assert.equal((await call("uo", "GET", "/api/me")).data.billing.used.checks, 1, "the trial's check is used");
+  assert.equal((await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR" })).status, 400, "a reason is required");
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR", reason: "pays by link" });
+  assert.equal(r.status, 200); const link1 = r.data.linkId;
+  assert.equal(calls.at(-1)[1].amount, withTax(PLANS.starter.prices.INR, "INR"), "the catalogue's monthly price with tax"); assert.equal(calls.at(-1)[1].email, "one-time@x.co");
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR", reason: "sent again" });
+  const link2 = r.data.linkId; assert.deepEqual(calls.at(-2), ["cancel_link", link1], "a new link cancels the unpaid one");
+  assert.equal((await sql(`select status from payment_links where id = $1`, [link1]))[0].status, "cancelled");
+  const paid = (id, link, amount) => hook(id, { event: "payment_link.paid", created_at: T + 5, payload: { payment_link: { entity: { id: link, status: "paid", amount, amount_paid: amount, notes: { white_petal_org_id: o.id } } }, payment: { entity: { id: "pay_" + id, amount } } } });
+  const amt = withTax(PLANS.starter.prices.INR, "INR");
+  await paid("evt_short", link2, amt - 100);
+  assert.equal((await sql(`select billing_status from organizations where id = $1`, [o.id]))[0].billing_status, "trialing", "paid less: ignored");
+  assert.equal((await sql(`select status from billing_events where event_id = 'evt_short'`))[0].status, "ignored");
+  await paid("evt_paid", link2, amt);
+  let row = (await sql(`select billing_status, plan_code, razorpay_subscription_id, current_period_start, current_period_end from organizations where id = $1`, [o.id]))[0];
+  assert.deepEqual([row.billing_status, row.plan_code, row.razorpay_subscription_id], ["active", "starter", null]);
+  const days = (new Date(row.current_period_end) - new Date(row.current_period_start)) / 864e5; assert.ok(days >= 28 && days <= 31, `one month, got ${days}`);
+  bl = (await call("uo", "GET", "/api/me")).data.billing;
+  assert.equal(bl.plan.oneTime, true); assert.equal(bl.mode, "write"); assert.equal(bl.used.checks, 0, "usage counts from the new period");
+  assert.equal(bl.limits.questions, PLANS.starter.entitlements.questions, "Starter's limits, not the trial's");
+  await paid("evt_paid", link2, amt); // a repeated delivery
+  assert.equal((await sql(`select count(*)::int as n from audit_log where org_id = $1 and action = 'billing.onetime_paid'`, [o.id]))[0].n, 1, "applied once");
+  let cust = (await call("cb", "GET", "/api/admin/console/customers")).data.orgs.find((x) => x.slug === o.slug);
+  assert.equal(cust.mrr, 0, "a one-time month is not MRR");
+  assert.equal((await call("cb", "GET", "/api/admin/console/revenue")).data.oneTime.count >= 1, true);
+  // Paying another month adds to the running one.
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR", reason: "second month" });
+  await paid("evt_paid_2", r.data.linkId, amt);
+  const row2 = (await sql(`select current_period_start, current_period_end from organizations where id = $1`, [o.id]))[0];
+  assert.equal(String(row2.current_period_start), String(row.current_period_start), "same period start: counters aren't reset mid-month");
+  assert.ok((new Date(row2.current_period_end) - new Date(row.current_period_end)) / 864e5 >= 28, "a second month after the first");
+  // A dearer plan's month bought during it is an immediate upgrade; a cheaper one while it runs is refused (it would cut the month short).
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "growth", currency: "INR", reason: "upgrade" });
+  await paid("evt_paid_up", r.data.linkId, withTax(PLANS.growth.prices.INR, "INR"));
+  assert.equal((await call("uo", "GET", "/api/me")).data.billing.plan.code, "growth", "upgrade applies at once");
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR", reason: "downgrade" });
+  assert.equal(r.status, 409); assert.equal(r.data.code, "downgrade_running"); assert.match(r.data.error, /Assign a plan/);
+  // When the paid month is over: read-only, no renewal.
+  await sql(`update organizations set current_period_end = now() - interval '1 minute' where id = $1`, [o.id]);
+  assert.equal((await call("uo", "GET", "/api/me")).data.billing.mode, "read");
+  // Not while a subscription is live; an open link is cancelled when the organisation is deleted.
+  await sql(`update organizations set razorpay_subscription_id = 'sub_live', billing_status = 'active' where id = $1`, [a.id]);
+  assert.equal((await call("cs", "POST", `/api/admin/console/customers/${a.slug}/one-time`, { plan: "starter", currency: "INR", reason: "x y z" })).data.code, "has_subscription");
+  r = await call("cs", "POST", `/api/admin/console/customers/${c.slug}/one-time`, { plan: "starter", currency: "INR", reason: "then deleted" });
+  assert.equal(calls.filter((x) => x[0] === "cancel_sub").length >= 1, true, "the open subscription link was withdrawn for the one-time link");
+  await sql(`update operators set role = 'founder'`);
+  assert.equal((await call("cs", "DELETE", `/api/admin/console/accounts/${c.slug}`, { confirm: c.slug, reason: "test cleanup" })).status, 200);
+  assert.deepEqual(calls.at(-1), ["cancel_link", r.data.linkId], "deleting the organisation cancels its unpaid link");
+
+  await call("cs", "PUT", "/api/admin/plans/growth", g);
   setClient(null);
   for (const k of ["BILLING_ENABLED", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]) delete process.env[k];
   await sql(`update operators set role = 'support'`);
