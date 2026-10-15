@@ -1056,20 +1056,8 @@ a[data-tip],button[data-tip],[data-chat][data-tip],[data-cell][data-tip],.src[da
 .bl-empty{padding:26px;text-align:center;color:var(--muted);font-size:.9rem}
 
 /* operator catalogue editor */
-.bl-cat-h{display:flex;align-items:center;gap:12px;padding:16px 20px;border-bottom:1px solid var(--line);flex-wrap:wrap}.bl-cat-h b{font-weight:600}.bl-cat-h .sp{flex:1}
-.bl-edit{border-bottom:1px solid var(--line)}.bl-edit:last-child{border-bottom:0}
-.bl-edit>summary{cursor:pointer;list-style:none;display:flex;align-items:center;flex-wrap:wrap;gap:6px 10px;padding:13px 20px;font-size:.92rem}.bl-edit>summary::-webkit-details-marker{display:none}
-.bl-edit>summary:before{content:"›";color:var(--dim);transition:transform .15s}.bl-edit[open]>summary:before{transform:rotate(90deg)}
-.bl-edit>summary code{font-size:.76rem;color:var(--dim)}.bl-edit>summary .sp{flex:1}
-.bl-form{padding:4px 20px 20px;display:grid;gap:18px}
-.bl-fg{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
-.bl-f{display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--muted)}.bl-f .inp{width:100%}
-.bl-checks{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.84rem}.bl-checks label{display:inline-flex;gap:6px;align-items:center;cursor:pointer}
-.bl-grp-t{font-size:.78rem;font-weight:600;color:var(--ink);margin-bottom:6px}
-.bl-price-row{display:grid;grid-template-columns:70px 130px 1fr auto;gap:10px;align-items:center;font-size:.84rem}
-.bl-form-f{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.bl-form-f .msg{font-size:.84rem}.bl-form-f .msg.err{color:var(--bad)}.bl-form-f .msg.ok{color:var(--good)}
 
-@media (max-width:860px){.bl-edit>summary .sp{display:none}.bl-hero{grid-template-columns:1fr}.bl-plan{padding:22px}.bl-price-row{grid-template-columns:60px 1fr}.bl-price-row .inp:nth-child(3){grid-column:1/-1}}
+@media (max-width:860px){.bl-hero{grid-template-columns:1fr}.bl-plan{padding:22px}}
 @media (prefers-reduced-motion:reduce){.bl-bar i{transition:none}}
 
 /* plans & payment page, first run, and the dashboard's trial pill */
@@ -1392,3 +1380,5 @@ body.is-light{min-height:100vh}
 #reportWrap .ask textarea:focus-visible,#reportWrap .ask input:focus-visible{outline:none}
 /* The dashboard opens at the top: no scroll anchoring while its cards render in (it could drift the page down by itself). */
 #reportWrap .main{overflow-anchor:none}
+.bl-save{display:block;font-style:normal;font-size:.78rem;color:#16955F;margin-top:2px}
+.bl-sec-h .bl-seg + .bl-seg{margin-left:8px}

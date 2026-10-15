@@ -18,9 +18,10 @@ import { slugify, emailOk, normEmail } from "./util.mjs";
 import * as O from "./orgs.mjs";
 import * as B from "./billing.mjs";
 import { makeBillingRoutes, reconcile } from "./billing-routes.mjs";
+import { makeConsoleRoutes } from "./console-routes.mjs";
 import * as N from "./notify.mjs";
 import { billingConfig } from "./razorpay.mjs";
-import { PLANS } from "./plans.mjs";
+import { PLANS, LIMIT_METRICS } from "./plans.mjs";
 import * as mail from "./mail.mjs";
 
 const SESSION = "wp_session";
@@ -211,7 +212,7 @@ export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
       const keys = O.envFor(await O.orgKeys(ws.org_id));
       // Stop asking once this run's estimated cost would pass what's left of the monthly budget.
       const budgetUsd = budget.cap == null ? null : Math.max(0, budget.cap - budget.spent);
-      M = await O.withEnv(keys, () => runCheck(ws, { prev: prev?.data, deadline: until - 60000, budgetUsd, engines: availableEngines().filter((e) => bs.ent.engines.includes(e)), costOf: O.costOf, log: (m) => log(`[tick ${ws.slug}] ${m}`) }));
+      M = await O.withEnv(keys, () => runCheck(ws, { prev: prev?.data, deadline: until - 60000, budgetUsd, pages: Number.isFinite(bs.ent.pages) ? bs.ent.pages : null, engines: availableEngines().filter((e) => bs.ent.engines.includes(e)), costOf: O.costOf, log: (m) => log(`[tick ${ws.slug}] ${m}`) }));
     } catch (e) { err = String(e.message || e); log(`[tick ${ws.slug}] failed: ${err}`); }
     if (M) {
       const s = summarize(M);
@@ -319,6 +320,7 @@ const roleOk = (r) => O.ROLES.includes(r);
 export const ROUTES = [
   // ── billing (first, so the webhook is matched before anything generic) ──
   ...makeBillingRoutes({ needCtx, needUser }),
+  ...makeConsoleRoutes({ needUser }),
   // ── accounts ──
   ["POST", "/api/auth/signup", async (req, res) => {
     needDb();
@@ -330,7 +332,6 @@ export const ROUTES = [
     const inv = b.invite ? await O.findInvite(String(b.invite)) : null;
     if (b.invite && !inv) fail(400, "This invite link has expired or was already used. Ask for a new one.", { code: "invite_gone" });
     if (inv && normEmail(inv.email) !== email) fail(403, `This invite is for ${inv.email}.`, { code: "invite_email" });
-    if (!inv && process.env.ACCESS_CODE && !selfServe() && !safeEqual(b.code, process.env.ACCESS_CODE)) fail(403, "That invite code isn't right.", { code: "invite" });
     if (await one(`select 1 from users where email = $1`, [email])) fail(409, "There's already an account with that email. Sign in instead.");
     const pw = await hashPassword(b.password), name = String(b.name || "").trim().slice(0, 80) || null;
     let u, orgId;
@@ -438,7 +439,6 @@ export const ROUTES = [
     if (u) await q(`update users set google_sub = coalesce(google_sub, $2), email_verified_at = coalesce(email_verified_at, now()), last_login_at = now() where id = $1`, [u.id, g.sub]);
     else {
       if (invite && normEmail(invite.email) !== g.email) return back(`This invite is for ${invite.email}, but you signed in to Google as ${g.email}.`);
-      if (!invite && process.env.ACCESS_CODE && !selfServe()) return back(`New accounts need an invite. Ask your admin to invite ${g.email}.`);
       if (invite) {
         try { ({ u, orgId } = await tx(async (c) => { const u = (await c.query(`insert into users (email, name, google_sub, email_verified_at, last_login_at) values ($1, $2, $3, now(), now()) returning id, email, name`, [g.email, g.name, g.sub])).rows[0]; return { u, orgId: (await O.acceptInvite(invite, u, c)).orgId }; })); }
         catch (e) { return back(e.message); }
@@ -487,7 +487,7 @@ export const ROUTES = [
   // An operator sets an organisation's plan by hand: an invoiced Enterprise contract, a longer trial, custom limits. Every change is
   // audited with before and after. It refuses an organisation that has a live Razorpay subscription (cancel that first).
   ["PATCH", "/api/admin/orgs/:slug/billing", async (req, res, p) => {
-    const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+    const u = await O.needBillingAdmin(await needUser(req));
     const b = await readJson(req, 5000);
     const org = await one(`select id, name, plan_code, billing_status, razorpay_subscription_id, trial_ends_at, current_period_end, entitlement_overrides from organizations where slug = $1`, [p.slug]);
     if (!org) fail(404, "Not found");
@@ -504,7 +504,7 @@ export const ROUTES = [
     if ("overrides" in b) {
       if (b.overrides === null) overrides = {};
       else {
-        const keys = ["brands", "questions", "competitors", "seats", "drafts", "samples"], v = b.overrides?.values || {};
+        const keys = LIMIT_METRICS, v = b.overrides?.values || {};
         for (const [k, n] of Object.entries(v)) if (!keys.includes(k) || !Number.isInteger(n) || n < 0) fail(400, `Custom limits can set ${keys.join(", ")} to whole numbers.`);
         overrides = { values: v, expiresAt: b.overrides.expiresAt ? when(b.overrides.expiresAt, "expiresAt").toISOString() : null, reason, by: u.email };
       }

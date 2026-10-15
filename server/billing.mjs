@@ -13,6 +13,7 @@ import { billingConfig } from "./razorpay.mjs";
 // read   - reports stay readable; new checks, drafts, edits, invites, integrations and scheduled jobs are locked
 export function accessMode(org, now = new Date()) {
   const after = (t) => !!t && new Date(t) > now;
+  if (org?.paused_at) return "read"; // suspended by a platform operator: reports stay readable, nothing new runs
   switch (org?.billing_status) {
     case "internal": return "write";
     case "new": return "read"; // signed up, no plan chosen yet: picking one starts the trial
@@ -48,14 +49,16 @@ const ACTIVE_Q = `jsonb_array_elements(case when jsonb_typeof(w.setup->'question
 // client `c` to read inside a guarded() section.
 export async function billingState(orgId, { c = null, usage = false, now = new Date() } = {}) { // usage: true, or "drafts" for just that counter
   const org = (await run(c, `select id, plan_code, billing_status, billing_currency, trial_started_at, trial_ends_at, current_period_start,
-      current_period_end, grace_ends_at, pending_plan_code, cancel_at_period_end, entitlement_overrides, razorpay_subscription_id from organizations where id = $1`, [orgId]))[0];
+      current_period_end, grace_ends_at, pending_plan_code, cancel_at_period_end, entitlement_overrides, razorpay_subscription_id, paused_at, billing_cycle, extra_seats from organizations where id = $1`, [orgId]))[0];
   if (!org) fail(404, "Organisation not found.");
   // During the free trial everyone has the same Trial limits, whatever plan they picked; that plan's limits start when it does.
   const entCode = org.billing_status === "trialing" ? "trial" : org.plan_code;
   const st = { org, plan: PLANS[org.plan_code] || PLANS.trial, mode: accessMode(org, now), ent: effectiveEntitlements(entCode, org.entitlement_overrides, now), since: periodStart(org, now) };
   // BILLING_ENABLED=0 is the kill switch: nobody is limited or locked, whatever their plan or payment state says. The data
   // keeps updating underneath (webhooks, reconciliation), so turning it back on picks up where things really are.
-  if (billingConfig().enabled === "0") { st.mode = "write"; st.ent = effectiveEntitlements("legacy"); }
+  // Add-on seats sit on top of whatever the plan (or an operator's grant) allows.
+  if (org.extra_seats > 0 && st.ent.seats !== Infinity) st.ent = Object.freeze({ ...st.ent, seats: st.ent.seats + org.extra_seats });
+  if (billingConfig().enabled === "0") { st.mode = org.paused_at ? "read" : "write"; st.ent = effectiveEntitlements("legacy"); }
   if (usage) st.used = await usageOf(orgId, st.since, c, usage === true ? null : usage);
   return st;
 }
@@ -119,6 +122,8 @@ const READ_ONLY = {
 };
 export function assertWrite(st, { unattended = false } = {}) {
   if (st.mode === "write" || (st.mode === "manual" && !unattended)) return;
+  // A suspension is not a billing problem, so it doesn't ask anyone to pay (the upgrade pop-up keys off billing_read_only).
+  if (st.org.paused_at) fail(403, "This organisation is suspended by the White Petal team. Your reports stay readable. Contact support to restore it.", { code: "suspended" });
   // 'new' after a trial (it ended or was cancelled): there is no trial left to start.
   const msg = st.org.billing_status === "new" && st.org.trial_ends_at ? "Your free trial has ended. Choose a plan to subscribe. Your reports stay readable." : READ_ONLY[st.org.billing_status];
   fail(402, msg || "This organisation is read-only. Choose a plan to continue.", { code: "billing_read_only", status: st.org.billing_status });
@@ -152,8 +157,9 @@ export function assertSchedule(st, schedule, samples, w) {
   if (schedule !== w.schedule && !st.ent.schedule.includes(schedule)) limitError(st, "schedule", schedule, st.ent.schedule);
   if (samples !== w.samples && samples > st.ent.samples) limitError(st, "samples", samples, st.ent.samples);
 }
-export async function assertSeat(orgId) {
-  const st = await billingState(orgId, { usage: true }); assertWrite(st);
+// `operator`: the White Petal team setting up an account may invite people before its owner picks a plan; the seat limit still applies.
+export async function assertSeat(orgId, { operator = false } = {}) {
+  const st = await billingState(orgId, { usage: true }); if (!operator) assertWrite(st);
   // ponytail: not under the org lock (an invite sends email); two admins inviting at the same instant can exceed by one.
   if (st.used.seats >= st.ent.seats) limitError(st, "seats", st.used.seats, st.ent.seats);
 }
@@ -185,7 +191,7 @@ export const aiUsage = (kind, writeKind) => (needsDraftCount(kind, writeKind) ? 
 // What the browser shows: plan, status, mode, renewal and the reader's comparison of usage with limits. No provider ids.
 export async function billingSummary(orgId, { ai = null } = {}) {
   const st = await billingState(orgId, { usage: true }), o = st.org;
-  return { plan: { code: o.plan_code, name: st.plan.name, description: st.plan.description, status: o.billing_status, currency: o.billing_currency, pendingPlan: o.pending_plan_code, cancelAtPeriodEnd: !!o.cancel_at_period_end },
+  return { plan: { code: o.plan_code, name: st.plan.name, description: st.plan.description, status: o.billing_status, currency: o.billing_currency, cycle: o.billing_cycle || "monthly", extraSeats: o.extra_seats || 0, pendingPlan: o.pending_plan_code, cancelAtPeriodEnd: !!o.cancel_at_period_end },
     mode: st.mode, trialEndsAt: o.trial_ends_at, periodEnd: o.current_period_end, graceEndsAt: o.grace_ends_at, limits: finite(st.ent), used: st.used, nextPlan: nextPlan(o.plan_code), report: usageReport(st, ai),
     // The placeholder "trial" plan means no plan has been picked yet; picking one switches the trial to that plan's limits.
     trialChosen: o.plan_code !== "trial", trialAvailable: o.billing_status === "new" ? await trialAvailable(orgId) : o.billing_status === "trialing",
@@ -204,7 +210,7 @@ export function applyEvent(org, evt, { planOf, now = new Date(), graceDays = 3 }
   if (org.billing_event_at && at < new Date(org.billing_event_at)) return { status: "ignored", reason: "older than the last applied event" };
   const patch = { billing_event_at: at };
   const mapped = planOf(sub.plan_id);
-  const adopt = () => { patch.plan_code = mapped.plan; patch.billing_currency = mapped.currency; if (org.pending_plan_code === mapped.plan) patch.pending_plan_code = null; };
+  const adopt = () => { patch.plan_code = mapped.plan; patch.billing_currency = mapped.currency; patch.billing_cycle = mapped.cycle || "monthly"; if (org.pending_plan_code === mapped.plan) patch.pending_plan_code = null; };
   if (sub.customer_id) patch.razorpay_customer_id = sub.customer_id;
   // During the free trial nothing has been charged, so a failed, paused or cancelled subscription is only a payment method that went
   // away: the trial carries on until its own end date, and the subscription is forgotten so another can be connected.

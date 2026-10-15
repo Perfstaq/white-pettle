@@ -15,7 +15,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
-<link rel="stylesheet" href="/app.css?v=202610140200">
+<link rel="stylesheet" href="/app.css?v=202610172000">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
 </head>
 <body>
@@ -62,7 +62,6 @@
       <label class="af" data-only="signup"><span>Name</span><input id="authName" autocomplete="name" placeholder="Your name"></label>
       <label class="af" id="authEmailRow"><span>Work email</span><input id="authEmail" type="email" autocomplete="email" placeholder="name@company.com" required></label>
       <label class="af" id="authPassRow"><span id="authPassLbl">Password</span><input id="authPass" type="password" autocomplete="current-password" placeholder="At least 8 characters" required></label>
-      <label class="af" data-only="invite"><span>Invite code</span><input id="authCode" autocomplete="off" placeholder="From the person who invited you"></label>
       <span class="err" id="authErr" role="alert"></span>
       <span class="ok-msg" id="authOk" role="status"></span>
       <button class="btn auth-go" type="submit" id="authGo">Create account</button>
@@ -170,6 +169,7 @@
             <button type="button" class="navlike" data-page="settings" id="navSettings"><i data-ic="gear"></i>Settings</button>
             <button type="button" class="navlike" id="navTeam"><i data-ic="team"></i><span id="navTeamTxt">Team &amp; keys</span></button>
             <button type="button" class="navlike" id="navAccount" hidden><i data-ic="card"></i>Account &amp; usage</button>
+            <a class="navlike" id="navConsole" href="/console/" hidden><i data-ic="overview"></i>Command Deck</a>
             <button type="button" class="navlike" id="navBilling" hidden><i data-ic="card"></i>Plans &amp; payment</button>
             <button type="button" class="navlike" id="viewLog"><i data-ic="play"></i>Watch the agent</button>
             <button type="button" class="navlike am-out" id="signOut" hidden><i data-ic="out"></i><span id="whoami">Sign out</span></button>
@@ -237,6 +237,7 @@
 <div class="hint" id="hint" role="tooltip" hidden></div>
 <script src="/product-language.js?v=202610111200"></script>
 <script src="/recommendation-model.js?v=202610111200"></script>
-<script src="/app.js?v=202610140200"></script>
+<script src="/select-popup.js?v=202610171200"></script>
+<script src="/app.js?v=202610172000"></script>
 </body>
 </html>

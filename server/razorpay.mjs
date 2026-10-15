@@ -43,12 +43,17 @@ export function makeClient({ keyId, keySecret, fetch: doFetch = globalThis.fetch
     // startAt (unix seconds) delays the first charge: used to connect a payment method during the free trial without charging before it ends.
     // expire_by (documented): the last moment the customer can complete the authorisation. Without it an abandoned checkout stays payable
     // for 30 years, so an unpaid subscription is made to lapse after a day (and before a delayed start).
-    createSubscription: ({ planId, orgId, plan, startAt = null, now = Math.floor(Date.now() / 1000) }) => request("POST", "/subscriptions", {
-      plan_id: planId, total_count: 120, quantity: 1, customer_notify: true, notes: { white_petal_org_id: orgId, white_petal_plan: plan },
-      expire_by: startAt ? Math.min(now + 86400, startAt - 300) : now + 86400, ...(startAt ? { start_at: startAt } : {}),
+    // An operator-sent link (notifyEmail) stays payable for `validFor` seconds and Razorpay emails it to that address.
+    // total_count: 120 monthly cycles or 10 yearly ones, effectively "until cancelled".
+    createSubscription: ({ planId, orgId, plan, cycle = "monthly", startAt = null, notifyEmail = null, validFor = 86400, now = Math.floor(Date.now() / 1000) }) => request("POST", "/subscriptions", {
+      plan_id: planId, total_count: cycle === "annual" ? 10 : 120, quantity: 1, customer_notify: true, notes: { white_petal_org_id: orgId, white_petal_plan: plan },
+      expire_by: startAt ? Math.min(now + validFor, startAt - 300) : now + validFor, ...(startAt ? { start_at: startAt } : {}),
+      ...(notifyEmail ? { notify_info: { notify_email: notifyEmail } } : {}),
     }),
     // Plans (step 2 of Razorpay's procedure): a reusable monthly billing cycle with an amount. They can't be edited afterwards.
-    createPlan: ({ name, amount, currency, description = "" }) => request("POST", "/plans", { period: "monthly", interval: 1, item: { name, amount, currency, description } }),
+    createPlan: ({ name, amount, currency, description = "", period = "monthly" }) => request("POST", "/plans", { period, interval: 1, item: { name, amount, currency, description } }),
+    // A one-off charge added to the subscription's next invoice (Razorpay "add-ons"): how extra seats are billed, in arrears, each cycle.
+    createAddon: (id, { name, amount, currency, description = "" }) => request("POST", `${sub(id)}/addons`, { item: { name, amount, currency, description }, quantity: 1 }),
     fetchPlan: (id) => request("GET", `/plans/${encodeURIComponent(id)}`),
     listPlans: () => request("GET", "/plans?count=100"),
     fetchSubscription: (id) => request("GET", sub(id)),
@@ -56,13 +61,17 @@ export function makeClient({ keyId, keySecret, fetch: doFetch = globalThis.fetch
     // Upgrades apply now; downgrades at the end of the cycle. A scheduled change can be withdrawn.
     updateSubscription: (id, { planId, at = "cycle_end" }) => request("PATCH", sub(id), { plan_id: planId, schedule_change_at: at }),
     cancelScheduledChanges: (id) => request("POST", `${sub(id)}/cancel_scheduled_changes`),
+    // Every charge of a subscription is an invoice (its payment_id, amount, status and a hosted short_url).
+    listInvoices: (subscriptionId) => request("GET", `/invoices?subscription_id=${encodeURIComponent(subscriptionId)}&count=50`),
+    // amount in the smallest unit; omitted = full refund.
+    refundPayment: (paymentId, { amount = null, notes = {} } = {}) => request("POST", `/payments/${encodeURIComponent(paymentId)}/refund`, { ...(amount ? { amount } : {}), speed: "normal", notes }),
   };
 }
 
 // Compare a Razorpay plan (as fetched) with a catalogue price: a monthly cycle, the price with tax (GST for INR) in the same currency.
-export function planMismatches(rp, { amount }, currency) {
-  const out = [];
-  if (rp.period !== "monthly" || Number(rp.interval) !== 1) out.push(`it bills every ${rp.interval} ${rp.period}, not monthly`);
+export function planMismatches(rp, { amount }, currency, cycle = "monthly") {
+  const out = [], period = cycle === "annual" ? "yearly" : "monthly";
+  if (rp.period !== period || Number(rp.interval) !== 1) out.push(`it bills every ${rp.interval} ${rp.period}, not ${period}`);
   if (String(rp.item?.currency || "").toUpperCase() !== currency) out.push(`it is in ${rp.item?.currency}, not ${currency}`);
   else if (Number(rp.item?.amount) !== withTax(amount, currency)) out.push(`its amount is ${Number(rp.item?.amount) / 100}, the catalogue price with tax is ${withTax(amount, currency) / 100}`);
   return out;
@@ -71,18 +80,25 @@ export function planMismatches(rp, { amount }, currency) {
 // The server maps an internal plan and currency to a Razorpay plan id from its own catalogue (the database; operators enter the ids in
 // Billing > Plan catalogue). An environment variable RAZORPAY_PLAN_<PLAN>_<CCY> is only a fallback. Browser input never supplies a
 // plan id or an amount.
-export function planIdFor(plan, currency, env = process.env) {
+export function planIdFor(plan, currency, cycle = "monthly", env = process.env) {
+  if (typeof cycle === "object") { env = cycle; cycle = "monthly"; } // planIdFor(plan, currency, env)
   if (!SELF_SERVE.includes(plan) || !CURRENCIES.includes(currency)) return null;
+  if (cycle === "annual") return PLANS[plan]?.annualRazorpayIds?.[currency] || env[`RAZORPAY_PLAN_${plan.toUpperCase()}_${currency}_ANNUAL`] || null;
   return PLANS[plan]?.razorpayIds?.[currency] || env[`RAZORPAY_PLAN_${plan.toUpperCase()}_${currency}`] || null;
 }
 // The reverse, for webhooks: only ids this server was given count. Retired plans still resolve, so subscriptions already on them keep working.
 export function planOf(planId, env = process.env) {
   if (!planId) return null;
   for (const p of Object.values(PLANS)) {
-    for (const [currency, id] of Object.entries(p.razorpayIds)) if (id === planId) return { plan: p.code, currency };
-    for (const [currency, ids] of Object.entries(p.retiredIds || {})) if (ids.includes(planId)) return { plan: p.code, currency };
+    for (const [currency, id] of Object.entries(p.razorpayIds)) if (id === planId) return { plan: p.code, currency, cycle: "monthly" };
+    for (const [currency, ids] of Object.entries(p.retiredIds || {})) if (ids.includes(planId)) return { plan: p.code, currency, cycle: "monthly" };
+    for (const [currency, id] of Object.entries(p.annualRazorpayIds || {})) if (id === planId) return { plan: p.code, currency, cycle: "annual" };
+    for (const [currency, ids] of Object.entries(p.annualRetiredIds || {})) if (ids.includes(planId)) return { plan: p.code, currency, cycle: "annual" };
   }
-  for (const plan of SELF_SERVE) for (const currency of CURRENCIES) if (env[`RAZORPAY_PLAN_${plan.toUpperCase()}_${currency}`] === planId) return { plan, currency };
+  for (const plan of SELF_SERVE) for (const currency of CURRENCIES) {
+    if (env[`RAZORPAY_PLAN_${plan.toUpperCase()}_${currency}`] === planId) return { plan, currency, cycle: "monthly" };
+    if (env[`RAZORPAY_PLAN_${plan.toUpperCase()}_${currency}_ANNUAL`] === planId) return { plan, currency, cycle: "annual" };
+  }
   return null;
 }
 

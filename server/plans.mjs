@@ -13,7 +13,7 @@ export const ALL_ENGINES = Object.freeze(["chatgpt", "perplexity", "gemini", "ai
 export const KNOWN_INTEGRATIONS = Object.freeze(["bing", "indexnow", "entity", "google", "cloudflare", "slack"]);
 export const SCHEDULES = Object.freeze(["off", "weekly", "daily"]);
 // checks: completed runs of the prompts per period (null = no limit). The free trial is one check.
-export const LIMIT_METRICS = Object.freeze(["brands", "questions", "competitors", "seats", "drafts", "samples", "checks"]);
+export const LIMIT_METRICS = Object.freeze(["brands", "questions", "competitors", "seats", "drafts", "samples", "checks", "pages"]);
 // Writes that count as a "drafted fix" (api/write.js kinds). Chat, topics, insights and the like are not drafts.
 export const DRAFT_KINDS = Object.freeze(["pitch", "article", "fixpack"]);
 // GST: catalogue prices are before tax ("₹4,999 + GST") and the Razorpay plan charges the price with 18% GST added, because Razorpay
@@ -31,7 +31,8 @@ const CORE = ["chatgpt", "perplexity", "gemini"], BASIC = ["bing", "indexnow", "
 //   integrations: [...]|["*"], prices: { INR: { amount, razorpayPlanId } } }
 const flat = (code, name, description, sort, flags, aiCapUsd, prices, limits, engines, schedules, integrations) => ({
   code, name, description, sort, public: flags.public, selfServe: flags.selfServe, featured: !!flags.featured, active: true, aiCapUsd,
-  limits: Object.fromEntries(LIMIT_METRICS.map((m) => [m, limits[m] ?? null])), engines, schedules, integrations, prices: Object.fromEntries(Object.entries(prices).map(([c, amount]) => [c, { amount, razorpayPlanId: null }])),
+  trialDays: null, maxExtraSeats: null,
+  limits: Object.fromEntries(LIMIT_METRICS.map((m) => [m, limits[m] ?? null])), engines, schedules, integrations, prices: Object.fromEntries(Object.entries(prices).map(([c, amount]) => [c, { amount, annualAmount: null, annualRazorpayPlanId: null, annualRetired: [], seatAmount: null, razorpayPlanId: null }])),
 });
 export const DEFAULT_PLANS = [
   flat("legacy", "Legacy", "Existing accounts: no limits", 0, { public: false, selfServe: false }, null, {},
@@ -62,6 +63,12 @@ const live = (f) => {
     prices: Object.fromEntries(Object.entries(f.prices || {}).map(([c, v]) => [c, Number(v.amount)])),
     razorpayIds: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.razorpayPlanId).map(([c, v]) => [c, v.razorpayPlanId])),
     retiredIds: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.retired?.length).map(([c, v]) => [c, [...v.retired]])),
+    // Annual prices (billed yearly) with their own Razorpay plans; the price of one extra seat per month; trial length; add-on cap.
+    annualPrices: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.annualAmount != null).map(([c, v]) => [c, Number(v.annualAmount)])),
+    annualRazorpayIds: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.annualRazorpayPlanId).map(([c, v]) => [c, v.annualRazorpayPlanId])),
+    annualRetiredIds: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.annualRetired?.length).map(([c, v]) => [c, [...v.annualRetired]])),
+    seatPrices: Object.fromEntries(Object.entries(f.prices || {}).filter(([, v]) => v.seatAmount != null).map(([c, v]) => [c, Number(v.seatAmount)])),
+    trialDays: f.trialDays == null ? null : Number(f.trialDays), maxExtraSeats: f.maxExtraSeats == null ? null : Number(f.maxExtraSeats),
     entitlements: { ...lim, engines: [...f.engines], schedule: [...f.schedules], integrations: f.integrations.includes("*") ? "all" : [...f.integrations] },
   };
 };
@@ -78,9 +85,11 @@ applyCatalogue(DEFAULT_PLANS);
 // Back to the flat, editable shape (for the admin API and the parity test).
 export const flatOf = (p) => ({
   code: p.code, name: p.name, description: p.description, sort: p.sort, public: p.public, selfServe: p.selfServe, featured: p.featured, active: p.active, aiCapUsd: p.capUsd,
+  trialDays: p.trialDays ?? null, maxExtraSeats: p.maxExtraSeats ?? null,
   limits: Object.fromEntries(LIMIT_METRICS.map((m) => [m, p.entitlements[m] === Infinity ? null : p.entitlements[m]])),
   engines: [...p.entitlements.engines], schedules: [...p.entitlements.schedule], integrations: p.entitlements.integrations === "all" ? ["*"] : [...p.entitlements.integrations],
-  prices: Object.fromEntries(Object.entries(p.prices).map(([c, amount]) => [c, { amount, razorpayPlanId: p.razorpayIds[c] || null, retired: p.retiredIds?.[c] || [] }])),
+  prices: Object.fromEntries(Object.entries(p.prices).map(([c, amount]) => [c, { amount, razorpayPlanId: p.razorpayIds[c] || null, retired: p.retiredIds?.[c] || [],
+    annualAmount: p.annualPrices?.[c] ?? null, annualRazorpayPlanId: p.annualRazorpayIds?.[c] || null, annualRetired: p.annualRetiredIds?.[c] || [], seatAmount: p.seatPrices?.[c] ?? null }])),
 });
 export const catalogueFlat = () => Object.values(PLANS).map(flatOf);
 
@@ -88,18 +97,20 @@ export const catalogueFlat = () => Object.values(PLANS).map(flatOf);
 // `query(text, params)` returns rows (db.mjs `q`, or a transaction client wrapped to do the same).
 export async function loadCatalogue(query) {
   const [plans, prices, limits, feats] = await Promise.all([
-    query(`select code, name, description, sort, public, self_serve, featured, active, ai_cap_usd::float as ai_cap from plans order by sort, code`),
-    query(`select plan_code, currency, amount_minor::float as amount, razorpay_plan_id, retired_plan_ids from plan_prices`),
+    query(`select code, name, description, sort, public, self_serve, featured, active, ai_cap_usd::float as ai_cap, trial_days, max_extra_seats from plans order by sort, code`),
+    query(`select plan_code, currency, amount_minor::float as amount, razorpay_plan_id, retired_plan_ids, annual_amount_minor::float as annual, annual_razorpay_plan_id, annual_retired_plan_ids, seat_amount_minor::float as seat from plan_prices`),
     query(`select plan_code, metric, limit_value::float as v from plan_limits`),
     query(`select plan_code, kind, value from plan_features order by value`),
   ]);
   const flats = plans.map((p) => ({
     code: p.code, name: p.name, description: p.description, sort: p.sort, public: p.public, selfServe: p.self_serve, featured: p.featured, active: p.active, aiCapUsd: p.ai_cap,
+    trialDays: p.trial_days, maxExtraSeats: p.max_extra_seats,
     limits: Object.fromEntries(LIMIT_METRICS.map((m) => [m, limits.find((l) => l.plan_code === p.code && l.metric === m)?.v ?? null])),
     engines: ALL_ENGINES.filter((e) => feats.some((f) => f.plan_code === p.code && f.kind === "engine" && f.value === e)),
     schedules: SCHEDULES.filter((s) => feats.some((f) => f.plan_code === p.code && f.kind === "schedule" && f.value === s)),
     integrations: ["*", ...KNOWN_INTEGRATIONS].filter((i) => feats.some((f) => f.plan_code === p.code && f.kind === "integration" && f.value === i)),
-    prices: Object.fromEntries(prices.filter((x) => x.plan_code === p.code).map((x) => [x.currency, { amount: x.amount, razorpayPlanId: x.razorpay_plan_id, retired: x.retired_plan_ids || [] }])),
+    prices: Object.fromEntries(prices.filter((x) => x.plan_code === p.code).map((x) => [x.currency, { amount: x.amount, razorpayPlanId: x.razorpay_plan_id, retired: x.retired_plan_ids || [],
+      annualAmount: x.annual, annualRazorpayPlanId: x.annual_razorpay_plan_id, annualRetired: x.annual_retired_plan_ids || [], seatAmount: x.seat }])),
   }));
   if (flats.length) applyCatalogue(flats);
   return flats.length;
@@ -119,6 +130,9 @@ export function cleanPlan(code, b, base = null) {
   for (const k of ["public", "selfServe", "featured", "active"]) if (typeof out[k] !== "boolean") bad(`${k} must be true or false.`);
   const cap = b.aiCapUsd === undefined ? base?.aiCapUsd ?? null : b.aiCapUsd;
   out.aiCapUsd = cap === null || cap === "" ? null : (Number.isFinite(Number(cap)) && Number(cap) >= 0 && Number(cap) <= 100000 ? Number(cap) : bad("The AI allowance is dollars a month, or empty for none."));
+  const opt = (v, label, o) => (v === null || v === undefined || v === "" ? null : int(v, label, o));
+  out.trialDays = opt(b.trialDays === undefined ? base?.trialDays : b.trialDays, "Trial length (days)", { max: 90 });
+  out.maxExtraSeats = opt(b.maxExtraSeats === undefined ? base?.maxExtraSeats : b.maxExtraSeats, "Most extra seats", { max: 10000 });
   const lim = { ...(base?.limits || {}), ...(b.limits || {}) }; out.limits = {}; // merged: a limit not sent keeps its value; send null for unlimited
   for (const m of LIMIT_METRICS) { const v = lim[m]; out.limits[m] = v === null || v === undefined || v === "" ? null : int(v, `Limit ${m}`); }
   out.engines = list(b.engines ?? base?.engines ?? [], ALL_ENGINES, "Engines");
@@ -131,22 +145,31 @@ export function cleanPlan(code, b, base = null) {
     if (id && !/^plan_[A-Za-z0-9]{6,40}$/.test(id)) bad(`The Razorpay plan id for ${c} should look like plan_AbCd1234567890.`);
     // A replaced Razorpay id is kept as retired: existing subscribers are still on it and their webhooks must keep resolving.
     const old = base?.prices?.[c], retired = [...new Set([...(old?.retired || []), ...(old?.razorpayPlanId && old.razorpayPlanId !== id ? [old.razorpayPlanId] : [])])].filter((x) => x !== id);
-    out.prices[c] = { amount: int(v.amount, `Price in ${c}`), razorpayPlanId: id, retired };
+    // Annual and seat prices are optional; a field the caller didn't send keeps its stored value (older editors only send the monthly one).
+    const keep = (k) => (v[k] === undefined ? old?.[k] : v[k]);
+    const aid = keep("annualRazorpayPlanId") == null || keep("annualRazorpayPlanId") === "" ? null : String(keep("annualRazorpayPlanId")).trim();
+    if (aid && !/^plan_[A-Za-z0-9]{6,40}$/.test(aid)) bad(`The annual Razorpay plan id for ${c} should look like plan_AbCd1234567890.`);
+    if (aid && aid === id) bad(`The annual Razorpay plan for ${c} can't be the monthly one.`);
+    const aRetired = [...new Set([...(old?.annualRetired || []), ...(old?.annualRazorpayPlanId && old.annualRazorpayPlanId !== aid ? [old.annualRazorpayPlanId] : [])])].filter((x) => x !== aid);
+    const annualAmount = opt(keep("annualAmount"), `Annual price in ${c}`), seatAmount = opt(keep("seatAmount"), `Extra seat price in ${c}`);
+    out.prices[c] = { amount: int(v.amount, `Price in ${c}`), razorpayPlanId: id, retired, annualAmount, annualRazorpayPlanId: annualAmount == null ? null : aid, annualRetired: aRetired, seatAmount };
   }
   if (out.selfServe && !Object.keys(out.prices).length) bad("A plan you can buy needs a price in at least one currency.");
   return out;
 }
 // Write one plan (and its children) in a transaction client; bumps updated_at so other instances reload.
 export async function savePlan(c, f) {
-  await c.query(`insert into plans (code, name, description, sort, public, self_serve, featured, active, ai_cap_usd, updated_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9, now())
+  await c.query(`insert into plans (code, name, description, sort, public, self_serve, featured, active, ai_cap_usd, trial_days, max_extra_seats, updated_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, now())
     on conflict (code) do update set name = excluded.name, description = excluded.description, sort = excluded.sort, public = excluded.public, self_serve = excluded.self_serve,
-      featured = excluded.featured, active = excluded.active, ai_cap_usd = excluded.ai_cap_usd, updated_at = now()`, [f.code, f.name, f.description, f.sort, f.public, f.selfServe, f.featured, f.active, f.aiCapUsd]);
+      featured = excluded.featured, active = excluded.active, ai_cap_usd = excluded.ai_cap_usd, trial_days = excluded.trial_days, max_extra_seats = excluded.max_extra_seats, updated_at = now()`,
+    [f.code, f.name, f.description, f.sort, f.public, f.selfServe, f.featured, f.active, f.aiCapUsd, f.trialDays ?? null, f.maxExtraSeats ?? null]);
   // Only one plan is "most popular": featuring this one un-features the others.
   if (f.featured) await c.query(`update plans set featured = false, updated_at = now() where code <> $1 and featured`, [f.code]);
   await c.query(`delete from plan_limits where plan_code = $1`, [f.code]); await c.query(`delete from plan_features where plan_code = $1`, [f.code]); await c.query(`delete from plan_prices where plan_code = $1`, [f.code]);
   for (const m of LIMIT_METRICS) await c.query(`insert into plan_limits (plan_code, metric, limit_value) values ($1,$2,$3)`, [f.code, m, f.limits[m]]);
   for (const [kind, vals] of [["engine", f.engines], ["schedule", f.schedules], ["integration", f.integrations]]) for (const v of vals) await c.query(`insert into plan_features (plan_code, kind, value) values ($1,$2,$3)`, [f.code, kind, v]);
-  for (const [cur, v] of Object.entries(f.prices)) await c.query(`insert into plan_prices (plan_code, currency, amount_minor, razorpay_plan_id, retired_plan_ids) values ($1,$2,$3,$4,$5)`, [f.code, cur, v.amount, v.razorpayPlanId, v.retired || []]);
+  for (const [cur, v] of Object.entries(f.prices)) await c.query(`insert into plan_prices (plan_code, currency, amount_minor, razorpay_plan_id, retired_plan_ids, annual_amount_minor, annual_razorpay_plan_id, annual_retired_plan_ids, seat_amount_minor)
+    values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [f.code, cur, v.amount, v.razorpayPlanId, v.retired || [], v.annualAmount ?? null, v.annualRazorpayPlanId ?? null, v.annualRetired || [], v.seatAmount ?? null]);
 }
 
 // ── lookups ──────────────────────────────────────────────────────────────────
@@ -167,4 +190,11 @@ export function effectiveEntitlements(code, overrides = {}, now = new Date()) {
 export const finite = (e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [k, v === Infinity ? null : v]));
 export const publicPlans = () => Object.values(PLANS).filter((p) => p.public && p.active).map((p) => ({
   code: p.code, name: p.name, description: p.description, featured: p.featured, selfServe: p.selfServe && Object.keys(p.prices).length > 0, prices: p.prices, entitlements: finite(p.entitlements),
+  annualPrices: p.annualPrices, seatPrices: p.seatPrices, trialDays: p.trialDays, maxExtraSeats: p.maxExtraSeats,
 }));
+// Billing cycles. The price an organisation is charged per cycle, and what that is per month (the figure MRR adds up).
+export const CYCLES = Object.freeze(["monthly", "annual"]);
+export const cyclePrice = (code, ccy, cycle = "monthly") => (cycle === "annual" ? PLANS[code]?.annualPrices?.[ccy] : PLANS[code]?.prices?.[ccy]) ?? null;
+export const monthlyEquivalent = (code, ccy, cycle = "monthly") => { const v = cyclePrice(code, ccy, cycle); return v == null ? null : cycle === "annual" ? Math.round(v / 12) : v; };
+// The free trial for a plan, in days: the plan's own, else the global default. 0 means the plan has no free trial.
+export const trialDaysFor = (code, fallback = 7) => (PLANS[code]?.trialDays ?? fallback);

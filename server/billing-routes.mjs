@@ -11,13 +11,13 @@ import { limited } from "./security.mjs";
 import * as O from "./orgs.mjs";
 import * as B from "./billing.mjs";
 import * as N from "./notify.mjs";
-import { PLANS, SELF_SERVE, CURRENCIES, TAX_RATE, withTax, upiAllowed, UPI_MAX_MINOR, LIMIT_METRICS, ALL_ENGINES, KNOWN_INTEGRATIONS, SCHEDULES, publicPlans, catalogueFlat, cleanPlan, savePlan, loadCatalogue, flatOf } from "./plans.mjs";
+import { PLANS, SELF_SERVE, CURRENCIES, TAX_RATE, withTax, upiAllowed, UPI_MAX_MINOR, LIMIT_METRICS, ALL_ENGINES, KNOWN_INTEGRATIONS, SCHEDULES, publicPlans, catalogueFlat, cleanPlan, savePlan, loadCatalogue, flatOf, CYCLES, cyclePrice, monthlyEquivalent, trialDaysFor } from "./plans.mjs";
 import { billingConfig, client, razorpayLink, planIdFor, planOf, planMismatches, verifyWebhook, verifyPaymentSignature } from "./razorpay.mjs";
 
-const PRICE = (code, ccy) => PLANS[code]?.prices?.[ccy] ?? 0;
+const PRICE = (code, ccy, cycle = "monthly") => monthlyEquivalent(code, ccy, cycle) ?? 0; // compared per month, so annual and monthly line up
 // Columns a webhook or a sync may change. A fixed list, so event content can never name a column.
 const COLUMNS = new Set(["plan_code", "billing_status", "billing_currency", "razorpay_customer_id", "razorpay_subscription_id", "razorpay_checkout_subscription_id",
-  "current_period_start", "current_period_end", "grace_ends_at", "pending_plan_code", "cancel_at_period_end", "billing_event_at"]);
+  "current_period_start", "current_period_end", "grace_ends_at", "pending_plan_code", "cancel_at_period_end", "billing_event_at", "billing_cycle"]);
 const MONEY_EVENTS = new Set(["subscription.activated", "subscription.charged"]);
 const apply = (c, id, patch, org) => {
   const keys = Object.keys(patch || {}).filter((k) => COLUMNS.has(k) && String(patch[k]) !== String(org[k]));
@@ -91,8 +91,88 @@ export async function reconcile({ limit = 20, log = console.log } = {}) {
   return { checked: due.length, changed };
 }
 
+const names = () => SELF_SERVE.map((c) => PLANS[c].name).join(", ").replace(/, ([^,]*)$/, " or $1");
+
+// Change a paying subscription's plan: an upgrade applies now (Razorpay charges the difference), a downgrade at the end of the cycle,
+// and choosing the current plan withdraws a scheduled downgrade. The plan itself only changes when Razorpay confirms. Currency is
+// locked to the subscription's. Shared by the owner (self-serve plans) and the operator console (`anyPlan`: any price with a Razorpay
+// plan id, e.g. Enterprise; `reason` goes in the audit log).
+export async function changePlan(orgId, actorId, plan, { anyPlan = false, reason = null } = {}) {
+  const org = await one(`select plan_code, billing_status, billing_currency, billing_cycle, razorpay_subscription_id, pending_plan_code, cancel_at_period_end, current_period_end from organizations where id = $1`, [orgId]);
+  if (!org.razorpay_subscription_id || org.billing_status !== "active") fail(409, org.billing_status === "past_due" ? "Fix the failed payment first." : "There's no active subscription to change.", { code: "no_subscription" });
+  if (org.cancel_at_period_end) fail(409, "This subscription is set to end. Subscribe again to choose a plan.", { code: "cancelling" });
+  const currency = org.billing_currency, cycle = org.billing_cycle || "monthly", why = reason ? { reason } : {}; // the cycle stays the subscription's
+  if (!(anyPlan ? PLANS[plan] : SELF_SERVE.includes(plan))) fail(400, `Choose ${names()}.`, { code: "bad_plan" });
+  if (limited("plan-change:" + orgId, 10, 3600e3)) fail(429, "Too many changes. Try again in a bit.");
+  const rzp = client();
+  try {
+    if (plan === org.plan_code) { // withdraw a scheduled downgrade
+      if (!org.pending_plan_code) fail(400, "You're already on that plan.", { code: "same_plan" });
+      await rzp.cancelScheduledChanges(org.razorpay_subscription_id);
+      await q(`update organizations set pending_plan_code = null, updated_at = now() where id = $1`, [orgId]);
+      await O.audit(orgId, actorId, "billing.downgrade_withdrawn", plan, why);
+      return { ok: true, pendingPlan: null };
+    }
+    const planId = (anyPlan && (cycle === "annual" ? PLANS[plan]?.annualRazorpayIds : PLANS[plan]?.razorpayIds)?.[currency]) || planIdFor(plan, currency, cycle);
+    if (!planId) fail(503, `${PLANS[plan].name} in ${currency}${cycle === "annual" ? " (annual)" : ""} isn't available yet.`, { code: "plan_unavailable" });
+    const upgrade = PRICE(plan, currency, cycle) > PRICE(org.plan_code, currency, cycle);
+    // Razorpay can only update card subscriptions ("You cannot update a Subscription authorised via UPI mode or Emandate").
+    const viaMandate = (m) => /upi|emandate|nach/i.test(String(m || ""));
+    const remote = await rzp.fetchSubscription(org.razorpay_subscription_id).catch(() => null);
+    const mandate = () => fail(409, `Your plan is paid by ${/upi/i.test(remote?.payment_method || "") ? "UPI" : "bank mandate"}, which Razorpay can't change. Approve a new mandate for ${PLANS[plan].name} and it starts at your renewal.`, { code: "needs_new_mandate" });
+    if (!upgrade) {
+      const blockers = await B.downgradeBlockers(orgId, plan);
+      if (blockers.length) fail(409, `Before moving to ${PLANS[plan].name}, reduce: ${blockers.join("; ")}.`, { code: "over_plan", blockers });
+    }
+    if (viaMandate(remote?.payment_method)) mandate();
+    if (org.pending_plan_code) await rzp.cancelScheduledChanges(org.razorpay_subscription_id).catch(() => {});
+    try { await rzp.updateSubscription(org.razorpay_subscription_id, { planId, at: upgrade ? "now" : "cycle_end" }); }
+    catch (e) { if (viaMandate(e.message)) mandate(); throw e; }
+    await q(`update organizations set pending_plan_code = $2, updated_at = now() where id = $1`, [orgId, upgrade ? null : plan]);
+    await O.audit(orgId, actorId, upgrade ? "billing.upgrade_requested" : "billing.downgrade_scheduled", plan, { from: org.plan_code, ...why });
+    if (!upgrade) void N.notify(orgId, "downgrade_scheduled", `${plan}:${new Date(org.current_period_end).toISOString().slice(0, 10)}:${Date.now()}`, { plan, from: org.plan_code, on: org.current_period_end });
+    return { ok: true, upgrade, pendingPlan: upgrade ? null : plan };
+  } catch (e) {
+    if (e.status && !e.extra) { console.warn("[billing] change-plan:", e.message); fail(502, "The payment provider couldn't make that change just now. Nothing changed. Try again."); }
+    throw e;
+  }
+}
+
+// Cancel a subscription at the end of the paid period (the owner's only option). Operators may also end it now (`now`): Razorpay stops
+// it at once and its cancellation webhook moves the organisation off the plan, as for any other cancellation.
+export async function cancelPlan(orgId, actorId, { now = false, reason = null } = {}) {
+  if (limited("cancel:" + orgId, 10, 3600e3)) fail(429, "Too many attempts. Try again in a bit.");
+  const org = await one(`select plan_code, billing_status, razorpay_subscription_id, current_period_end, cancel_at_period_end from organizations where id = $1`, [orgId]);
+  if (!org.razorpay_subscription_id || !["active", "past_due"].includes(org.billing_status)) fail(409, "There's no active subscription to cancel.", { code: "no_subscription" });
+  if (org.cancel_at_period_end && !now) return { ok: true, until: org.current_period_end };
+  try { await client().cancelSubscription(org.razorpay_subscription_id, { atCycleEnd: !now }); }
+  catch (e) { console.warn("[billing] cancel:", e.message); fail(502, "The payment provider couldn't cancel just now. Nothing changed. Try again."); }
+  if (now) {
+    await O.audit(orgId, actorId, "billing.cancel_now_requested", PLANS[org.plan_code]?.name, { reason });
+    return { ok: true, until: null };
+  }
+  await q(`update organizations set cancel_at_period_end = true, pending_plan_code = null, updated_at = now() where id = $1`, [orgId]);
+  await O.audit(orgId, actorId, "billing.cancel_requested", PLANS[org.plan_code]?.name, { until: org.current_period_end, ...(reason ? { reason } : {}) });
+  void N.notify(orgId, "cancel_scheduled", `${org.razorpay_subscription_id}:${new Date(org.current_period_end).toISOString().slice(0, 10)}`, { plan: org.plan_code, until: org.current_period_end });
+  return { ok: true, until: org.current_period_end };
+}
+
+// Extra seats billed through Razorpay: one add-on on the subscription's next invoice for `seats` seats over one cycle (12 months for an
+// annual plan), i.e. billed in arrears. Called when an operator adds seats and again on every renewal while the organisation has them.
+// Returns what was charged, or null when there is nothing to charge.
+export async function chargeSeats(orgId, { seats = null, actorId = null, reason = "renewal" } = {}) {
+  const o = await one(`select plan_code, billing_currency, billing_cycle, extra_seats, extra_seats_billing, razorpay_subscription_id, billing_status from organizations where id = $1`, [orgId]);
+  const n = seats ?? o?.extra_seats ?? 0, ccy = o?.billing_currency || "INR", per = PLANS[o?.plan_code]?.seatPrices?.[ccy];
+  if (!o || n <= 0 || o.extra_seats_billing !== "razorpay" || !o.razorpay_subscription_id || !["active", "past_due"].includes(o.billing_status) || !(per > 0)) return null;
+  const months = o.billing_cycle === "annual" ? 12 : 1, amount = withTax(per * n * months, ccy);
+  await client().createAddon(o.razorpay_subscription_id, { name: `${n} extra seat${n > 1 ? "s" : ""} (${months === 12 ? "1 year" : "1 month"})`, amount, currency: ccy,
+    description: `${n} × ${PLANS[o.plan_code].name} extra seat` });
+  await O.audit(orgId, actorId, "billing.seats_charged", String(n), { amount, currency: ccy, months, reason });
+  return { seats: n, amount, currency: ccy, months };
+}
+
 export function makeBillingRoutes({ needCtx, needUser }) {
-  const names = () => SELF_SERVE.map((c) => PLANS[c].name).join(", ").replace(/, ([^,]*)$/, " or $1");
+  const availableAnnual = () => Object.fromEntries(SELF_SERVE.map((p) => [p, Object.fromEntries(CURRENCIES.map((c) => [c, cyclePrice(p, c, "annual") != null && !!planIdFor(p, c, "annual")]))]));
   const available = () => Object.fromEntries(SELF_SERVE.map((p) => [p, Object.fromEntries(CURRENCIES.map((c) => [c, !!planIdFor(p, c)]))]));
   // Only currencies Razorpay can actually sell (a plan id exists) are offered; USD stays hidden until Razorpay approves it.
   // Before any plan id exists (a fresh setup) every priced currency is listed, so the page isn't empty.
@@ -105,26 +185,31 @@ export function makeBillingRoutes({ needCtx, needUser }) {
   }
   const ownerOnly = async (req) => { const ctx = await needCtx(req, "owner"); if (ctx.operatorVisit) fail(403, "Only the owner can do that."); return ctx; };
   // Create (or verify) the Razorpay plan behind one catalogue price. Shared by the per-price buttons and "sync all".
-  async function rzpPlan(u, code, currency, action) {
-    const plan = PLANS[code], f = flatOf(plan), price = f.prices[currency], rzp = client();
+  // Create (or verify) the Razorpay plan behind one catalogue price: monthly, or annual (billed yearly) when `cycle` is "annual".
+  async function rzpPlan(u, code, currency, action, cycle = "monthly") {
+    const plan = PLANS[code], f = flatOf(plan), price = f.prices[currency], rzp = client(), annual = cycle === "annual";
+    if (!price) fail(400, `${plan.name} has no ${currency} price yet. Add it first.`, { code: "no_price" });
+    const amount = annual ? price.annualAmount : price.amount, idKey = annual ? "annualRazorpayPlanId" : "razorpayPlanId", have = price[idKey];
+    const label = `${plan.name} (${currency}${annual ? ", annual" : ""})`;
     if (action === "create") {
-      if (price.razorpayPlanId) fail(409, `${plan.name} (${currency}) already has Razorpay plan ${price.razorpayPlanId}. Verify it, or clear the id first.`, { code: "has_plan_id" });
-      if (!(price.amount > 0)) fail(400, "Set a price above zero first.", { code: "no_price" });
+      if (have) fail(409, `${label} already has Razorpay plan ${have}. Verify it, or clear the id first.`, { code: "has_plan_id" });
+      if (!(amount > 0)) fail(400, `Set ${annual ? "an annual" : "a"} price above zero first.`, { code: "no_price" });
       // Plans can't be edited or deleted in Razorpay, so a matching one that already exists (made by hand in the dashboard) is linked
-      // instead of making a duplicate. Only plans no other catalogue price uses, with the same monthly cycle, amount and currency.
-      const used = new Set(Object.values(PLANS).flatMap((x) => Object.values(x.razorpayIds || {})));
-      let rp = typeof rzp.listPlans === "function" ? (await rzp.listPlans().catch(() => ({}))).items?.find((x) => !used.has(x.id) && !planMismatches(x, price, currency).length) : null;
+      // instead of making a duplicate. Only plans no other catalogue price uses, with the same cycle, amount and currency.
+      const used = new Set(Object.values(PLANS).flatMap((x) => [...Object.values(x.razorpayIds || {}), ...Object.values(x.annualRazorpayIds || {})]));
+      let rp = typeof rzp.listPlans === "function" ? (await rzp.listPlans().catch(() => ({}))).items?.find((x) => !used.has(x.id) && !planMismatches(x, { amount }, currency, cycle).length) : null;
       const adopted = !!rp;
-      if (!rp) rp = await rzp.createPlan({ name: `${plan.name} (${currency} monthly${TAX_RATE[currency] ? `, incl. ${TAX_RATE[currency] * 100}% GST` : ""})`.slice(0, 100), amount: withTax(price.amount, currency), currency, description: plan.description.slice(0, 250) });
-      const next = cleanPlan(code, { prices: { ...f.prices, [currency]: { ...price, razorpayPlanId: rp.id } } }, f);
+      if (!rp) rp = await rzp.createPlan({ name: `${plan.name} (${currency} ${annual ? "yearly" : "monthly"}${TAX_RATE[currency] ? `, incl. ${TAX_RATE[currency] * 100}% GST` : ""})`.slice(0, 100),
+        amount: withTax(amount, currency), currency, description: plan.description || "", period: annual ? "yearly" : "monthly" });
+      const next = cleanPlan(code, { prices: { ...f.prices, [currency]: { ...price, [idKey]: rp.id } } }, f);
       await tx(async (c) => { await savePlan(c, next); }); await loadCatalogue(q);
-      await O.audit(null, u.id, adopted ? "plan.razorpay_linked" : "plan.razorpay_created", code, { currency, razorpayPlanId: rp.id, amount: price.amount, charged: withTax(price.amount, currency) });
-      return { ok: true, created: !adopted, linked: adopted, razorpayPlanId: rp.id, plan: flatOf(PLANS[code]) };
+      await O.audit(null, u.id, adopted ? "plan.razorpay_linked" : "plan.razorpay_created", code, { currency, cycle, razorpayPlanId: rp.id, amount, charged: withTax(amount, currency) });
+      return { ok: true, created: !adopted, linked: adopted, razorpayPlanId: rp.id, cycle, plan: flatOf(PLANS[code]) };
     }
     if (action === "verify") {
-      if (!price.razorpayPlanId) fail(400, `${plan.name} (${currency}) has no Razorpay plan id yet.`, { code: "no_plan_id" });
-      const rp = await rzp.fetchPlan(price.razorpayPlanId), mismatches = planMismatches(rp, price, currency);
-      return { ok: mismatches.length === 0, mismatches, razorpay: { id: rp.id, name: rp.item?.name, amount: rp.item?.amount, currency: rp.item?.currency, period: rp.period, interval: rp.interval } };
+      if (!have) fail(400, `${label} has no Razorpay plan id yet.`, { code: "no_plan_id" });
+      const rp = await rzp.fetchPlan(have), mismatches = planMismatches(rp, { amount }, currency, cycle);
+      return { ok: mismatches.length === 0, mismatches, cycle, razorpay: { id: rp.id, name: rp.item?.name, amount: rp.item?.amount, currency: rp.item?.currency, period: rp.period, interval: rp.interval } };
     }
     fail(400, "action must be create or verify.", { code: "bad_action" });
   }
@@ -134,7 +219,7 @@ export function makeBillingRoutes({ needCtx, needUser }) {
   }
   return [
     // Public: no ids or internal budgets. `available` says which plan + currency pairs can be bought right now.
-    ["GET", "/api/billing/plans", async (req, res) => sendJson(res, 200, { plans: publicPlans(), currencies: sellable(), taxRates: TAX_RATE, upiMax: UPI_MAX_MINOR, monthlyOnly: true, available: available(), open: billingConfig().enabled !== "0", contact: billingConfig().contact, trialDays: billingConfig().trialDays })],
+    ["GET", "/api/billing/plans", async (req, res) => sendJson(res, 200, { plans: publicPlans(), currencies: sellable(), taxRates: TAX_RATE, upiMax: UPI_MAX_MINOR, cycles: CYCLES, available: available(), availableAnnual: availableAnnual(), trialDays: billingConfig().trialDays, open: billingConfig().enabled !== "0", contact: billingConfig().contact, trialDays: billingConfig().trialDays })],
 
     ["GET", "/api/billing", async (req, res) => {
       const ctx = await needCtx(req, "viewer"), cfg = billingConfig(), cap = await O.capState(ctx.org.id);
@@ -146,11 +231,12 @@ export function makeBillingRoutes({ needCtx, needUser }) {
     // A previous unpaid checkout is cancelled first so two payment windows can't both be paid.
     ["POST", "/api/billing/checkout", async (req, res) => {
       const ctx = await ownerOnly(req), b = await readJson(req, 5000), cfg = checkoutOpen(ctx);
-      const plan = String(b.plan || ""), currency = String(b.currency || "").toUpperCase();
+      const plan = String(b.plan || ""), currency = String(b.currency || "").toUpperCase(), cycle = b.cycle === "annual" ? "annual" : "monthly";
       if (!SELF_SERVE.includes(plan)) fail(400, `Choose ${names()}. For anything else, talk to us.`, { code: "bad_plan" });
       if (!sellable().includes(currency)) fail(400, `Choose ${sellable().join(" or ")}.`, { code: "bad_currency" });
-      const planId = planIdFor(plan, currency);
-      if (!planId) fail(503, `${PLANS[plan].name} in ${currency} isn't available yet.`, { code: "plan_unavailable" });
+      if (cycle === "annual" && cyclePrice(plan, currency, "annual") == null) fail(400, `${PLANS[plan].name} isn't sold yearly in ${currency}.`, { code: "no_annual" });
+      const planId = planIdFor(plan, currency, cycle);
+      if (!planId) fail(503, `${PLANS[plan].name} in ${currency}${cycle === "annual" ? " (annual)" : ""} isn't available yet.`, { code: "plan_unavailable" });
       if (limited("checkout:" + ctx.org.id, 10, 3600e3)) fail(429, "Too many checkout attempts. Try again in a bit.");
       const org = await one(`select plan_code, billing_status, cancel_at_period_end, trial_ends_at, current_period_end, razorpay_subscription_id as main, razorpay_checkout_subscription_id as pending from organizations where id = $1`, [ctx.org.id]);
       // A paying, not-ending subscription is changed with change-plan. A past-due one may start over: Razorpay's own recovery link is
@@ -163,7 +249,7 @@ export function makeBillingRoutes({ needCtx, needUser }) {
       let sub;
       // Nothing is charged for time already covered: during the free trial the subscription starts when the trial ends, and after a
       // cancellation that is still paid up it starts when the paid period ends (no double charge). Within half an hour, it simply starts.
-      if (switching && PRICE(plan, currency) < PRICE(org.plan_code, currency)) {
+      if (switching && PRICE(plan, currency, cycle) < PRICE(org.plan_code, currency, cycle)) {
         const blockers = await B.downgradeBlockers(ctx.org.id, plan);
         if (blockers.length) fail(409, `Before moving to ${PLANS[plan].name}, reduce: ${blockers.join("; ")}.`, { code: "over_plan", blockers });
       }
@@ -172,11 +258,12 @@ export function makeBillingRoutes({ needCtx, needUser }) {
       const covered = trialLeft ? org.trial_ends_at : org.billing_status === "active" && (org.cancel_at_period_end || switching) ? org.current_period_end : null;
       const startAt = covered && new Date(covered).getTime() - Date.now() > 30 * 60e3 ? Math.floor(new Date(covered).getTime() / 1000) : null;
       const starts = !startAt ? "now" : org.billing_status === "trialing" ? "trial" : "resume";
-      try { sub = await rzp.createSubscription({ planId, orgId: ctx.org.id, plan, startAt }); }
+      try { sub = await rzp.createSubscription({ planId, orgId: ctx.org.id, plan, cycle, startAt }); }
       catch (e) { console.warn("[billing] checkout:", e.message); fail(502, "The payment provider didn't respond. Nothing was charged. Try again."); }
       await q(`update organizations set razorpay_checkout_subscription_id = $2, updated_at = now() where id = $1`, [ctx.org.id, sub.id]);
-      await O.audit(ctx.org.id, ctx.user.id, "billing.checkout_started", plan, { currency, subscription: sub.id });
-      sendJson(res, 200, { subscriptionId: sub.id, keyId: cfg.keyId, plan, currency, amount: withTax(PLANS[plan].prices[currency], currency), upi: upiAllowed(PLANS[plan].prices[currency], currency), name: PLANS[plan].name, testMode: cfg.testMode, startsAt: startAt ? new Date(startAt * 1000).toISOString() : null, starts,
+      await O.audit(ctx.org.id, ctx.user.id, "billing.checkout_started", plan, { currency, cycle, subscription: sub.id });
+      const price = cyclePrice(plan, currency, cycle);
+      sendJson(res, 200, { subscriptionId: sub.id, keyId: cfg.keyId, plan, currency, cycle, amount: withTax(price, currency), upi: cycle === "monthly" && upiAllowed(price, currency), name: PLANS[plan].name, testMode: cfg.testMode, startsAt: startAt ? new Date(startAt * 1000).toISOString() : null, starts,
         callbackUrl: `${(process.env.PUBLIC_ORIGIN || origin(req)).replace(/\/$/, "")}/api/billing/callback?sub=${encodeURIComponent(sub.id)}` });
     }],
 
@@ -194,12 +281,23 @@ export function makeBillingRoutes({ needCtx, needUser }) {
         return sendJson(res, 200, await B.billingSummary(ctx.org.id));
       }
       if (!SELF_SERVE.includes(plan)) fail(400, `Choose ${names()}.`, { code: "bad_plan" });
-      let org = await one(`select plan_code, billing_status, razorpay_subscription_id from organizations where id = $1`, [ctx.org.id]);
+      const days = trialDaysFor(plan, billingConfig().trialDays);
+      if (days === 0) fail(409, `${PLANS[plan].name} has no free trial. Subscribe to start it.`, { code: "no_trial" });
+      let org = await one(`select plan_code, billing_status, razorpay_subscription_id, trial_started_at, trial_ends_at from organizations where id = $1`, [ctx.org.id]);
       const fresh = org.billing_status === "new";
-      if (fresh) { await B.beginTrial(ctx.org.id, ctx.user.id, billingConfig().trialDays); org = { ...org, billing_status: "trialing" }; }
+      if (fresh) { await B.beginTrial(ctx.org.id, ctx.user.id, days); org = { ...org, billing_status: "trialing" }; }
       if (org.billing_status !== "trialing") fail(409, "Your free trial isn't running. Choose a plan to subscribe instead.", { code: "not_trialing" });
       if (org.razorpay_subscription_id) fail(409, "A payment method is connected to " + (PLANS[org.plan_code]?.name || "your plan") + ". Connect again on the plan you want, or remove it first.", { code: "has_payment_method" });
       await q(`update organizations set plan_code = $2, updated_at = now() where id = $1`, [ctx.org.id, plan]);
+      // A plan with a longer trial stretches the running trial to its length (from when the trial started); a shorter one never cuts it.
+      if (!fresh && org.trial_started_at) {
+        const longer = new Date(new Date(org.trial_started_at).getTime() + days * 864e5);
+        if (longer > new Date(org.trial_ends_at)) {
+          await q(`update organizations set trial_ends_at = $2 where id = $1`, [ctx.org.id, longer]);
+          await q(`update users set trial_ends_at = greatest(trial_ends_at, $2) where id = $1`, [ctx.user.id, longer]);
+          await O.audit(ctx.org.id, ctx.user.id, "billing.trial_extended", plan, { to: longer, days });
+        }
+      }
       if (org.plan_code !== plan) await O.audit(ctx.org.id, ctx.user.id, "billing.trial_plan_chosen", plan, { from: org.plan_code });
       const sum = await B.billingSummary(ctx.org.id);
       if (fresh) void N.notify(ctx.org.id, "trial_started", "trial", { plan, ends: sum.trialEndsAt });
@@ -292,12 +390,12 @@ export function makeBillingRoutes({ needCtx, needUser }) {
     // Operators only: the plan catalogue. Reads and writes the database tables; the live view reloads at once on this instance and
     // within seconds on the others.
     ["GET", "/api/admin/plans", async (req, res) => {
-      const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+      const u = await O.needBillingAdmin(await needUser(req));
       const counts = Object.fromEntries((await q(`select plan_code, count(*)::int as n from organizations group by 1`)).map((r) => [r.plan_code, r.n]));
       sendJson(res, 200, { plans: catalogueFlat(), organisations: counts, options: { limits: LIMIT_METRICS, engines: ALL_ENGINES, integrations: KNOWN_INTEGRATIONS, schedules: SCHEDULES } });
     }],
     ["PUT", "/api/admin/plans/:code", async (req, res, p) => {
-      const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+      const u = await O.needBillingAdmin(await needUser(req));
       const b = await readJson(req, 20000), code = String(p.code);
       const before = PLANS[code] ? flatOf(PLANS[code]) : null;
       const f = cleanPlan(code, b, before);
@@ -316,33 +414,49 @@ export function makeBillingRoutes({ needCtx, needUser }) {
       sendJson(res, 200, { plan: flatOf(PLANS[code]) });
     }],
 
+    // Delete a plan nobody is on. A plan with organisations (or one scheduled to move onto it) is archived instead (active: false), so
+    // existing customers and their Razorpay subscriptions keep resolving. Razorpay plans can't be deleted; an unused one is harmless.
+    ["DELETE", "/api/admin/plans/:code", async (req, res, p) => {
+      const u = await O.needBillingAdmin(await needUser(req)), code = String(p.code);
+      if (!PLANS[code]) fail(404, "Unknown plan.");
+      if (["legacy", "trial"].includes(code)) fail(400, `${PLANS[code].name} is built in and can't be deleted.`, { code: "built_in" });
+      const using = await one(`select count(*)::int as n from organizations where plan_code = $1 or pending_plan_code = $1`, [code]);
+      if (using.n) fail(409, `${using.n} organisation(s) are on ${PLANS[code].name} or moving to it. Archive it instead (untick Active).`, { code: "in_use", organisations: using.n });
+      const before = flatOf(PLANS[code]);
+      await q(`delete from plans where code = $1`, [code]);
+      await loadCatalogue(q);
+      await O.audit(null, u.id, "plan.catalogue_deleted", code, { before });
+      sendJson(res, 200, { ok: true, razorpayPlans: Object.values(before.prices).map((x) => x.razorpayPlanId).filter(Boolean) });
+    }],
+
     // Create the Razorpay plan for a catalogue price (Razorpay's step 2 via API), or verify the id already stored against Razorpay.
     ["POST", "/api/admin/plans/:code/razorpay", async (req, res, p) => {
-      const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
-      const b = await readJson(req, 2000), code = String(p.code), currency = String(b.currency || "").toUpperCase(), action = String(b.action || "");
+      const u = await O.needBillingAdmin(await needUser(req));
+      const b = await readJson(req, 2000), code = String(p.code), currency = String(b.currency || "").toUpperCase(), action = String(b.action || ""), cycle = b.cycle === "annual" ? "annual" : "monthly";
       const plan = PLANS[code]; if (!plan) fail(404, "Unknown plan.");
       const f = flatOf(plan), price = f.prices[currency];
       if (!price) fail(400, `${plan.name} has no ${currency} price yet. Add it first.`, { code: "no_price" });
       if (!billingConfig().ready) fail(503, "Razorpay keys aren't configured on this server.", { code: "billing_unconfigured" });
       if (limited("rzp-plan:" + u.id, 30, 3600e3)) fail(429, "Too many requests. Try again in a bit.");
-      try { sendJson(res, 200, await rzpPlan(u, code, currency, action)); }
+      try { sendJson(res, 200, await rzpPlan(u, code, currency, action, cycle)); }
       catch (e) { rzpFail(e); }
     }],
 
     // Operators only: create (or verify) every self-serve plan's Razorpay plan in one go, one row per plan and currency.
     // A row that fails (say USD isn't enabled on the account yet) doesn't stop the others.
     ["POST", "/api/admin/billing/sync-plans", async (req, res) => {
-      const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+      const u = await O.needBillingAdmin(await needUser(req));
       const b = await readJson(req, 2000), action = b.action === "verify" ? "verify" : "create";
       if (!billingConfig().ready) fail(503, "Razorpay keys aren't configured on this server.", { code: "billing_unconfigured" });
       if (limited("rzp-sync:" + u.id, 10, 3600e3)) fail(429, "Too many requests. Try again in a bit.");
       const rows = [];
-      for (const code of SELF_SERVE) for (const [ccy, v] of Object.entries(flatOf(PLANS[code]).prices)) {
+      for (const code of SELF_SERVE) for (const [ccy, p0] of Object.entries(flatOf(PLANS[code]).prices)) for (const cycle of CYCLES) {
+        const v = cycle === "annual" ? { amount: p0.annualAmount, razorpayPlanId: p0.annualRazorpayPlanId } : p0;
         if (!(v.amount > 0)) continue;
-        const row = { plan: code, currency: ccy };
+        const row = { plan: code, currency: ccy, cycle };
         if (action === "create" && v.razorpayPlanId) { rows.push({ ...row, status: "exists", razorpayPlanId: v.razorpayPlanId }); continue; }
         if (action === "verify" && !v.razorpayPlanId) { rows.push({ ...row, status: "missing" }); continue; }
-        try { const r = await rzpPlan(u, code, ccy, action); rows.push({ ...row, status: action === "create" ? (r.linked ? "linked" : "created") : r.ok ? "ok" : "mismatch", razorpayPlanId: r.razorpayPlanId || v.razorpayPlanId, detail: r.mismatches?.join("; ") || undefined }); }
+        try { const r = await rzpPlan(u, code, ccy, action, cycle); rows.push({ ...row, status: action === "create" ? (r.linked ? "linked" : "created") : r.ok ? "ok" : "mismatch", razorpayPlanId: r.razorpayPlanId || v.razorpayPlanId, detail: r.mismatches?.join("; ") || undefined }); }
         catch (e) { rows.push({ ...row, status: "error", detail: e.message }); }
       }
       sendJson(res, 200, { action, rows });
@@ -351,9 +465,11 @@ export function makeBillingRoutes({ needCtx, needUser }) {
     // Operators only: is the billing system set up and healthy? Everything here is read from our own config and database; nothing
     // calls Razorpay, so it is safe to open as often as you like.
     ["GET", "/api/admin/billing/status", async (req, res) => {
-      const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
+      const u = await O.needBillingAdmin(await needUser(req));
       const cfg = billingConfig(), origin = process.env.PUBLIC_ORIGIN || "";
-      const prices = SELF_SERVE.flatMap((code) => Object.entries(flatOf(PLANS[code]).prices).filter(([, v]) => v.amount > 0).map(([currency, v]) => ({ plan: code, name: PLANS[code].name, currency, amount: v.amount, charged: withTax(v.amount, currency), razorpayPlanId: v.razorpayPlanId || null })));
+      const prices = SELF_SERVE.flatMap((code) => Object.entries(flatOf(PLANS[code]).prices).flatMap(([currency, v]) => [
+        ...(v.amount > 0 ? [{ plan: code, name: PLANS[code].name, currency, cycle: "monthly", amount: v.amount, charged: withTax(v.amount, currency), razorpayPlanId: v.razorpayPlanId || null }] : []),
+        ...(v.annualAmount > 0 ? [{ plan: code, name: PLANS[code].name, currency, cycle: "annual", amount: v.annualAmount, charged: withTax(v.annualAmount, currency), razorpayPlanId: v.annualRazorpayPlanId || null }] : [])]));
       const missing = prices.filter((r) => !r.razorpayPlanId);
       const ev = await one(`select max(received_at) as last, count(*) filter (where received_at > now() - interval '1 day')::int as day, count(*) filter (where status = 'failed' and received_at > now() - interval '1 day')::int as failed from billing_events`);
       const lastFail = await one(`select event_type, error, received_at from billing_events where status = 'failed' order by received_at desc limit 1`);
@@ -391,59 +507,11 @@ export function makeBillingRoutes({ needCtx, needUser }) {
     ["POST", "/api/billing/change-plan", async (req, res) => {
       const ctx = await ownerOnly(req), b = await readJson(req, 5000);
       checkoutOpen(ctx);
-      const org = await one(`select plan_code, billing_status, billing_currency, razorpay_subscription_id, pending_plan_code, cancel_at_period_end, current_period_end from organizations where id = $1`, [ctx.org.id]);
-      if (!org.razorpay_subscription_id || org.billing_status !== "active") fail(409, org.billing_status === "past_due" ? "Fix the failed payment first." : "There's no active subscription to change.", { code: "no_subscription" });
-      if (org.cancel_at_period_end) fail(409, "This subscription is set to end. Subscribe again to choose a plan.", { code: "cancelling" });
-      const plan = String(b.plan || ""), currency = org.billing_currency;
-      if (!SELF_SERVE.includes(plan)) fail(400, `Choose ${names()}.`, { code: "bad_plan" });
-      if (limited("plan-change:" + ctx.org.id, 10, 3600e3)) fail(429, "Too many changes. Try again in a bit.");
-      const rzp = client();
-      try {
-        if (plan === org.plan_code) { // withdraw a scheduled downgrade
-          if (!org.pending_plan_code) fail(400, "You're already on that plan.", { code: "same_plan" });
-          await rzp.cancelScheduledChanges(org.razorpay_subscription_id);
-          await q(`update organizations set pending_plan_code = null, updated_at = now() where id = $1`, [ctx.org.id]);
-          await O.audit(ctx.org.id, ctx.user.id, "billing.downgrade_withdrawn", plan);
-          return sendJson(res, 200, { ok: true, pendingPlan: null });
-        }
-        const planId = planIdFor(plan, currency);
-        if (!planId) fail(503, `${PLANS[plan].name} in ${currency} isn't available yet.`, { code: "plan_unavailable" });
-        const upgrade = PRICE(plan, currency) > PRICE(org.plan_code, currency);
-        // Razorpay can only update card subscriptions ("You cannot update a Subscription authorised via UPI mode or Emandate").
-        const viaMandate = (m) => /upi|emandate|nach/i.test(String(m || ""));
-        const remote = await rzp.fetchSubscription(org.razorpay_subscription_id).catch(() => null);
-        const mandate = () => fail(409, `Your plan is paid by ${/upi/i.test(remote?.payment_method || "") ? "UPI" : "bank mandate"}, which Razorpay can't change. Approve a new mandate for ${PLANS[plan].name} and it starts at your renewal.`, { code: "needs_new_mandate", periodEnd: org.current_period_end });
-        if (!upgrade) {
-          const blockers = await B.downgradeBlockers(ctx.org.id, plan);
-          if (blockers.length) fail(409, `Before moving to ${PLANS[plan].name}, reduce: ${blockers.join("; ")}.`, { code: "over_plan", blockers });
-        }
-        if (viaMandate(remote?.payment_method)) mandate();
-        if (org.pending_plan_code) await rzp.cancelScheduledChanges(org.razorpay_subscription_id).catch(() => {});
-        try { await rzp.updateSubscription(org.razorpay_subscription_id, { planId, at: upgrade ? "now" : "cycle_end" }); }
-        catch (e) { if (viaMandate(e.message)) mandate(); throw e; }
-        await q(`update organizations set pending_plan_code = $2, updated_at = now() where id = $1`, [ctx.org.id, upgrade ? null : plan]);
-        await O.audit(ctx.org.id, ctx.user.id, upgrade ? "billing.upgrade_requested" : "billing.downgrade_scheduled", plan, { from: org.plan_code });
-        if (!upgrade) void N.notify(ctx.org.id, "downgrade_scheduled", `${plan}:${new Date(org.current_period_end).toISOString().slice(0, 10)}:${Date.now()}`, { plan, from: org.plan_code, on: org.current_period_end });
-        sendJson(res, 200, { ok: true, upgrade, pendingPlan: upgrade ? null : plan });
-      } catch (e) {
-        if (e.status && !e.extra) { console.warn("[billing] change-plan:", e.message); fail(502, "The payment provider couldn't make that change just now. Nothing changed. Try again."); }
-        throw e;
-      }
+      sendJson(res, 200, await changePlan(ctx.org.id, ctx.user.id, String(b.plan || "")));
     }],
-
-    // Owner only; allowed even when checkout is closed, so a customer can always leave. Access continues to the end of the paid period.
     ["POST", "/api/billing/cancel", async (req, res) => {
       const ctx = await ownerOnly(req);
-      if (limited("cancel:" + ctx.org.id, 10, 3600e3)) fail(429, "Too many attempts. Try again in a bit.");
-      const org = await one(`select plan_code, billing_status, razorpay_subscription_id, current_period_end, cancel_at_period_end from organizations where id = $1`, [ctx.org.id]);
-      if (!org.razorpay_subscription_id || !["active", "past_due"].includes(org.billing_status)) fail(409, "There's no active subscription to cancel.", { code: "no_subscription" });
-      if (org.cancel_at_period_end) return sendJson(res, 200, { ok: true, until: org.current_period_end });
-      try { await client().cancelSubscription(org.razorpay_subscription_id, { atCycleEnd: true }); }
-      catch (e) { console.warn("[billing] cancel:", e.message); fail(502, "The payment provider couldn't cancel just now. Nothing changed. Try again."); }
-      await q(`update organizations set cancel_at_period_end = true, pending_plan_code = null, updated_at = now() where id = $1`, [ctx.org.id]);
-      await O.audit(ctx.org.id, ctx.user.id, "billing.cancel_requested", PLANS[org.plan_code]?.name, { until: org.current_period_end });
-      void N.notify(ctx.org.id, "cancel_scheduled", `${org.razorpay_subscription_id}:${new Date(org.current_period_end).toISOString().slice(0, 10)}`, { plan: org.plan_code, until: org.current_period_end });
-      sendJson(res, 200, { ok: true, until: org.current_period_end });
+      sendJson(res, 200, await cancelPlan(ctx.org.id, ctx.user.id));
     }],
 
     // Razorpay -> us. The signature is checked on the exact bytes; the event id makes processing idempotent.
@@ -497,6 +565,8 @@ export function makeBillingRoutes({ needCtx, needUser }) {
         if (out.money) console.error(`[billing] ALERT: ${evtName} for ${out.sid} was not applied (${out.reason}). Money may have moved; check billing_events.`);
         if (out.patch && (out.patch.plan_code || out.patch.billing_status)) await O.audit(out.org.id, null, "billing." + String(evt.event).replace("subscription.", ""), out.patch.plan_code || out.org.plan_code, { from: { plan: out.org.plan_code, status: out.org.billing_status }, to: { plan: out.patch.plan_code || out.org.plan_code, status: out.patch.billing_status || out.org.billing_status } });
         if (out.patch && out.org) void N.billingChanged(out.org, out.patch);
+        // A renewal was paid: put this cycle's extra seats on the next invoice. A failure here is logged, never fails the webhook.
+        if (out.patch && out.org && evt.event === "subscription.charged") await chargeSeats(out.org.id).catch((e) => console.error(`[billing] ALERT: extra seats not charged for ${out.org.id}: ${e.message}`));
         // The subscription this one replaced is cancelled upstream, so the customer can't be billed twice.
         if (out.retire) await client().cancelSubscription(out.retire, { atCycleEnd: false }).catch((e) => console.warn(`[billing] could not retire ${out.retire}: ${e.message}`));
         sendJson(res, 200, { ok: true, ...(out.duplicate ? { duplicate: true } : {}), ...(out.ignored ? { ignored: true } : {}), ...(out.status ? { status: out.status } : {}) });

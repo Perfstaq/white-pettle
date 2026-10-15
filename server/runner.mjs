@@ -47,7 +47,8 @@ export function digest(M) {
 /**
  * Run one check for a workspace's saved setup. Returns the run object (same shape the browser saves).
  * opts: { prev (last finished run, for drafts to carry forward), samples, deadline (ms epoch), log,
- *         budgetUsd (stop starting AI calls once their estimated cost would pass it), costOf(kind, engine) }
+ *         budgetUsd (stop starting AI calls once their estimated cost would pass it), costOf(kind, engine),
+ *         pages (cited pages to open and read; the plan's "pages" limit, else RUNNER_PAGES or 18) }
  */
 export async function runCheck(ws, opts = {}) {
   const setup = ws.setup || {}, log = opts.log || (() => {});
@@ -105,7 +106,7 @@ export async function runCheck(ws, opts = {}) {
   // 3. open the most-cited pages
   const cites = {};
   for (const a of answered) for (const s of a.sources || []) { const k = s.url; (cites[k] = cites[k] || { url: k, n: 0, qs: new Set(), cited: false }); cites[k].n++; cites[k].qs.add(a.qid); cites[k].cited ||= s.cited; }
-  const targets = Object.values(cites).sort((a, b) => b.n - a.n || (b.cited ? 1 : 0) - (a.cited ? 1 : 0)).slice(0, Number(process.env.RUNNER_PAGES || 18));
+  const targets = Object.values(cites).sort((a, b) => b.n - a.n || (b.cited ? 1 : 0) - (a.cited ? 1 : 0)).slice(0, Number(opts.pages) > 0 ? Number(opts.pages) : Number(process.env.RUNNER_PAGES || 18));
   await pool(targets, 4, async (t) => {
     if (Date.now() > deadline || !afford("inspect")) return;
     let r; try { r = await (await call(inspect, { url: t.url, brand: profile })).json(); } catch (e) { r = { ok: false, url: t.url, reason: e.message }; }
