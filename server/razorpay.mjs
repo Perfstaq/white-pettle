@@ -54,6 +54,8 @@ export function makeClient({ keyId, keySecret, fetch: doFetch = globalThis.fetch
     createPlan: ({ name, amount, currency, description = "", period = "monthly" }) => request("POST", "/plans", { period, interval: 1, item: { name, amount, currency, description } }),
     // A one-off charge added to the subscription's next invoice (Razorpay "add-ons"): how extra seats are billed, in arrears, each cycle.
     createAddon: (id, { name, amount, currency, description = "" }) => request("POST", `${sub(id)}/addons`, { item: { name, amount, currency, description }, quantity: 1 }),
+    // Only an add-on not yet on an invoice can be deleted; Razorpay refuses the rest.
+    deleteAddon: (id) => request("DELETE", `/addons/${encodeURIComponent(id)}`),
     fetchPlan: (id) => request("GET", `/plans/${encodeURIComponent(id)}`),
     listPlans: () => request("GET", "/plans?count=100"),
     fetchSubscription: (id) => request("GET", sub(id)),

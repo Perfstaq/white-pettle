@@ -108,7 +108,8 @@ with sync_playwright() as p:
     pg.click(".ob-sheet-foot [data-act=launch]")
     time.sleep(0.6); shot("09_running")
     time.sleep(2.5); shot("09b_running")
-    pg.click("[data-run=watch]"); time.sleep(4); shot("09c_mission_console")
+    # The run screen re-renders as answers arrive (and a toast can cover it), so a pointer click can miss: click it in the page.
+    pg.wait_for_selector("[data-run=watch]"); pg.evaluate("document.querySelector('[data-run=watch]').click()"); time.sleep(4); shot("09c_mission_console")
     back = pg.query_selector("#mission [data-act=stage], #missionBack, #mission .back")
     print("mission visible:", pg.evaluate("!document.querySelector('#mission').hidden"))
     # When the run ends (Stop goes away) the app moves on by itself only while the live feed is followed; otherwise "See results" does.

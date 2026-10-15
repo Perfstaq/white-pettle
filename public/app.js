@@ -980,7 +980,10 @@ const trialDone = (b) => b?.plan?.status === "trialing" && b.limits?.checks != n
 // Before re-running: a read-only organisation, or a free trial whose one check is done, gets the pay pop-up instead of the prompt editor.
 async function runBlocked() {
   if (!DATA.server()) return false; await refreshBilling(); const b = APP.cfg.billing; if (!b) return false;
-  if (b.mode === "read") { upgradeModal({ code: "billing_read_only", error: b.plan?.status === "trialing" ? "Your 7-day trial has ended. Choose a plan to keep running checks. Your reports stay readable." : "Choose a plan to run your prompts again. Your reports stay readable." }); return true; }
+  if (b.mode === "read") {
+    const days = b.trialStartedAt && b.trialEndsAt ? Math.round((new Date(b.trialEndsAt) - new Date(b.trialStartedAt)) / 864e5) : 0; // trial length is per plan
+    upgradeModal({ code: "billing_read_only", error: b.plan?.status === "trialing" ? `Your ${days > 0 ? `${days}-day` : "free"} trial has ended. Choose a plan to keep running checks. Your reports stay readable.` : "Choose a plan to run your prompts again. Your reports stay readable." }); return true;
+  }
   if (trialDone(b)) { upgradeModal({ code: "plan_limit", trialDone: true, error: "Choose a plan to run your prompts again. Paying now starts your plan today; your reports stay readable." }); return true; }
   return false;
 }

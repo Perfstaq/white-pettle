@@ -11,7 +11,7 @@ import * as C from "./console.mjs";
 import * as F from "./console-founder.mjs";
 import { PLANS, withTax, LIMIT_METRICS } from "./plans.mjs";
 import { billingConfig, client, razorpayLink, planIdFor } from "./razorpay.mjs";
-import { syncOrg, changePlan, cancelPlan, chargeSeats } from "./billing-routes.mjs";
+import { syncOrg, changePlan, cancelPlan, chargeSeats, withdrawSeats } from "./billing-routes.mjs";
 
 export const CONSOLE_ROLES = ["founder", "finance", "support", "analyst"];
 
@@ -22,7 +22,7 @@ async function userDeletion(id, actor) {
   if (!/^[0-9a-f-]{36}$/.test(id)) fail(404, "No such person.");
   const u = await one(`select id, email, name from users where id = $1`, [id]);
   if (!u) fail(404, "No such person.");
-  const orgs = await q(`select o.id, o.slug, o.name, m.role, o.billing_status, o.razorpay_subscription_id,
+  const orgs = await q(`select o.id, o.slug, o.name, m.role, o.billing_status, o.razorpay_subscription_id, o.razorpay_checkout_subscription_id as pending,
       (select count(*)::int from memberships x where x.org_id = o.id) as members, (select count(*)::int from workspaces w where w.org_id = o.id) as brands
     from memberships m join organizations o on o.id = m.org_id where m.user_id = $1 order by o.name`, [id]);
   const blockers = [];
@@ -32,13 +32,32 @@ async function userDeletion(id, actor) {
     const alone = o.members === 1, live = !!o.razorpay_subscription_id && ["active", "past_due", "trialing"].includes(o.billing_status);
     if (o.role === "owner" && !alone) blockers.push(`They own ${o.name}, which has ${o.members - 1} other ${o.members === 2 ? "person" : "people"}: hand ownership over first.`);
     if (alone && live) blockers.push(`${o.name} pays through Razorpay: cancel its subscription first.`);
-    return { id: o.id, slug: o.slug, name: o.name, role: o.role, members: o.members, brands: o.brands, deleted: alone };
+    return { id: o.id, slug: o.slug, name: o.name, role: o.role, members: o.members, brands: o.brands, deleted: alone, pending: o.pending };
   });
   return { id: u.id, email: u.email, name: u.name, orgs: out, blockers };
 }
 
-// Analysts see numbers, not people: customer emails are blanked in what they receive.
-const redact = (role, v) => role !== "analyst" ? v : JSON.parse(JSON.stringify(v, (k, x) => (["owner", "email", "who", "by"].includes(k) && typeof x === "string" ? "•••" : x)));
+// Analysts see numbers, not people: who someone is (emails, a person's name, who did or was sent something) and what operators wrote
+// about them are blanked, and so is any other string that holds an email address (audit targets, invite lines).
+const PERSON_KEYS = ["owner", "email", "who", "by", "invited_by", "to", "sentTo", "ownerEmail", "body"], HAS_EMAIL = /[^\s@]+@[^\s@]+\.[^\s@]+/;
+const redact = (role, v) => role !== "analyst" ? v : JSON.parse(JSON.stringify(v, function (k, x) {
+  if (typeof x !== "string") return x;
+  if (PERSON_KEYS.includes(k) || HAS_EMAIL.test(x) || (k === "name" && typeof this.email === "string")) return "•••"; // a name next to an email is a person's
+  return x;
+}));
+
+// A Razorpay link an operator or checkout left on an organisation stays payable for days; before the organisation goes, withdraw it,
+// so nobody can pay into an organisation that no longer exists. A link already paid (webhook not yet seen) stops the deletion.
+async function withdrawPendingLink(orgId, subscriptionId) {
+  if (!subscriptionId) return;
+  if (!billingConfig().ready) fail(409, "This organisation has an unpaid Razorpay link, and Razorpay keys aren't configured here to withdraw it.", { code: "pending_link" });
+  let s; try { s = await client().fetchSubscription(subscriptionId); } catch (e) { fail(502, "Razorpay didn't answer about this organisation's payment link: " + String(e.message).slice(0, 120)); }
+  if (["active", "pending", "halted"].includes(s.status)) fail(409, "This organisation's payment link was just paid. Sync billing, then cancel the subscription first.", { code: "has_subscription" });
+  if (["created", "authenticated"].includes(s.status)) {
+    try { await client().cancelSubscription(subscriptionId, { atCycleEnd: false }); } catch (e) { fail(502, "Couldn't withdraw this organisation's payment link: " + String(e.message).slice(0, 120)); }
+  }
+  await q(`update organizations set razorpay_checkout_subscription_id = null where id = $1`, [orgId]);
+}
 
 const needReason = (b) => { const r = String(b.reason || "").trim(); if (r.length < 3) fail(400, "Say why (a few words): it goes in the audit log."); return r.slice(0, 300); };
 async function invoicesOf(subscriptionId) {
@@ -55,8 +74,13 @@ async function consoleInvite(req, by, org, email, role) {
   await O.audit(org.id, by.id, "invite.sent", email, { role, emailed: r.sent, by: "console" });
   return { ...invite, link, emailed: !!r.sent };
 }
-const orgBySlug = async (slug) => (await one(`select id, slug, name, billing_status, razorpay_subscription_id, paused_at from organizations where slug = $1`, [slug])) || fail(404, "No such organisation.");
+const orgBySlug = async (slug) => (await one(`select id, slug, name, billing_status, razorpay_subscription_id, razorpay_checkout_subscription_id, paused_at from organizations where slug = $1`, [slug])) || fail(404, "No such organisation.");
 const ROLE_OK = (r) => O.ROLES.includes(r);
+// Admin and owner of a customer's organisation are founder-only grants from the console: otherwise a support or finance operator could
+// invite or promote themselves (or anyone) into control of a customer's account. Founders reach any organisation through an audited visit.
+const needGrant = (opRole, role) => { if (["owner", "admin"].includes(role) && opRole !== "founder") fail(403, "Only a founder can make someone an admin or the owner of a customer's organisation.", { code: "role", need: ["founder"] }); };
+// No operator adds themselves to a customer's organisation from the console.
+const notSelf = (user, email) => { if (normEmail(user.email) === normEmail(email)) fail(403, "You can't add yourself to a customer's organisation. Founders open it with a visit instead.", { code: "self" }); };
 
 export function makeConsoleRoutes({ needUser }) {
   // Resolves the operator's role or throws 404; `allow` narrows a route to some roles (403 for other operators).
@@ -96,7 +120,7 @@ export function makeConsoleRoutes({ needUser }) {
     }],
     // Live: a snapshot every 5 seconds over Server-Sent Events, for up to 30 minutes per connection (the page reconnects).
     ["GET", "/api/admin/console/live", async (req, res) => {
-      const { role } = await needConsole(req);
+      let { role } = await needConsole(req);
       res.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", connection: "keep-alive", "x-accel-buffering": "no" });
       let open = true, timer = null;
       const stop = () => { open = false; clearTimeout(timer); };
@@ -104,6 +128,8 @@ export function makeConsoleRoutes({ needUser }) {
       const started = Date.now();
       const tick = async () => {
         if (!open) return;
+        // Access is re-checked on every snapshot: a signed-out, deactivated or demoted operator stops receiving it at once.
+        try { ({ role } = await needConsole(req)); } catch { stop(); res.write(`event: problem\ndata: ${JSON.stringify({ error: "Your console access ended.", ended: true })}\n\n`); return res.end(); }
         try { res.write(`event: snapshot\ndata: ${JSON.stringify(redact(role, await C.live()))}\n\n`); }
         catch (e) { res.write(`event: problem\ndata: ${JSON.stringify({ error: String(e.message).slice(0, 200) })}\n\n`); }
         if (Date.now() - started > 30 * 60e3) { stop(); return res.end(); }
@@ -237,9 +263,10 @@ export function makeConsoleRoutes({ needUser }) {
         if (!LIMIT_METRICS.includes(k)) fail(400, `Unknown limit "${k}". Limits are ${LIMIT_METRICS.join(", ")}.`, { code: "bad_limit" });
         if (n !== null && !(Number.isInteger(n) && n >= 0 && n <= 1000000)) fail(400, `${k} must be a whole number from 0 to 1,000,000, or empty for the plan's own.`, { code: "bad_limit" });
       }
-      let expiresAt = null;
-      if (b.expiresAt) { const d = new Date(b.expiresAt); if (Number.isNaN(d.getTime()) || d <= new Date()) fail(400, "The end date must be in the future.", { code: "bad_limit" }); expiresAt = d.toISOString(); }
       const before = org.entitlement_overrides || {}, live = before.values && (!before.expiresAt || new Date(before.expiresAt) > new Date());
+      // expiresAt left out keeps the custom limits' current end date; null or "" removes it; a date sets it.
+      let expiresAt = b.expiresAt === undefined && live ? before.expiresAt || null : null;
+      if (b.expiresAt) { const d = new Date(b.expiresAt); if (Number.isNaN(d.getTime()) || d <= new Date()) fail(400, "The end date must be in the future.", { code: "bad_limit" }); expiresAt = d.toISOString(); }
       const values = { ...(live ? before.values : {}) };
       for (const [k, n] of Object.entries(v)) { if (n === null) delete values[k]; else values[k] = n; }
       const after = Object.keys(values).length ? { values, expiresAt, reason, by: user.email } : {};
@@ -251,7 +278,7 @@ export function makeConsoleRoutes({ needUser }) {
       const { user } = await needConsole(req, "founder", "finance");
       const b = await readJson(req, 2000), reason = needReason(b), n = Number(b.extraSeats), how = b.billing === "razorpay" ? "razorpay" : "invoice";
       if (!Number.isInteger(n) || n < 0 || n > 10000) fail(400, "Extra seats is a whole number from 0.");
-      const o = await one(`select id, plan_code, billing_currency, billing_status, extra_seats, razorpay_subscription_id from organizations where slug = $1`, [p.slug]);
+      const o = await one(`select id, plan_code, billing_currency, billing_status, extra_seats, extra_seats_billing, razorpay_subscription_id from organizations where slug = $1`, [p.slug]);
       if (!o) fail(404, "No such organisation.");
       const plan = PLANS[o.plan_code], cap = plan?.maxExtraSeats;
       if (cap != null && n > cap) fail(400, cap === 0 ? `${plan.name} doesn't sell extra seats. Raise "Most extra seats" on the plan, or give custom limits instead.` : `${plan.name} allows at most ${cap} extra seats.`, { code: "seat_cap" });
@@ -262,13 +289,18 @@ export function makeConsoleRoutes({ needUser }) {
       }
       await q(`update organizations set extra_seats = $2, extra_seats_billing = $3, updated_at = now() where id = $1`, [o.id, n, how]);
       await O.audit(o.id, user.id, "billing.seats_changed", String(n), { from: o.extra_seats, billing: how, reason });
-      // Seats added now are billed for the current cycle on the next invoice; removed ones simply aren't added at the next renewal.
-      let charged = null;
+      // Seats added now are billed for the rest of the current cycle on the next invoice. Removed ones withdraw this cycle's not-yet-invoiced
+      // raises, and aren't added at the next renewal.
+      let charged = null, withdrawn = null;
       if (how === "razorpay" && n > o.extra_seats) {
-        try { charged = await chargeSeats(o.id, { seats: n - o.extra_seats, actorId: user.id, reason }); }
+        try { charged = await chargeSeats(o.id, { seats: n - o.extra_seats, actorId: user.id, reason, prorate: true }); }
         catch (e) { fail(502, "Seats saved, but Razorpay didn't accept the charge: " + String(e.message).slice(0, 140) + ". Retry, or bill this cycle by invoice."); }
       }
-      sendJson(res, 200, { extraSeats: n, billing: how, charged });
+      if (o.extra_seats_billing === "razorpay" && n < o.extra_seats && billingConfig().ready) {
+        try { withdrawn = await withdrawSeats(o.id, { seats: o.extra_seats - n, actorId: user.id, reason }); }
+        catch (e) { console.warn("[console] seats withdraw:", e.message); withdrawn = { error: "Seats saved, but this cycle's added seats couldn't be withdrawn from Razorpay. Check the next invoice." }; }
+      }
+      sendJson(res, 200, { extraSeats: n, billing: how, charged, withdrawn });
     }],
     // Ask Razorpay for the truth now instead of waiting for the daily reconcile.
     ["POST", "/api/admin/console/customers/:slug/sync", async (req, res, p) => {
@@ -309,8 +341,10 @@ export function makeConsoleRoutes({ needUser }) {
     }],
     // ── Accounts: create, rename, suspend / resume, delete ──
     ["POST", "/api/admin/console/accounts", async (req, res) => {
-      const { user } = await needConsole(req, "founder", "finance", "support");
+      const { user, role: opRole } = await needConsole(req, "founder", "finance", "support");
       const b = await readJson(req, 4000), name = String(b.name || "").trim(), ownerEmail = normEmail(b.ownerEmail || ""), start = ["new", "internal"].includes(b.start) ? b.start : "new";
+      // Internal accounts are unlimited and may run on the platform's AI keys: a founder's decision, not one any operator can make.
+      if ((start === "internal" || b.allowPlatformKeys) && opRole !== "founder") fail(403, "Only a founder can create an internal account or let one use the platform's AI keys.", { code: "role", need: ["founder"] });
       if (name.length < 2 || name.length > 80) fail(400, "Give the organisation a name (2 to 80 characters).");
       if (!emailOk(ownerEmail)) fail(400, "Enter the owner's email address.");
       if (limited("console-account:" + user.id, 30, 3600e3)) fail(429, "That's a lot of new accounts in an hour. Try again later.");
@@ -345,6 +379,7 @@ export function makeConsoleRoutes({ needUser }) {
       if (String(b.confirm || "") !== org.slug) fail(400, `Type the organisation's id (${org.slug}) to confirm.`, { code: "confirm" });
       if (reason.length < 3) fail(400, "Say why (a few words): it goes in the audit log.");
       if (org.razorpay_subscription_id && ["active", "past_due", "trialing"].includes(org.billing_status)) fail(409, "This organisation has a live Razorpay subscription. Cancel it first.", { code: "has_subscription" });
+      await withdrawPendingLink(org.id, org.razorpay_checkout_subscription_id);
       const counts = await one(`select (select count(*)::int from workspaces where org_id = $1) as brands, (select count(*)::int from memberships where org_id = $1) as members`, [org.id]);
       await O.audit(null, user.id, "org.deleted", org.slug, { name: org.name, reason, ...counts });
       await q(`delete from organizations where id = $1`, [org.id]);
@@ -364,6 +399,7 @@ export function makeConsoleRoutes({ needUser }) {
       if (normEmail(String(b.confirm || "")) !== plan.email) fail(400, `Type the person's email (${plan.email}) to confirm.`, { code: "confirm" });
       if (plan.blockers.length) fail(409, plan.blockers.join(" "), { code: "blocked" });
       const gone = plan.orgs.filter((o) => o.deleted);
+      for (const o of gone) await withdrawPendingLink(o.id, o.pending);
       await tx(async (c) => {
         for (const o of gone) await c.query(`delete from organizations where id = $1`, [o.id]);
         await c.query(`delete from users where id = $1`, [plan.id]);
@@ -380,10 +416,11 @@ export function makeConsoleRoutes({ needUser }) {
       sendJson(res, 200, redact(role, { members: await O.members(org.id), invites: await O.pendingInvites(org.id) }));
     }],
     ["POST", "/api/admin/console/accounts/:slug/people", async (req, res, p) => {
-      const { user } = await needConsole(req, "founder", "finance", "support");
+      const { user, role: opRole } = await needConsole(req, "founder", "finance", "support");
       const org = await orgBySlug(p.slug), b = await readJson(req, 2000), email = normEmail(b.email || ""), role = String(b.role || "viewer");
       if (!emailOk(email)) fail(400, "Enter a valid email address.");
       if (!ROLE_OK(role)) fail(400, "Pick a role: owner, admin, editor or viewer.");
+      needGrant(opRole, role); notSelf(user, email);
       if (role === "owner" && (await one(`select 1 from memberships where org_id = $1 and role = 'owner'`, [org.id]))) fail(409, "This organisation already has an owner. Change an existing member to owner instead.");
       if (await one(`select 1 from memberships m join users u on u.id = m.user_id where m.org_id = $1 and u.email = $2`, [org.id, email])) fail(409, `${email} is already in this organisation.`);
       if (limited("console-invite:" + org.id, 30, 3600e3)) fail(429, "That's a lot of invites in an hour. Try again later.");
@@ -391,13 +428,16 @@ export function makeConsoleRoutes({ needUser }) {
       sendJson(res, 200, { invite: await consoleInvite(req, user, org, email, role) });
     }],
     ["PATCH", "/api/admin/console/accounts/:slug/people/:id", async (req, res, p) => {
-      const { user } = await needConsole(req, "founder", "finance", "support");
+      const { user, role: opRole } = await needConsole(req, "founder", "finance", "support");
       const org = await orgBySlug(p.slug), b = await readJson(req, 2000), role = String(b.role || "");
       if (!ROLE_OK(role)) fail(400, "Unknown role.");
+      needGrant(opRole, role);
+      if (p.id === user.id) fail(403, "You can't change your own role in a customer's organisation.", { code: "self" });
       await tx(async (c) => {
         const m = (await c.query(`select m.role, u.email from memberships m join users u on u.id = m.user_id where m.org_id = $1 and m.user_id::text = $2 for update of m`, [org.id, p.id])).rows[0];
         if (!m) fail(404, "That person isn't in this organisation.");
         if (m.role === role) return;
+        needGrant(opRole, m.role); // lowering an admin or the owner is a founder's call too
         if (role === "owner") { // hand over ownership: the current owner stays on as an admin
           await c.query(`update memberships set role = 'admin' where org_id = $1 and role = 'owner'`, [org.id]);
           await c.query(`update memberships set role = 'owner' where org_id = $1 and user_id::text = $2`, [org.id, p.id]);
@@ -411,9 +451,11 @@ export function makeConsoleRoutes({ needUser }) {
       sendJson(res, 200, { members: await O.members(org.id) });
     }],
     ["DELETE", "/api/admin/console/accounts/:slug/people/:id", async (req, res, p) => {
-      const { user } = await needConsole(req, "founder", "finance", "support");
+      const { user, role: opRole } = await needConsole(req, "founder", "finance", "support");
       const org = await orgBySlug(p.slug);
-      const m = await one(`delete from memberships m using users u where u.id = m.user_id and m.org_id = $1 and m.user_id::text = $2 and m.role <> 'owner' returning m.role, u.email`, [org.id, p.id]);
+      const target = await one(`select role from memberships where org_id = $1 and user_id::text = $2`, [org.id, p.id]);
+      if (target) needGrant(opRole, target.role); // removing an admin is a founder's call
+      const m = await one(`delete from memberships m using users u where u.id = m.user_id and m.org_id = $1 and m.user_id::text = $2 and m.role <> 'owner' and ($3 or m.role not in ('admin', 'owner')) returning m.role, u.email`, [org.id, p.id, opRole === "founder"]);
       if (!m) { const still = await one(`select 1 from memberships where org_id = $1 and user_id::text = $2`, [org.id, p.id]); fail(still ? 409 : 404, still ? "The owner can't be removed. Make someone else the owner first." : "That person isn't in this organisation."); }
       await q(`update sessions set org_id = null where org_id = $1 and user_id::text = $2`, [org.id, p.id]);
       await O.audit(org.id, user.id, "member.removed", m.email, { role: m.role, by: "console" });

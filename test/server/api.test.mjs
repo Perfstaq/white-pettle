@@ -1835,11 +1835,18 @@ test("limits on the current plan: raise questions, brands and website pages for 
   // Changing one keeps the others; null puts one back to the plan's.
   r = await C("PUT", `customers/${slug}/limits`, { values: { brands: null, questions: 50 }, reason: "more questions" });
   ent = (await billingState(org)).ent; assert.deepEqual([ent.questions, ent.brands, ent.pages], [50, 1, 40]);
+  // An end date survives a change that doesn't mention one; null removes it.
+  const later = new Date(Date.now() + 30 * 864e5).toISOString(), ends = async () => (await sql(`select entitlement_overrides->>'expiresAt' as e from organizations where id = $1`, [org]))[0].e;
+  await C("PUT", `customers/${slug}/limits`, { values: { questions: 50 }, expiresAt: later, reason: "for a month" });
+  await C("PUT", `customers/${slug}/limits`, { values: { pages: 45 }, reason: "one more page" });
+  assert.equal(await ends(), later, "changing one limit keeps the end date");
+  await C("PUT", `customers/${slug}/limits`, { values: { pages: 40 }, expiresAt: null, reason: "permanent now" });
+  assert.equal(await ends(), null);
   // Back to the plan's limits entirely.
   r = await C("PUT", `customers/${slug}/limits`, { values: { questions: null, pages: null }, reason: "back to plan" });
   assert.equal(r.data.subscription.overrides, null); ent = (await billingState(org)).ent; assert.equal(ent.questions, 15);
   delete process.env.BILLING_ENABLED;
-  assert.equal((await sql(`select count(*)::int as n from audit_log where org_id = $1 and action = 'billing.limits_set'`, [org]))[0].n, 3);
+  assert.equal((await sql(`select count(*)::int as n from audit_log where org_id = $1 and action = 'billing.limits_set'`, [org]))[0].n, 6);
   await sql(`update operators set role = 'support'`);
   assert.equal((await call("cs", "PUT", `/api/admin/console/customers/${slug}/limits`, { values: { questions: 99 }, reason: "test" })).status, 403, "support can't change limits");
   await sql(`update organizations set razorpay_subscription_id = null where id = $1`, [org]);
@@ -1939,6 +1946,16 @@ test("console accounts: create with an owner invite, people CRUD, suspend makes 
   assert.equal((await call("cm", "POST", "/api/auth/signup", { email: "client-mate@x.co", password: "longenough1", invite: r.data.invite.link.split("#invite=")[1] }, { "x-forwarded-for": "10.9.9.12" })).status, 200);
   let people = (await C("GET", `accounts/${slug}/people`)).data.members;
   const mate = people.find((m) => m.email === "client-mate@x.co"), own = people.find((m) => m.role === "owner");
+  const seen = JSON.stringify((await call("cs", "GET", `/api/admin/console/customers/${slug}`)).data);
+  assert.ok(!seen.includes("@") && !seen.includes("client-mate"), "analysts see no emails or people's names: " + (seen.match(/.{40}@.{20}/) || [""])[0]);
+  // Support and finance can't hand out admin or owner, add themselves, lower an admin or owner, or make internal accounts.
+  await sql(`update operators set role = 'support'`);
+  const S = (m, p, b) => call("cs", m, "/api/admin/console/" + p, b);
+  assert.equal((await S("POST", `accounts/${slug}/people`, { email: "helper@x.co", role: "admin" })).status, 403, "support can't grant admin");
+  assert.equal((await S("POST", `accounts/${slug}/people`, { email: "console-user@x.co", role: "viewer" })).data.code, "self");
+  assert.equal((await S("PATCH", `accounts/${slug}/people/${own.id}`, { role: "viewer" })).status, 403, "support can't lower the owner");
+  assert.equal((await S("POST", "accounts", { name: "Inside Co", ownerEmail: "in@x.co", start: "internal" })).status, 403);
+  await sql(`update operators set role = 'analyst'`);
   assert.equal((await C("PATCH", `accounts/${slug}/people/${own.id}`, { role: "viewer" })).status, 409, "owner can't be lowered without a hand-over");
   people = (await C("PATCH", `accounts/${slug}/people/${mate.id}`, { role: "owner" })).data.members;
   assert.equal(people.find((m) => m.id === mate.id).role, "owner"); assert.equal(people.find((m) => m.id === own.id).role, "admin");
@@ -1967,6 +1984,10 @@ test("console accounts: create with an owner invite, people CRUD, suspend makes 
   await sql(`update operators set role = 'finance', active = true`);
   assert.equal((await call("cs", "DELETE", `/api/admin/console/accounts/${slug}`, { confirm: slug, reason: "x y z" })).status, 403, "finance can't delete accounts");
   assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: "nope", reason: "test" })).status, 400);
+  // An unpaid Razorpay link must be withdrawn first, so nobody pays into a deleted organisation (no keys here to withdraw it).
+  await sql(`update organizations set razorpay_checkout_subscription_id = 'sub_pending' where slug = $1`, [slug]);
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test cleanup" })).data.code, "pending_link");
+  await sql(`update organizations set razorpay_checkout_subscription_id = null where slug = $1`, [slug]);
   assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test cleanup" })).status, 200);
   assert.equal((await C("GET", `customers/${slug}`)).status, 404);
   assert.equal((await sql(`select count(*)::int as n from audit_log where action = 'org.deleted' and target = $1`, [slug]))[0].n, 1);
@@ -1978,7 +1999,7 @@ test("plan parameters: annual checkout and renewal, per-plan trial length, extra
   const { setClient } = await import("../../server/razorpay.mjs");
   const SECRET = "wh_cycles", calls = [];
   setClient({ createSubscription: async (a) => { calls.push(["sub", a]); return { id: "sub_year" }; }, cancelSubscription: async () => ({}), fetchSubscription: async () => ({ status: "active", payment_method: "card" }),
-    updateSubscription: async (id, a) => { calls.push(["update", a]); return {}; }, cancelScheduledChanges: async () => ({}), createAddon: async (id, a) => { calls.push(["addon", id, a]); return { id: "ao_1" }; } });
+    updateSubscription: async (id, a) => { calls.push(["update", a]); return {}; }, cancelScheduledChanges: async () => ({}), createAddon: async (id, a) => { calls.push(["addon", id, a]); return { id: "ao_" + calls.length }; }, deleteAddon: async (id) => { calls.push(["delete_addon", id]); return {}; } });
   Object.assign(process.env, { BILLING_ENABLED: "1", RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: SECRET });
   await sql(`update operators set role = 'finance', active = true`);
   // Catalogue: Growth gets an annual price + yearly Razorpay plan, a 14-day trial, and extra seats at ₹500 up to 10; Starter has no trial.
@@ -2033,6 +2054,16 @@ test("plan parameters: annual checkout and renewal, per-plan trial length, extra
   assert.equal(calls.filter((x) => x[0] === "addon").length, n, "a repeated webhook doesn't charge twice");
   const cust = (await call("cb", "GET", "/api/admin/console/customers")).data.orgs.find((x) => x.slug === slug);
   assert.equal(cust.mrr, 833250 + 5 * 50000, "MRR: a twelfth of the year plus the seats");
+  // Seats added mid-cycle pay only for what is left of it; lowering them withdraws that not-yet-invoiced add-on, not the renewal's.
+  await sql(`update organizations set current_period_end = now() + interval '6 months' where id = $1`, [org]);
+  r = await seats({ extraSeats: 7, billing: "razorpay" });
+  const full = 50000 * 2 * 12, half = r.data.charged.amount / 1.18;
+  assert.ok(half > full * 0.45 && half < full * 0.55, `about half a year for 2 seats, got ${half} of ${full}`);
+  const raiseId = (await sql(`select detail->>'addonId' as id from audit_log where org_id = $1 and action = 'billing.seats_charged' order by id desc limit 1`, [org]))[0].id;
+  r = await seats({ extraSeats: 5, billing: "razorpay" });
+  assert.equal(r.data.withdrawn.withdrawn, 2); assert.equal(r.data.withdrawn.recharged, null);
+  assert.deepEqual(calls.at(-1), ["delete_addon", raiseId], "the mid-cycle raise is withdrawn");
+  assert.equal(calls.filter((x) => x[0] === "delete_addon").length, 1, "the renewal's add-on is left alone");
   // A plan change keeps the yearly cycle.
   const ag = plans.find((p) => p.code === "agency");
   await up("agency", ag, { prices: { ...ag.prices, INR: { ...ag.prices.INR, razorpayPlanId: "plan_AgenMonth1", annualAmount: 24999000, annualRazorpayPlanId: "plan_AgenYear01" } } });

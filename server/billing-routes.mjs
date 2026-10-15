@@ -159,16 +159,46 @@ export async function cancelPlan(orgId, actorId, { now = false, reason = null } 
 
 // Extra seats billed through Razorpay: one add-on on the subscription's next invoice for `seats` seats over one cycle (12 months for an
 // annual plan), i.e. billed in arrears. Called when an operator adds seats and again on every renewal while the organisation has them.
+// `prorate`: seats added mid-cycle pay only for what is left of the current cycle (by current_period_end), not a whole one.
 // Returns what was charged, or null when there is nothing to charge.
-export async function chargeSeats(orgId, { seats = null, actorId = null, reason = "renewal" } = {}) {
-  const o = await one(`select plan_code, billing_currency, billing_cycle, extra_seats, extra_seats_billing, razorpay_subscription_id, billing_status from organizations where id = $1`, [orgId]);
+export async function chargeSeats(orgId, { seats = null, actorId = null, reason = "renewal", prorate = false } = {}) {
+  const o = await one(`select plan_code, billing_currency, billing_cycle, extra_seats, extra_seats_billing, razorpay_subscription_id, billing_status, current_period_end from organizations where id = $1`, [orgId]);
   const n = seats ?? o?.extra_seats ?? 0, ccy = o?.billing_currency || "INR", per = PLANS[o?.plan_code]?.seatPrices?.[ccy];
   if (!o || n <= 0 || o.extra_seats_billing !== "razorpay" || !o.razorpay_subscription_id || !["active", "past_due"].includes(o.billing_status) || !(per > 0)) return null;
-  const months = o.billing_cycle === "annual" ? 12 : 1, amount = withTax(per * n * months, ccy);
-  await client().createAddon(o.razorpay_subscription_id, { name: `${n} extra seat${n > 1 ? "s" : ""} (${months === 12 ? "1 year" : "1 month"})`, amount, currency: ccy,
+  const months = o.billing_cycle === "annual" ? 12 : 1;
+  let share = 1;
+  if (prorate && o.current_period_end) { // the cycle runs from one calendar month (or year) before its end
+    const end = new Date(o.current_period_end), start = new Date(end); start.setUTCMonth(start.getUTCMonth() - months);
+    share = Math.min(1, Math.max(0, (end - Date.now()) / (end - start)));
+  }
+  const amount = withTax(Math.round(per * n * months * share), ccy);
+  if (amount <= 0) return null; // the cycle is ending: the renewal charges these seats
+  const label = share < 1 ? `rest of this ${months === 12 ? "year" : "month"}` : months === 12 ? "1 year" : "1 month";
+  const addon = await client().createAddon(o.razorpay_subscription_id, { name: `${n} extra seat${n > 1 ? "s" : ""} (${label})`, amount, currency: ccy,
     description: `${n} × ${PLANS[o.plan_code].name} extra seat` });
-  await O.audit(orgId, actorId, "billing.seats_charged", String(n), { amount, currency: ccy, months, reason });
-  return { seats: n, amount, currency: ccy, months };
+  await O.audit(orgId, actorId, "billing.seats_charged", String(n), { amount, currency: ccy, months, share: Math.round(share * 1000) / 1000, addonId: addon?.id || null, reason });
+  return { seats: n, amount, currency: ccy, months, share };
+}
+
+// Seats lowered after a mid-cycle raise: withdraw this cycle's raise add-ons that Razorpay hasn't invoiced yet (newest first), up to the
+// seats taken away, and re-add any seats a withdrawn add-on covered beyond that. The renewal's own add-on is left alone: seats removed
+// stop at the next renewal, as before. Returns { withdrawn, recharged }.
+export async function withdrawSeats(orgId, { seats, actorId = null, reason = "seats lowered" }) {
+  const raises = await q(`select a.id, a.target, a.detail from audit_log a join organizations o on o.id = a.org_id
+      where a.org_id = $1 and a.action = 'billing.seats_charged' and a.detail->>'addonId' is not null and a.detail->>'reason' <> 'renewal'
+        and not coalesce((a.detail->>'withdrawn')::boolean, false)
+        and a.at > coalesce(o.current_period_end - case when o.billing_cycle = 'annual' then interval '1 year' else interval '1 month' end, '-infinity')
+      order by a.at desc`, [orgId]);
+  let left = seats, withdrawn = 0;
+  for (const r of raises) {
+    if (left <= 0) break;
+    try { await client().deleteAddon(r.detail.addonId); } catch (e) { console.warn(`[billing] add-on ${r.detail.addonId} not withdrawn: ${e.message}`); break; } // already invoiced: stop
+    await q(`update audit_log set detail = detail || '{"withdrawn": true}' where id = $1`, [r.id]);
+    const k = Number(r.target) || 0; withdrawn += k; left -= k;
+  }
+  if (withdrawn) await O.audit(orgId, actorId, "billing.seats_withdrawn", String(withdrawn), { reason });
+  const recharged = left < 0 ? await chargeSeats(orgId, { seats: -left, actorId, reason, prorate: true }) : null;
+  return { withdrawn, recharged };
 }
 
 export function makeBillingRoutes({ needCtx, needUser }) {

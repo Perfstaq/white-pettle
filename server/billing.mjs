@@ -116,7 +116,7 @@ export function limitError(st, capability, used, limit) {
 }
 const READ_ONLY = {
   new: "Choose a plan to start your free trial.",
-  trialing: "Your 7-day trial has ended. Choose a plan to keep running checks. Your reports stay readable.",
+  trialing: "Your free trial has ended. Choose a plan to keep running checks. Your reports stay readable.",
   past_due: "Your last payment didn't go through, so the organisation is read-only. Update your payment method to continue.",
   canceled: "This subscription has ended, so the organisation is read-only. Choose a plan to continue.",
 };
@@ -125,7 +125,10 @@ export function assertWrite(st, { unattended = false } = {}) {
   // A suspension is not a billing problem, so it doesn't ask anyone to pay (the upgrade pop-up keys off billing_read_only).
   if (st.org.paused_at) fail(403, "This organisation is suspended by the White Petal team. Your reports stay readable. Contact support to restore it.", { code: "suspended" });
   // 'new' after a trial (it ended or was cancelled): there is no trial left to start.
-  const msg = st.org.billing_status === "new" && st.org.trial_ends_at ? "Your free trial has ended. Choose a plan to subscribe. Your reports stay readable." : READ_ONLY[st.org.billing_status];
+  // Trial length is per plan now, so say how long this one was rather than assuming 7 days.
+  const days = st.org.trial_started_at && st.org.trial_ends_at ? Math.round((new Date(st.org.trial_ends_at) - new Date(st.org.trial_started_at)) / 864e5) : 0;
+  const msg = st.org.billing_status === "new" && st.org.trial_ends_at ? "Your free trial has ended. Choose a plan to subscribe. Your reports stay readable."
+    : st.org.billing_status === "trialing" && days > 0 ? READ_ONLY.trialing.replace("free trial", `${days}-day trial`) : READ_ONLY[st.org.billing_status];
   fail(402, msg || "This organisation is read-only. Choose a plan to continue.", { code: "billing_read_only", status: st.org.billing_status });
 }
 export async function needWrite(orgId) { assertWrite(await billingState(orgId)); }
@@ -192,7 +195,7 @@ export const aiUsage = (kind, writeKind) => (needsDraftCount(kind, writeKind) ? 
 export async function billingSummary(orgId, { ai = null } = {}) {
   const st = await billingState(orgId, { usage: true }), o = st.org;
   return { plan: { code: o.plan_code, name: st.plan.name, description: st.plan.description, status: o.billing_status, currency: o.billing_currency, cycle: o.billing_cycle || "monthly", extraSeats: o.extra_seats || 0, pendingPlan: o.pending_plan_code, cancelAtPeriodEnd: !!o.cancel_at_period_end },
-    mode: st.mode, trialEndsAt: o.trial_ends_at, periodEnd: o.current_period_end, graceEndsAt: o.grace_ends_at, limits: finite(st.ent), used: st.used, nextPlan: nextPlan(o.plan_code), report: usageReport(st, ai),
+    mode: st.mode, trialStartedAt: o.trial_started_at, trialEndsAt: o.trial_ends_at, periodEnd: o.current_period_end, graceEndsAt: o.grace_ends_at, limits: finite(st.ent), used: st.used, nextPlan: nextPlan(o.plan_code), report: usageReport(st, ai),
     // The placeholder "trial" plan means no plan has been picked yet; picking one switches the trial to that plan's limits.
     trialChosen: o.plan_code !== "trial", trialAvailable: o.billing_status === "new" ? await trialAvailable(orgId) : o.billing_status === "trialing",
     paymentMethod: { connected: !!o.razorpay_subscription_id && ["trialing", "active", "past_due"].includes(o.billing_status), firstChargeAt: o.billing_status === "trialing" && o.razorpay_subscription_id ? o.trial_ends_at : null } };

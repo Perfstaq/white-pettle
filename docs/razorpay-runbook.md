@@ -180,9 +180,10 @@ Set in the plan catalogue (Command Deck → Plan catalogue, or `PUT /api/admin/p
 - **Extra seats**: `seat_amount_minor` (per seat per month, before tax, per currency) and `max_extra_seats` (empty = no cap, 0 = not sold).
   An operator sets an organisation's extra seats in its drawer (`POST /api/admin/console/customers/:slug/seats`, reason required). They add
   to the seat limit and to MRR. Billing either **invoice** (outside Razorpay) or **razorpay**: the seats added go on the subscription's next
-  invoice as a Razorpay add-on for the current cycle, and every `subscription.charged` (renewal) adds the cycle's seats again: billed in
-  arrears, 12 months' worth on an annual plan. A repeated webhook doesn't charge twice (events are idempotent). Owners can't buy seats
-  themselves yet.
+  invoice as a Razorpay add-on, prorated to what is left of the current cycle (by `current_period_end`), and every `subscription.charged`
+  (renewal) adds the cycle's seats again in full: billed in arrears, 12 months' worth on an annual plan. Lowering seats withdraws this
+  cycle's mid-cycle add-ons Razorpay hasn't invoiced yet (newest first); the renewal's add-on stays, so a cut takes effect at the next
+  renewal. A repeated webhook doesn't charge twice (events are idempotent). Owners can't buy seats themselves yet.
 - **Before relying on it in production**, run once in Razorpay test mode: create a yearly plan from the editor, subscribe yearly, confirm
   the webhook sets `billing_cycle = annual`, add razorpay-billed seats and check the add-on appears on the next invoice.
 - The customer plans page shows a Monthly/Annual switch and each plan's trial length, but it is hidden while `PAY_HIDDEN = true` in

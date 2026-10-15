@@ -354,7 +354,7 @@ const PAGES = {
       ${["founder", "finance", "support"].includes(STATE.me.role) ? card("New account", `<form id="acctForm" class="cd-pad cd-pf-grid" hidden>
           <label>Organisation name<input id="naName" required minlength="2" maxlength="80" placeholder="e.g. Acme Retail"></label>
           <label>Owner's email<input id="naOwner" type="email" required placeholder="owner@company.com"></label>
-          <label>Starts as<select id="naStart"><option value="new">Customer: picks a plan, then the 7-day trial starts</option><option value="internal">Internal: unlimited, for our team and tests</option></select></label>
+          <label>Starts as<select id="naStart"><option value="new">Customer: picks a plan, then the ${esc(String(STATE.trialDefault || 7))}-day trial starts</option><option value="internal">Internal: unlimited, for our team and tests</option></select></label>
           <div class="wide cd-form-row"><button class="btn sm" type="submit">Create and invite the owner</button><span role="status" id="naOut"></span></div></form>`,
         `<button class="btn sm" type="button" id="newAcct">New account</button>`, { eyebrow: "For a client", desc: "Creates the organisation with no one from our team in it, and emails its owner an invite. Assign a plan from its drawer afterwards." }) : ""}
       ${card("Account groups", `<div class="fc-groups" id="groups">${groupsHtml(d.groups)}</div>`, `<button class="btn sm" type="button" id="newGroup">New group</button>`,
@@ -407,7 +407,7 @@ const PAGES = {
       <div class="kpis">
         ${kpi("MRR", inr(k.mrrInr), `${num(k.paying)} paying · ARPA ${inr(k.arpaInr)}`, "Monthly price before tax of organisations that are active or past due. USD converts at ₹" + k.usdInr + ".", { cls: "dark" })}
         ${kpi("ARR run rate", inr(k.arrInr), "MRR × 12")}
-        ${kpi("On trial", num(k.trials), "free 7-day trials running")}
+        ${kpi("On trial", num(k.trials), "free trials running")}
         ${kpi("Past due", num(k.pastDue), "renewal not paid", "", k.pastDue ? { delta: `<span class="fc-delta down">act now</span>` } : {})}
         ${kpi("New, 30 days", num(k.new30), "subscriptions activated", "", { cls: "lime" })}
         ${kpi("Churned, 30 days", num(k.churn30), `${num(k.cancelling)} more set to cancel · ${num(k.annual)} paying yearly · ${num(k.extraSeats)} extra seats`)}
@@ -1096,7 +1096,11 @@ function bindBilling(slug, after = route) {
   });
   form("#seatForm", async () => {
     const r = await api("POST", `customers/${S}/seats`, { extraSeats: Number($("#seatN").value), billing: $("#seatHow").value, reason: $("#seatReason").value });
-    done(r.charged ? `Saved. ${money(r.charged.amount, r.charged.currency)} added to the next Razorpay invoice.` : "Extra seats saved.");
+    const w = r.withdrawn;
+    done(r.charged ? `Saved. ${money(r.charged.amount, r.charged.currency)} added to the next Razorpay invoice.`
+      : w?.error ? w.error
+      : w?.withdrawn ? `Saved. ${w.withdrawn} seat${w.withdrawn > 1 ? "s" : ""} added this cycle taken off the next Razorpay invoice${w.recharged ? `, ${money(w.recharged.amount, w.recharged.currency)} re-added for the rest` : ""}.`
+      : "Extra seats saved.");
   });
   form("#asgForm", async () => {
     const status = $("#asgStatus").value, until = $("#asgUntil").value, values = {};
@@ -1180,7 +1184,8 @@ function startLive() {
     $$("[data-elapsed]").forEach((el) => { el.dataset.elapsed = Number(el.dataset.elapsed) + 1; el.textContent = dur(Number(el.dataset.elapsed)); });
   }, 1000) };
   es.addEventListener("snapshot", (e) => { LIVE.last = Date.now(); paintLive(JSON.parse(e.data), seen); });
-  es.addEventListener("problem", (e) => { $("#liveAge").textContent = JSON.parse(e.data).error; });
+  // `ended`: access was withdrawn. Stop for good (no reconnecting, no age clock over the message).
+  es.addEventListener("problem", (e) => { const p = JSON.parse(e.data); if (p.ended) stopLive(); if ($("#liveAge")) $("#liveAge").textContent = p.error; });
   es.onerror = () => { if ($("#liveAge")) $("#liveAge").textContent = "Reconnecting…"; };
 }
 const dur = (s) => (s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
