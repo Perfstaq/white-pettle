@@ -2146,6 +2146,12 @@ test("upgrading from a trial is immediate; one-month payment links activate a pl
   const row2 = (await sql(`select current_period_start, current_period_end from organizations where id = $1`, [o.id]))[0];
   assert.equal(String(row2.current_period_start), String(row.current_period_start), "same period start: counters aren't reset mid-month");
   assert.ok((new Date(row2.current_period_end) - new Date(row.current_period_end)) / 864e5 >= 28, "a second month after the first");
+  // A dearer plan's month bought during it is an immediate upgrade; a cheaper one while it runs is refused (it would cut the month short).
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "growth", currency: "INR", reason: "upgrade" });
+  await paid("evt_paid_up", r.data.linkId, withTax(PLANS.growth.prices.INR, "INR"));
+  assert.equal((await call("uo", "GET", "/api/me")).data.billing.plan.code, "growth", "upgrade applies at once");
+  r = await call("cs", "POST", `/api/admin/console/customers/${o.slug}/one-time`, { plan: "starter", currency: "INR", reason: "downgrade" });
+  assert.equal(r.status, 409); assert.equal(r.data.code, "downgrade_running"); assert.match(r.data.error, /Assign a plan/);
   // When the paid month is over: read-only, no renewal.
   await sql(`update organizations set current_period_end = now() - interval '1 minute' where id = $1`, [o.id]);
   assert.equal((await call("uo", "GET", "/api/me")).data.billing.mode, "read");

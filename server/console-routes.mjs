@@ -226,6 +226,12 @@ export function makeConsoleRoutes({ needUser }) {
       if (!org) fail(404, "No such organisation.");
       if (org.main && ["active", "past_due"].includes(org.billing_status)) fail(409, "This organisation pays by subscription. Cancel it first, or change its plan instead.", { code: "has_subscription" });
       if (!org.owner) fail(409, "This organisation has no owner to send the link to.");
+      // A cheaper plan while a dearer paid month is still running would cut that month short (the new month starts on payment).
+      // Upgrades start at once; a downgrade waits until the running month ends (or the team assigns the plan now).
+      const run = await one(`select plan_code, current_period_end from organizations where id = $1 and billing_status = 'active' and razorpay_subscription_id is null and current_period_end > now()`, [org.id]);
+      const per = (code) => PLANS[code]?.prices?.[currency] ?? null;
+      if (run && run.plan_code !== plan && per(run.plan_code) != null && price < per(run.plan_code))
+        fail(409, `Their ${PLANS[run.plan_code]?.name || run.plan_code} month runs until ${new Date(run.current_period_end).toDateString().slice(4)}. Send the ${PLANS[plan].name} link after that, or assign ${PLANS[plan].name} now with "Assign a plan".`, { code: "downgrade_running", until: run.current_period_end });
       const rzp = client(), amount = withTax(price, currency), expireBy = Math.floor(Date.now() / 1000) + 7 * 86400;
       if (org.pending) { await rzp.cancelSubscription(org.pending, { atCycleEnd: false }).catch((e) => console.warn("[console] could not cancel the subscription link:", e.message)); await q(`update organizations set razorpay_checkout_subscription_id = null where id = $1`, [org.id]); }
       await cancelOpenPaymentLinks(org.id);
