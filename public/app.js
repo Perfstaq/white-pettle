@@ -157,7 +157,7 @@ function paintAuth() {
   $("#authSub").textContent = m === "forgot" ? "We'll email you a link to set a new one." : m === "reset" ? "At least 8 characters. You'll be signed out everywhere else." : AUTH.after?.url ? `Then we'll start on ${host(AUTH.after.url)}.` : up ? "Track how AI search talks about your brand, every week." : "Welcome back.";
   $("#authInvite").hidden = !inv;
   if (inv) $("#authInvite").innerHTML = `${inv.inviter ? `<b>${esc(inv.inviter)}</b> invited <b>${esc(inv.email)}</b>` : `<b>${esc(inv.email)}</b> is invited`} to <b>${esc(inv.org)}</b> as ${esc({ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[inv.role] || inv.role)}.`;
-  $$("#authForm [data-only]").forEach((el) => (el.hidden = !up || (el.dataset.only === "invite" && (!APP.cfg.invite || !!inv))));
+  $$("#authForm [data-only]").forEach((el) => (el.hidden = !up));
   $("#authEmailRow").hidden = m === "reset";
   $("#authPassRow").hidden = m === "forgot";
   $("#authPassLbl").textContent = m === "reset" ? "New password" : "Password";
@@ -181,7 +181,7 @@ $("#authForm").addEventListener("submit", async (e) => {
   try {
     if (m === "forgot") { await api("POST", "/api/auth/forgot", { email: $("#authEmail").value }); $("#authOk").textContent = "If there's an account for that email, a reset link is on its way. It works for an hour."; return; }
     const d = m === "reset" ? await api("POST", "/api/auth/reset", { token: AUTH.reset, password: $("#authPass").value })
-      : await api("POST", m === "signup" ? "/api/auth/signup" : "/api/auth/login", { email: $("#authEmail").value, password: $("#authPass").value, name: $("#authName").value, code: $("#authCode").value, invite: AUTH.invite || undefined });
+      : await api("POST", m === "signup" ? "/api/auth/signup" : "/api/auth/login", { email: $("#authEmail").value, password: $("#authPass").value, name: $("#authName").value, invite: AUTH.invite || undefined });
     APP.user = d.user; $("#authPass").value = "";
     const joined = AUTH.inviteInfo; AUTH.invite = AUTH.inviteInfo = AUTH.reset = null;
     await reloadConfig(); await DATA.refresh();
@@ -824,7 +824,7 @@ async function runPipeline(M, sig) {
     // ---------- 4. follow the sources
     const cites = {};
     for (const a of answered) for (const s of a.sources || []) { const k = s.url; (cites[k] = cites[k] || { url: k, n: 0, qs: new Set(), cited: false }); cites[k].n++; cites[k].qs.add(a.qid); cites[k].cited ||= s.cited; }
-    const targets = Object.values(cites).sort((a, b) => b.n - a.n || (b.cited ? 1 : 0) - (a.cited ? 1 : 0)).slice(0, 24).filter((t) => !M.inspections[t.url]);
+    const targets = Object.values(cites).sort((a, b) => b.n - a.n || (b.cited ? 1 : 0) - (a.cited ? 1 : 0)).slice(0, APP.cfg.billing?.limits?.pages > 0 ? APP.cfg.billing.limits.pages : 24).filter((t) => !M.inspections[t.url]); // the plan's "pages" limit, else 24
     if (!M.done.sources && targets.length && !sig.aborted) {
       phase("sources", 3, "Following the sources");
       thought(`<b>AI repeats what the web says.</b> The engines leaned on ${Object.keys(cites).length} pages. I'm opening the ${targets.length} that came up most to see who's on them.`, "If a rival is on the pages AI trusts and you're not, that's why it gets named. Those pages are your outreach list.");
@@ -980,7 +980,10 @@ const trialDone = (b) => b?.plan?.status === "trialing" && b.limits?.checks != n
 // Before re-running: a read-only organisation, or a free trial whose one check is done, gets the pay pop-up instead of the prompt editor.
 async function runBlocked() {
   if (!DATA.server()) return false; await refreshBilling(); const b = APP.cfg.billing; if (!b) return false;
-  if (b.mode === "read") { upgradeModal({ code: "billing_read_only", error: b.plan?.status === "trialing" ? "Your 7-day trial has ended. Choose a plan to keep running checks. Your reports stay readable." : "Choose a plan to run your prompts again. Your reports stay readable." }); return true; }
+  if (b.mode === "read") {
+    const days = b.trialStartedAt && b.trialEndsAt ? Math.round((new Date(b.trialEndsAt) - new Date(b.trialStartedAt)) / 864e5) : 0; // trial length is per plan
+    upgradeModal({ code: "billing_read_only", error: b.plan?.status === "trialing" ? `Your ${days > 0 ? `${days}-day` : "free"} trial has ended. Choose a plan to keep running checks. Your reports stay readable.` : "Choose a plan to run your prompts again. Your reports stay readable." }); return true;
+  }
   if (trialDone(b)) { upgradeModal({ code: "plan_limit", trialDone: true, error: "Choose a plan to run your prompts again. Paying now starts your plan today; your reports stay readable." }); return true; }
   return false;
 }
@@ -1727,7 +1730,7 @@ function dashRender() {
   $("#rerun").hidden = !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
-  $("#navTeam").hidden = !DATA.server(); $("#navBilling").hidden = !billingOn() || PAY_HIDDEN; /* PAY_HIDDEN: no Plans & payment in the nav */ $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
+  $("#navTeam").hidden = !DATA.server(); $("#navConsole").hidden = !APP.cfg.console; $("#navBilling").hidden = !billingOn() || PAY_HIDDEN; /* PAY_HIDDEN: no Plans & payment in the nav */ $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
   const m = metrics(M, DASH.eng), pm = prevMetrics(M, DASH.eng);
   $("#pages").innerHTML = `<div class="pg">${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
   if (DASH.page === "actions") drawDeck();
@@ -2233,7 +2236,7 @@ $("#reportWrap").addEventListener("click", async (e) => {
    Operators (the people who run Perfstaq for clients) also create organisations and can open any of them. */
 const ROLE_LABEL = { owner: "Owner", admin: "Admin", editor: "Editor", viewer: "Viewer" };
 const ROLE_HELP = { admin: "people, keys, integrations, deleting brands", editor: "runs checks, edits prompts, writes drafts", viewer: "sees dashboards and reports, can ask the agent" };
-const TEAM = { d: null, audit: null, adminOrgs: null, lastLink: null };
+const TEAM = { d: null, audit: null, lastLink: null };
 const fmtDay = (d) => (d ? new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "–");
 const fmtWhen = (d) => (d ? new Date(d).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "–");
 const usd = (v) => (v == null ? "–" : `$${Number(v).toFixed(2)}`);
@@ -2360,24 +2363,29 @@ function billHistory() {
 /* ---- the payment page: plans and the payment method, nothing else ---- */
 function payPlans(b, owner) {
   const cat = BILL.cat, p = b.plan, locked = !!p.currency, ccy = locked ? p.currency : BILL.ccy, open = b.checkout.enabled;
+  // Monthly or annual: offered when some plan has a yearly price in this currency; a paying subscription keeps its own cycle.
+  const annualOn = cat.plans.some((x) => x.annualPrices?.[ccy] != null), cyc = locked && p.status === "active" ? p.cycle || "monthly" : annualOn ? BILL.cycle || "monthly" : "monthly";
+  const priceOf = (x) => (cyc === "annual" ? x.annualPrices?.[ccy] : x.prices[ccy]);
   const trialing = p.status === "trialing", connected = b.paymentMethod.connected, chosen = b.trialChosen, subscribed = p.status === "active" && !p.cancelAtPeriodEnd;
   const cur = cat.plans.find((x) => x.code === p.code);
-  const seg = locked ? `<span class="muted">Billed in ${esc(ccy)}</span>` : cat.currencies.length > 1 ? `<div class="bl-seg" role="group" aria-label="Currency">${cat.currencies.map((c) => `<button type="button" data-ccy="${esc(c)}" aria-pressed="${c === ccy}">${esc(c)}</button>`).join("")}</div>` : "";
+  const cycSeg = annualOn && !(locked && p.status === "active") ? `<div class="bl-seg" role="group" aria-label="Billing">${[["monthly", "Monthly"], ["annual", "Annual"]].map(([v, l]) => `<button type="button" data-cycle="${v}" aria-pressed="${v === cyc}">${l}</button>`).join("")}</div>` : locked && p.status === "active" && annualOn ? `<span class="muted">Billed ${cyc === "annual" ? "yearly" : "monthly"}</span>` : "";
+  const seg = cycSeg + (locked ? `<span class="muted">Billed in ${esc(ccy)}</span>` : cat.currencies.length > 1 ? `<div class="bl-seg" role="group" aria-label="Currency">${cat.currencies.map((c) => `<button type="button" data-ccy="${esc(c)}" aria-pressed="${c === ccy}">${esc(c)}</button>`).join("")}</div>` : "");
   const card = (x) => {
-    const price = x.prices[ccy], avail = cat.available?.[x.code]?.[ccy] !== false && price != null, mine = x.code === p.code && (subscribed || (trialing && chosen));
-    const up = price > (cur?.prices[ccy] || 0); let action;
+    const price = priceOf(x), avail = (cyc === "annual" ? cat.availableAnnual?.[x.code]?.[ccy] : cat.available?.[x.code]?.[ccy] !== false) && price != null, mine = x.code === p.code && (subscribed || (trialing && chosen));
+    const up = price > ((cur && priceOf(cur)) || 0), td = x.trialDays ?? cat.trialDays ?? 7; let action;
     if (!x.selfServe) action = cat.contact ? `<a class="btn ghost" href="mailto:${esc(cat.contact)}?subject=${encodeURIComponent("Perfstaq " + x.name)}">Talk to us</a>` : `<div class="bl-pill">Talk to us</div>`;
     else if (!owner) action = `<div class="bl-pill">${mine ? "Your plan" : "Ask the owner"}</div>`;
     else if (!open && !(trialing && !connected)) action = `<div class="bl-pill">${mine ? "Your plan" : "Opening soon"}</div>`;
-    else if (p.status === "new") action = b.trialAvailable
-      ? `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-trial="${esc(x.code)}">Start ${esc(String(BILL.cat.trialDays || 7))}-day free trial</button>`
+    else if (p.status === "new") action = b.trialAvailable && td > 0
+      ? `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-trial="${esc(x.code)}">Start ${esc(String(td))}-day free trial</button>`
       : avail ? `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">Not available yet</div>`;
     else if (trialing && trialDone(b) && !connected) action = avail && open ? `<button type="button" class="btn ${mine || (x.featured && !chosen) ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">Not available yet</div>`;
     else if (trialing) {
       if (mine && connected) action = `<div class="bl-pill">Connected · first charge ${esc(fmtDay(b.trialEndsAt))}</div>`;
       else if (mine) action = `<div class="bl-pill">Starts after your trial · ${esc(fmtDay(b.trialEndsAt))}</div>`;
       else if (connected) action = avail && open ? `<button type="button" class="btn ghost" data-buy="${esc(x.code)}">Switch and reconnect</button>` : `<div class="bl-pill">Not available yet</div>`;
-      else action = `<button type="button" class="btn ${x.featured && !chosen ? "" : "ghost"}" data-trial="${esc(x.code)}">${chosen ? `Switch to ${esc(x.name)}` : "Start 7-day free trial"}</button>`;
+      else if (td === 0) action = avail && open ? `<button type="button" class="btn ghost" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>` : `<div class="bl-pill">No free trial</div>`;
+      else action = `<button type="button" class="btn ${x.featured && !chosen ? "" : "ghost"}" data-trial="${esc(x.code)}">${chosen ? `Switch to ${esc(x.name)}` : `Start ${esc(String(td))}-day free trial`}</button>`;
     }
     else if (p.pendingPlan === x.code) action = `<div class="bl-pill">Starts ${esc(fmtDay(b.periodEnd))}</div>`;
     else if (!avail) action = `<div class="bl-pill">Not available in ${esc(ccy)} yet</div>`;
@@ -2385,8 +2393,10 @@ function payPlans(b, owner) {
     else if (mine) action = `<div class="bl-pill">Your plan</div>`;
     else if (subscribed) action = `<button type="button" class="btn ${up ? "" : "ghost"}" data-change="${esc(x.code)}">${up ? "Upgrade" : "Downgrade"}</button>`;
     else action = `<button type="button" class="btn ${x.featured ? "" : "ghost"}" data-buy="${esc(x.code)}">Subscribe to ${esc(x.name)}</button>`;
-    const noUpi = x.selfServe && ccy === "INR" && price > 0 && cat.upiMax && charged(price, ccy) > cat.upiMax;
-    const priceHtml = (!x.selfServe && !(price > 0) ? `<b>Custom</b>` : price != null ? `<b>${esc(money(price, ccy))}</b><span>/ month${ccy === "INR" ? " + GST" : ""}</span>` : `<b>–</b>`);
+    const noUpi = x.selfServe && ccy === "INR" && price > 0 && (cyc === "annual" || (cat.upiMax && charged(price, ccy) > cat.upiMax));
+    const saving = cyc === "annual" && price > 0 && x.prices[ccy] > 0 ? Math.round((1 - price / (x.prices[ccy] * 12)) * 100) : 0;
+    const priceHtml = (!x.selfServe && !(price > 0) ? `<b>Custom</b>` : price != null ? `<b>${esc(money(price, ccy))}</b><span>/ ${cyc === "annual" ? "year" : "month"}${ccy === "INR" ? " + GST" : ""}</span>` : cyc === "annual" ? `<b>–</b><span>monthly only</span>` : `<b>–</b>`)
+      + (saving > 0 ? `<em class="bl-save">${esc(money(Math.round(price / 12), ccy))} / month · save ${saving}%</em>` : "");
     const upiNote = noUpi ? `<p class="muted sm" style="margin:-4px 0 0">Card or net banking (no UPI)</p>` : "";
     return `<article class="bl-card bl-pc ${mine ? "cur" : ""} ${x.featured ? "feat" : ""}">${x.featured ? '<span class="badge">Most popular</span>' : ""}<h3>${esc(x.name)}</h3><p class="pd">${esc(x.description || "")}</p><div class="pr">${priceHtml}</div>${upiNote}
       <ul>${planFacts(x.entitlements).map((l) => `<li>${esc(l)}</li>`).join("")}<li>${esc(x.entitlements.engines.length > 3 ? "All AI engines" : x.entitlements.engines.map(engLabel).join(", "))}</li></ul>${action}</article>`;
@@ -2438,104 +2448,12 @@ async function openAccount() {
   $("#accBody").innerHTML = `<div class="bl-head"><div><span class="bl-kicker">${esc(APP.org?.name || "Organisation")}</span><h1>Account &amp; usage</h1></div></div>
     ${billBanners(b)}<div class="bl-hero">${planPanel(b, owner, "account")}${billIncluded(b)}</div>${billUsage(b)}${billHistory()}`;
 }
-/* operators: the plan catalogue, straight from the database */
-const money2 = (minor) => (minor == null ? "" : String(minor / 100));
-function planEditor(p, A) {
-  const n = A.organisations[p.code] || 0, cur = [...new Set([...BILL.cat.currencies, ...Object.keys(p.prices)])];
-  const flags = [["public", "Public"], ["selfServe", "Can be bought"], ["featured", "Most popular"], ["active", "Active"]];
-  const chk = (name, val, on, dis = false) => `<label><input type="checkbox" data-list="${name}" value="${esc(val)}" ${on ? "checked" : ""} ${dis ? "disabled" : ""}>${esc(name === "engines" ? engLabel(val) : name === "integrations" ? (INTEG_LABEL[val] || (val === "*" ? "All integrations" : val)) : SCHED_LABEL[val] || val)}</label>`;
-  return `<details class="bl-edit" data-plan="${esc(p.code)}"><summary><b>${esc(p.name)}</b><code>${esc(p.code)}</code><span class="muted sm">${n} organisation${n === 1 ? "" : "s"}</span><span class="sp"></span>${p.featured ? '<span class="pillx ok">Most popular</span>' : ""}${p.public ? '<span class="pillx">Public</span>' : '<span class="pillx">Hidden</span>'}${p.active ? "" : '<span class="pillx no">Inactive</span>'}</summary>
-    <div class="bl-form">
-      <div class="bl-fg"><label class="bl-f">Name<input class="inp" data-f="name" value="${esc(p.name)}"></label><label class="bl-f">Description<input class="inp" data-f="description" value="${esc(p.description)}"></label>
-        <label class="bl-f">Order<input class="inp" type="number" data-f="sort" value="${p.sort}"></label><label class="bl-f">AI allowance (USD / period)<input class="inp" type="number" step="0.5" min="0" data-f="aiCapUsd" placeholder="none" value="${p.aiCapUsd ?? ""}"></label></div>
-      <div class="bl-checks">${flags.map(([k, l]) => `<label><input type="checkbox" data-f="${k}" ${p[k] ? "checked" : ""}>${l}</label>`).join("")}</div>
-      <div><div class="bl-grp-t">Limits <span class="muted">(empty = unlimited)</span></div><div class="bl-fg">${A.options.limits.map((m) => `<label class="bl-f">${esc({ brands: "Brands", questions: "Tracked questions", competitors: "Competitors per brand", seats: "Seats", drafts: "Drafted fixes / period", samples: "Samples per question" }[m])}<input class="inp" type="number" min="0" data-limit="${m}" placeholder="unlimited" value="${p.limits[m] ?? ""}"></label>`).join("")}</div></div>
-      <div><div class="bl-grp-t">AI engines</div><div class="bl-checks">${A.options.engines.map((e) => chk("engines", e, p.engines.includes(e))).join("")}</div></div>
-      <div><div class="bl-grp-t">Checks</div><div class="bl-checks">${A.options.schedules.map((s) => chk("schedules", s, p.schedules.includes(s), s === "off")).join("")}</div></div>
-      <div><div class="bl-grp-t">Integrations</div><div class="bl-checks">${chk("integrations", "*", p.integrations.includes("*"))}${A.options.integrations.map((i) => chk("integrations", i, p.integrations.includes("*") || p.integrations.includes(i))).join("")}</div></div>
-      <div><div class="bl-grp-t">Prices <span class="muted">(monthly, before tax) and the Razorpay plan for each. Save first, then create or verify the Razorpay plan.</span></div>${cur.map((c) => `<div class="bl-price-row" data-ccy-row="${esc(c)}"><b>${esc(c)}</b><input class="inp" type="number" min="0" step="0.01" data-amount placeholder="no price" value="${money2(p.prices[c]?.amount)}"><input class="inp" data-rzp placeholder="plan_XXXXXXXXXXXXXX" value="${esc(p.prices[c]?.razorpayPlanId || "")}">${p.prices[c] ? (p.prices[c].razorpayPlanId ? `<button type="button" class="btn ghost sm" data-rzp-verify="${esc(c)}" title="Check this plan id against Razorpay: amount, currency and monthly cycle">Verify</button>` : p.prices[c].amount > 0 ? `<button type="button" class="btn ghost sm" data-rzp-create="${esc(c)}" title="Create the monthly plan in Razorpay from this saved price and store its id">Create in Razorpay</button>` : "") : ""}</div>`).join("")}
-        <div class="bl-price-row"><input class="inp" data-newccy maxlength="3" placeholder="CAD" style="text-transform:uppercase"><span class="muted sm" style="grid-column:2/-1">To add a currency, type its code (for example CAD) and save; its price and Razorpay plan id row then appears here.</span></div></div>
-      <div class="bl-form-f"><button type="button" class="btn sm" data-saveplan>Save plan</button><span class="msg" data-planmsg></span></div></div></details>`;
-}
-// Operators: is billing set up and healthy, and the one-click Razorpay plan sync.
-function billHealth() {
-  const S = BILL.status; if (!S) return "";
-  const mark = { ok: "✓", warn: "!", error: "✕" }, col = { ok: "var(--good)", warn: "#b7791f", error: "var(--bad)" };
-  const rows = S.checks.map((c) => `<li style="display:flex;gap:10px;padding:6px 0"><b style="color:${col[c.level]};width:14px">${mark[c.level]}</b><span>${esc(c.label)}${c.fix ? `<br><span class="muted sm">${esc(c.fix)}</span>` : ""}</span></li>`).join("");
-  const grid = S.prices.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.currency)}</td><td>${money(r.amount, r.currency)}${r.charged !== r.amount ? ` <span class="muted sm">charged ${moneyExact(r.charged, r.currency)} with GST</span>` : ""}</td><td>${r.razorpayPlanId ? `<code>${esc(r.razorpayPlanId)}</code>` : `<span class="muted">none yet</span>`}</td></tr>`).join("");
-  const o = Object.entries(S.orgs).map(([k, n]) => `${n} ${esc(k)}`).join(" · ");
-  return `<div class="bl-sec-h"><h2>Billing status</h2><span class="muted">Operators only. Read from our own config and database.</span></div><section class="bl-card" id="billStatus"><div style="padding:16px 20px">
-    <p class="muted sm" style="margin:0 0 6px">Razorpay: ${S.razorpay.mode ? `${esc(S.razorpay.mode)} keys (${esc(S.razorpay.keyId)})` : "no keys"} · Webhook URL: <code>${esc(S.webhookUrl || "set PUBLIC_ORIGIN")}</code> · Webhooks (24h): ${S.webhooks.last24h}${S.webhooks.failed24h ? `, ${S.webhooks.failed24h} failed` : ""} · Organisations: ${o || "none"}${S.trialsEndingSoon ? ` · ${S.trialsEndingSoon} trial(s) end within 2 days` : ""}</p>
-    <ul style="list-style:none;margin:0;padding:0">${rows}</ul>
-    <table class="tbl" style="margin-top:10px"><thead><tr><th>Plan</th><th>Currency</th><th>Price</th><th>Razorpay plan id</th></tr></thead><tbody>${grid}</tbody></table>
-    <p class="muted sm" style="margin:10px 0 0">Find them in Razorpay${S.razorpay.mode ? ` (${esc(S.razorpay.mode)} mode)` : ""}: ${[["Plan ids (plan_…)", "subscriptions/plans"], ["Subscription ids (sub_…)", "subscriptions"], ["Webhooks", "webhooks"], ["API keys", "keys"]].map(([l, path]) => `<a href="https://dashboard.razorpay.com/app/${path}" target="_blank" rel="noopener">${l}</a>`).join(" · ")}</p>
-    <div class="bl-form-f" style="margin-top:12px"><button type="button" class="btn sm" data-syncplans="create">Create missing Razorpay plans</button><button type="button" class="btn ghost sm" data-syncplans="verify">Verify all with Razorpay</button><span class="msg" data-syncmsg></span></div>
-    <div data-syncout class="muted sm" style="margin-top:8px"></div></div></section>`;
-}
-function billCatalogue() {
-  const A = BILL.admin; if (!A) return "";
-  return `<div class="bl-sec-h"><h2>Plan catalogue</h2><span class="muted">Operators only. Saved to the database; takes effect straight away.</span></div><section class="bl-card" id="billCatalogue"><div class="bl-cat-h"><b>${A.plans.length} plans</b><span class="muted sm">Paste the Razorpay plan id next to each price to make a plan buyable.</span><span class="sp"></span><button type="button" class="btn ghost sm" data-newplan>Add plan</button></div>${A.plans.map((p) => planEditor(p, A)).join("")}</section>`;
-}
-function collectPlan(box) {
-  const f = (k) => box.querySelector(`[data-f="${k}"]`), out = { limits: {}, engines: [], schedules: [], integrations: [], prices: {} };
-  out.name = f("name").value; out.description = f("description").value; out.sort = Number(f("sort").value);
-  out.aiCapUsd = f("aiCapUsd").value === "" ? null : Number(f("aiCapUsd").value);
-  for (const k of ["public", "selfServe", "featured", "active"]) out[k] = f(k).checked;
-  box.querySelectorAll("[data-limit]").forEach((i) => { out.limits[i.dataset.limit] = i.value === "" ? null : Number(i.value); });
-  box.querySelectorAll("[data-list]").forEach((i) => { if (i.checked) out[i.dataset.list].push(i.value); });
-  if (out.integrations.includes("*")) out.integrations = ["*"];
-  box.querySelectorAll("[data-ccy-row]").forEach((row) => { const a = row.querySelector("[data-amount]").value; if (a === "") return; out.prices[row.dataset.ccyRow] = { amount: Math.round(Number(a) * 100), razorpayPlanId: row.querySelector("[data-rzp]").value.trim() || null }; });
-  const nc = box.querySelector("[data-newccy]").value.trim().toUpperCase(); if (nc && !out.prices[nc]) out.prices[nc] = { amount: 0, razorpayPlanId: null };
-  return out;
-}
-
-
-async function catalogueClick(t) {
-  const sv = t.closest("[data-saveplan]");
-  if (sv) {
-    const box = sv.closest("[data-plan]"), code = box.dataset.plan, msg = box.querySelector("[data-planmsg]"); msg.className = "msg"; msg.textContent = "Saving…";
-    try { await api("PUT", `/api/admin/plans/${encodeURIComponent(code)}`, collectPlan(box)); toast("Plan saved."); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); $(`#billCatalogue [data-plan="${code}"]`)?.scrollIntoView({ block: "center" }); }
-    catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
-    return true;
-  }
-  const sy = t.closest("[data-syncplans]");
-  if (sy) {
-    const msg = $("#billStatus [data-syncmsg]"), out = $("#billStatus [data-syncout]"), act = sy.dataset.syncplans; msg.className = "msg"; msg.textContent = act === "create" ? "Creating in Razorpay…" : "Checking with Razorpay…"; out.textContent = "";
-    try {
-      const r = await api("POST", "/api/admin/billing/sync-plans", { action: act });
-      const bad = r.rows.filter((x) => ["error", "mismatch", "missing"].includes(x.status)).length;
-      msg.className = "msg " + (bad ? "err" : "ok"); msg.textContent = bad ? `${bad} of ${r.rows.length} need attention.` : `All ${r.rows.length} done.`;
-      out.innerHTML = r.rows.map((x) => `${esc((BILL.status.prices.find((p) => p.plan === x.plan) || {}).name || x.plan)} ${esc(x.currency)}: ${esc(x.status)}${x.razorpayPlanId ? ` (${esc(x.razorpayPlanId)})` : ""}${x.detail ? ` — ${esc(x.detail)}` : ""}`).join("<br>");
-      if (act === "create") { BILL.status = await api("GET", "/api/admin/billing/status"); BILL.admin = await api("GET", "/api/admin/plans"); const keep = out.innerHTML, km = msg.textContent, kc = msg.className; paintTeam(); const o2 = $("#billStatus [data-syncout]"), m2 = $("#billStatus [data-syncmsg]"); if (o2) { o2.innerHTML = keep; m2.textContent = km; m2.className = kc; } }
-    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
-    return true;
-  }
-  const rz = t.closest("[data-rzp-create],[data-rzp-verify]");
-  if (rz) {
-    const box = rz.closest("[data-plan]"), code = box.dataset.plan, msg = box.querySelector("[data-planmsg]"), create = rz.hasAttribute("data-rzp-create"), ccy = rz.dataset.rzpCreate || rz.dataset.rzpVerify;
-    msg.className = "msg"; msg.textContent = create ? "Creating the plan in Razorpay…" : "Checking with Razorpay…";
-    try {
-      const r = await api("POST", `/api/admin/plans/${encodeURIComponent(code)}/razorpay`, { currency: ccy, action: create ? "create" : "verify" });
-      if (create) { toast(r.linked ? `Linked your existing Razorpay plan ${esc(r.razorpayPlanId)}.` : `Created ${esc(r.razorpayPlanId)} in Razorpay.`); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); }
-      else if (r.ok) { msg.className = "msg ok"; msg.textContent = `Matches Razorpay: ${money(r.razorpay.amount, r.razorpay.currency)} monthly in ${r.razorpay.currency}.`; }
-      else { msg.className = "msg err"; msg.textContent = "Doesn't match Razorpay: " + r.mismatches.join("; ") + "."; }
-    } catch (err) { msg.className = "msg err"; msg.textContent = err.message; }
-    return true;
-  }
-  if (t.closest("[data-newplan]")) {
-    const f = await confirmBox({ title: "Add a plan", ok: "Create plan", body: `${field("Short code (lowercase letters, digits, - or _)", `<input class="inp" name="code" placeholder="partner">`)}${field("Name shown to customers", `<input class="inp" name="name" placeholder="Partner">`)}` });
-    if (!f) return true;
-    const code = f.code.toLowerCase(), name = f.name || code; if (!code) return true;
-    await api("PUT", `/api/admin/plans/${encodeURIComponent(code)}`, { name, description: "", sort: 50, public: false, selfServe: false, active: true, limits: { brands: 1, questions: 10, competitors: 3, seats: 1, drafts: 10, samples: 1 }, engines: ["chatgpt"], schedules: ["off"], integrations: [], prices: {} });
-    toast("Plan created. Fill in its limits and prices, then save."); await openTeam(); $(`#billCatalogue [data-plan="${code}"]`)?.setAttribute("open", ""); return true;
-  }
-  return false;
-}
 /* ---- shared actions (payment page, account page, team page) ---- */
 async function billAction(t) {
   if (t.closest("[data-openbilling]")) { await openBilling(); return true; }
   if (t.closest("[data-openaccount]")) { await openAccount(); return true; }
   const cc = t.closest("[data-ccy]"); if (cc) { BILL.ccy = cc.dataset.ccy; paintBilling(); return true; }
+  const cy = t.closest("[data-cycle]"); if (cy) { BILL.cycle = cy.dataset.cycle; paintBilling(); return true; }
   const tr = t.closest("[data-trial]"); if (tr) { await chooseTrialPlan(tr.dataset.trial); return true; }
   const buy = t.closest("[data-buy]"); if (buy) { await buyPlan(buy.dataset.buy); return true; }
   const chg = t.closest("[data-change]"); if (chg) { await changePlan(chg.dataset.change); return true; }
@@ -2571,7 +2489,7 @@ const field = (label, input) => `<label style="display:grid;gap:4px;margin-top:1
 // Building blocks for the plan sheets: before → after, what happens when, and the money.
 const shCompare = (a, b) => `<div class="sh-cmp"><div><span>${esc(a.k)}</span><b>${esc(a.name)}</b><em>${a.price}</em></div><i aria-hidden="true">${icon("arrow", 16)}</i><div class="to"><span>${esc(b.k)}</span><b>${esc(b.name)}</b><em>${b.price}</em></div></div>`;
 const shSteps = (rows) => `<ol class="sh-steps">${rows.map(([when, what, t = ""]) => `<li class="${t}"><b>${esc(when)}</b><span>${what}</span></li>`).join("")}</ol>`;
-const shMoney = (minor, ccy) => `<dl class="sh-money">${taxRate(ccy) ? `<div><dt>Plan price</dt><dd>${esc(money(minor, ccy))}</dd></div><div><dt>GST ${taxRate(ccy) * 100}%</dt><dd>${esc(moneyExact(charged(minor, ccy) - minor, ccy))}</dd></div>` : ""}<div class="t"><dt>Every month</dt><dd>${esc(moneyExact(charged(minor, ccy), ccy))}</dd></div></dl>`;
+const shMoney = (minor, ccy, per = "month") => `<dl class="sh-money">${taxRate(ccy) ? `<div><dt>Plan price</dt><dd>${esc(money(minor, ccy))}</dd></div><div><dt>GST ${taxRate(ccy) * 100}%</dt><dd>${esc(moneyExact(charged(minor, ccy) - minor, ccy))}</dd></div>` : ""}<div class="t"><dt>Every ${per}</dt><dd>${esc(moneyExact(charged(minor, ccy), ccy))}</dd></div></dl>`;
 const perMonth = (minor, ccy) => `${esc(moneyExact(charged(minor, ccy), ccy))}<small>/mo</small>`;
 const askList = (items) => `<ul style="margin:8px 0 0;padding-left:18px">${items.map((x) => `<li>${x}</li>`).join("")}</ul>`;
 async function removePaymentMethod() {
@@ -2623,7 +2541,7 @@ function openProfileMenu(btn) {
   m.innerHTML = `<div class="pf-h"><span class="pf-av lg ${st.tone}">${esc(initialsOf(who))}</span><div><b>${esc(who)}</b><span>${esc(APP.user.email)}</span>${APP.org ? `<em>${esc(APP.org.name)}</em>` : ""}</div></div>
     ${bill ? `<div class="pf-plan ${st.tone}"><div><span class="bl-kicker">Plan</span><b>${esc(b.plan.status === "new" ? "No plan yet" : b.plan.status === "trialing" ? "Free trial" : b.plan.name)}</b><span>${esc(st.detail || st.text)}</span></div>${st.cta ? `<button type="button" class="btn sm" data-pfgo="billing">${esc(st.cta)}</button>` : ""}</div>` : ""}
     <div class="pf-items">${bill ? `<button type="button" class="navlike" role="menuitem" data-pfgo="account">${icon("overview", 15)}Account &amp; usage</button>${PAY_HIDDEN ? "" : `<button type="button" class="navlike" role="menuitem" data-pfgo="billing">${icon("card", 15)}Plans &amp; payment</button>`}` : ""}
-    <button type="button" class="navlike" role="menuitem" data-pfgo="team">${icon("team", 15)}Team &amp; keys</button>${DATA.list.length ? `<button type="button" class="navlike" role="menuitem" data-pfgo="brands">${icon("list", 15)}Your brands</button>` : ""}</div>
+    <button type="button" class="navlike" role="menuitem" data-pfgo="team">${icon("team", 15)}Team &amp; keys</button>${APP.cfg.console ? `<a class="navlike" role="menuitem" href="/console/">${icon("overview", 15)}Command Deck</a>` : ""}${DATA.list.length ?`<button type="button" class="navlike" role="menuitem" data-pfgo="brands">${icon("list", 15)}Your brands</button>` : ""}</div>
     <button type="button" class="navlike pf-out" role="menuitem" data-pfgo="out">${icon("out", 15)}Sign out</button>`;
   btn.closest(".pf").append(m); btn.setAttribute("aria-expanded", "true"); m.querySelector("button")?.focus();
 }
@@ -2642,16 +2560,18 @@ const loadRazorpay = () => (window.Razorpay ? Promise.resolve() : new Promise((o
 // Subscribing, connecting a card, or approving a new mandate opens a full-page checkout first: the plan, the money with GST, what
 // happens today and on which date, and how they can pay. "Continue to secure payment" then hands over to Razorpay.
 function buyPlan(plan, { switching = false } = {}) {
-  const b = BILL.b, p = b.plan, x = BILL.cat.plans.find((y) => y.code === plan), ccy = p.currency || BILL.ccy, price = x.prices[ccy];
+  const b = BILL.b, p = b.plan, x = BILL.cat.plans.find((y) => y.code === plan), ccy = p.currency || BILL.ccy;
+  const cycle = p.status === "active" && p.currency ? p.cycle || "monthly" : BILL.cycle === "annual" && x.annualPrices?.[ccy] != null ? "annual" : "monthly", yearly = cycle === "annual";
+  const price = yearly ? x.annualPrices[ccy] : x.prices[ccy];
   const later = (t) => t && new Date(t).getTime() - Date.now() > 30 * 60e3;
   const starts = p.status === "trialing" && later(b.trialEndsAt) && !trialDone(b) ? "trial" : p.status === "active" && (p.cancelAtPeriodEnd || switching) && later(b.periodEnd) ? "resume" : "now";
-  const on = starts === "trial" ? b.trialEndsAt : starts === "resume" ? b.periodEnd : null, upi = ccy === "INR" && charged(price, ccy) <= (BILL.cat.upiMax || 0);
+  const on = starts === "trial" ? b.trialEndsAt : starts === "resume" ? b.periodEnd : null, upi = !yearly && ccy === "INR" && charged(price, ccy) <= (BILL.cat.upiMax || 0);
   const title = starts === "trial" ? "Connect a payment method" : switching ? `Switch to ${x.name}` : starts === "resume" ? (plan === p.code ? "Keep your subscription" : `Continue on ${x.name}`) : `Subscribe to ${x.name}`;
   const lede = starts === "trial" ? `Your trial stays free until ${esc(fmtDay(on))}. Connect a payment method now so ${esc(x.name)} carries on without a break.`
     : starts === "resume" ? `You've already paid until ${esc(fmtDay(on))}. Nothing more is charged until then.` : `${esc(x.name)} starts as soon as the payment goes through.`;
   const amt = `<b>${esc(moneyExact(charged(price, ccy), ccy))}</b>`;
-  const steps = starts === "now" ? [["Today", `Razorpay charges ${amt} and ${esc(x.name)} starts.`, "go"], ["Every month", `${amt} again, until you cancel. Cancel any time.`]]
-    : [["Today", `A refundable ₹5 check confirms your payment method. ${starts === "trial" ? "Your trial carries on." : `You stay on ${esc(p.name)}.`}`, "go"], [fmtDay(on), `First charge of ${amt}, then monthly. Cancel before then and you pay nothing.`]];
+  const steps = starts === "now" ? [["Today", `Razorpay charges ${amt} and ${esc(x.name)} starts.`, "go"], [yearly ? "Every year" : "Every month", `${amt} again, until you cancel. Cancel any time.`]]
+    : [["Today", `A refundable ₹5 check confirms your payment method. ${starts === "trial" ? "Your trial carries on." : `You stay on ${esc(p.name)}.`}`, "go"], [fmtDay(on), `First charge of ${amt}, then ${yearly ? "yearly" : "monthly"}. Cancel before then and you pay nothing.`]];
   const methods = [["UPI Autopay", upi], ["Cards", true], ["Net banking", ccy === "INR"]];
   const m = document.createElement("div"); m.className = "ck light"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true"); m.setAttribute("aria-label", title);
   m.innerHTML = `<aside class="ck-side"><div class="ck-brand">${$(".ob-logo svg")?.outerHTML || ""}<span>Perfstaq</span></div>
@@ -2660,9 +2580,9 @@ function buyPlan(plan, { switching = false } = {}) {
       <p class="ck-safe">${icon("lock", 14)} Billed by Perfstaq. Payments are handled by Razorpay; we never see your card or bank details.</p></aside>
     <main class="ck-main"><button type="button" class="pillbtn ck-back" data-ckback>${icon("arrow", 14)} Back to plans</button>
       <div class="ck-body"><span class="bl-kicker">Checkout</span><h1>${esc(title)}</h1><p class="ck-lede">${lede}</p>
-      ${shSteps(steps)}${shMoney(price, ccy)}
+      ${shSteps(steps)}${shMoney(price, ccy, yearly ? "year" : "month")}
       <div class="ck-pay"><span>Pay with</span>${methods.map(([n, ok]) => `<em class="${ok ? "" : "off"}">${esc(n)}</em>`).join("")}</div>
-      ${!upi && ccy === "INR" ? `<p class="ck-note">UPI Autopay covers payments up to ₹15,000 a month, so ${esc(x.name)} is paid by card or net banking.</p>` : ""}
+      ${!upi && ccy === "INR" ? `<p class="ck-note">${yearly ? `A yearly payment of ${esc(moneyExact(charged(price, ccy), ccy))} is above UPI Autopay's limit, so it` : `UPI Autopay covers payments up to ₹15,000 a month, so ${esc(x.name)}`} is paid by card or net banking.</p>` : ""}
       <button type="button" class="btn ck-go" data-ckgo>${icon("lock", 15)} Continue to secure payment</button>
       <p class="ck-fine">You'll confirm on Razorpay's secure page and come straight back here.</p></div></main>`;
   const close = () => { document.removeEventListener("keydown", key, true); m.remove(); document.body.classList.remove("sheet-open"); };
@@ -2671,18 +2591,19 @@ function buyPlan(plan, { switching = false } = {}) {
     if (e.target.closest("[data-ckback]")) return close();
     const go = e.target.closest("[data-ckgo]"); if (!go || go.getAttribute("aria-disabled")) return;
     go.setAttribute("aria-disabled", "true"); go.innerHTML = "Opening secure payment…";
-    try { await payWithRazorpay(plan, switching); }
+    try { await payWithRazorpay(plan, switching, cycle); }
     catch (err) { toast(esc(err.message), "bad"); }
     finally { go.removeAttribute("aria-disabled"); go.innerHTML = `${icon("lock", 15)} Continue to secure payment`; }
   });
   $(".toast")?.remove(); // the checkout says it all; no leftover message on top of it
   document.addEventListener("keydown", key, true); document.body.append(m); document.body.classList.add("sheet-open"); m.querySelector("[data-ckgo]").focus();
 }
-async function payWithRazorpay(plan, switching) {
-  const c = await api("POST", "/api/billing/checkout", { plan, currency: BILL.b?.plan?.currency || BILL.ccy || guessCcy(), switch: switching });
+async function payWithRazorpay(plan, switching, cycle = "monthly") {
+  const c = await api("POST", "/api/billing/checkout", { plan, currency: BILL.b?.plan?.currency || BILL.ccy || guessCcy(), cycle, switch: switching });
   await loadRazorpay();
   const starts = c.starts || (c.startsAt ? "trial" : "now"), trial = starts === "trial"; // trial / resume: nothing is charged until the covered time ends
-  const description = starts === "trial" ? `${c.name} · free until ${fmtDay(c.startsAt)}, then monthly` : starts === "resume" ? `${c.name} · from ${fmtDay(c.startsAt)}, monthly` : `${c.name} · monthly`;
+  const per = c.cycle === "annual" ? "yearly" : "monthly";
+  const description = starts === "trial" ? `${c.name} · free until ${fmtDay(c.startsAt)}, then ${per}` : starts === "resume" ? `${c.name} · from ${fmtDay(c.startsAt)}, ${per}` : `${c.name} · ${per}`;
   // UPI only up to the ₹15,000 recurring limit (the server decides): larger plans are offered card and net banking.
   const config = c.upi === false ? { display: { hide: [{ method: "upi" }], preferences: { show_default_blocks: true } } } : undefined;
   // After paying, Razorpay posts back to /api/billing/callback, which brings the person back here (?billing=…).
@@ -2753,19 +2674,6 @@ async function changePlan(plan) {
   if (up) return confirmPayment(plan);
   await openBilling(); toast(`Done. You'll move to <b>${esc(name)}</b> on ${esc(fmtDay(b.periodEnd))}.`, "ok");
 }
-async function operatorPlan(slug) {
-  const f = await confirmBox({ title: "Set this organisation's plan", ok: "Set plan", body: `<p class="muted sm">For invoiced contracts, extended trials and fixes. Recorded in the audit log.</p>
-    ${field("Plan", `<select class="inp" name="plan">${["enterprise", "agency", "growth", "starter", "trial", "legacy"].map((c) => `<option value="${c}">${esc(PLANS_LABEL(c))}</option>`).join("")}</select>`)}
-    ${field("Days of access from today (trial: its length; legacy: ignored)", `<input class="inp" name="days" type="number" min="1" value="365">`)}
-    ${field("Why?", `<input class="inp" name="reason" placeholder="invoiced contract">`)}` });
-  if (!f) return;
-  const plan = f.plan, days = plan === "legacy" ? 0 : Number(f.days), reason = f.reason;
-  if (plan !== "legacy" && !(days > 0)) return toast("Enter a number of days.");
-  if (reason.length < 3) return toast("A reason is needed.");
-  const end = new Date(Date.now() + days * 864e5).toISOString();
-  const body = plan === "legacy" ? { plan, status: "internal", reason } : plan === "trial" ? { plan, status: "trialing", trialEndsAt: end, reason } : { plan, status: "active", periodEndsAt: end, reason };
-  await api("PATCH", `/api/admin/orgs/${encodeURIComponent(slug)}/billing`, body); toast("Plan set."); return openTeam("#teamOps");
-}
 async function cancelTrial() {
   const b = BILL.b || (await api("GET", "/api/billing")), card = b.paymentMethod?.connected;
   if (!(await confirmBox({ title: "Cancel your free trial?", icon: "x", tone: "bad", ok: "Cancel free trial", cancel: "Keep my trial", danger: true, safe: true,
@@ -2796,9 +2704,7 @@ async function openTeam(focus) {
     TEAM.d = await api("GET", "/api/org");
     TEAM.bill = await api("GET", "/api/billing"); if (!BILL.cat) BILL.cat = await fetch("/api/billing/plans").then((r) => r.json());
     if (!BILL.ccy || !BILL.cat.currencies.includes(BILL.ccy)) BILL.ccy = BILL.cat.currencies.includes(guessCcy()) ? guessCcy() : BILL.cat.currencies[0];
-    if (APP.operator) { BILL.status = await api("GET", "/api/admin/billing/status"); BILL.admin = await api("GET", "/api/admin/plans"); BILL.cat = await fetch("/api/billing/plans").then((r) => r.json()); }
     TEAM.audit = canAdmin() ? (await api("GET", "/api/org/audit")).log : null;
-    TEAM.adminOrgs = APP.operator ? (await api("GET", "/api/admin/orgs")).orgs : null;
   } catch (e) { $("#teamBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
   paintTeam();
   if (focus) setTimeout(() => $(focus)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
@@ -2830,14 +2736,10 @@ function paintTeam() {
       <div class="grid2">${usageTbl(u.byEngine, "Engine or task")}${usageTbl(u.byPerson, "Person")}</div>${usageTbl(u.byBrand, "Brand")}
     </div></div>` : `<div class="card"><div class="card-h"><b>Budget</b></div><div class="pad set">${cap.cap ? meter : `<p class="muted sm">No monthly limit set.</p>`}</div></div>`;
   const audit = TEAM.audit ? `<div class="card"><div class="card-h"><b>Activity</b><span class="muted">Who changed what</span></div><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${TEAM.audit.slice(0, 60).map((a) => `<tr><td class="muted sm">${fmtWhen(a.at)}</td><td class="sm">${esc(a.who || "Perfstaq")}</td><td class="sm">${esc(auditWords(a))}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Nothing yet.</td></tr>`}</tbody></table></div>` : "";
-  const ops = TEAM.adminOrgs ? `<div class="card" id="teamOps"><div class="card-h"><b>All organisations</b><span class="muted">Only Perfstaq operators see this</span></div><div class="pad set">
-      <form class="team-inv" id="newOrgForm"><input class="inp" id="newOrgName" placeholder="Client name, e.g. AI Xccelerate" required><input class="inp" id="newOrgOwner" type="email" placeholder="Owner's email (they get an invite)"><button class="btn sm" type="submit">Create organisation</button></form>
-      <table class="tbl"><thead><tr><th>Organisation</th><th>Owner</th><th class="r">People</th><th class="r">Brands</th><th class="r">This month</th><th></th></tr></thead><tbody>${TEAM.adminOrgs.map((x) => `<tr><td><b>${esc(x.name)}</b><div class="muted sm">${esc(x.slug)}${x.allow_platform_keys ? " · platform keys" : ""} <button type="button" class="lnk sm" data-opplan="${esc(x.slug)}">Set plan…</button> · ${esc(x.plan_code)}/${esc(x.billing_status)}${x.billing_status === "trialing" ? " until " + esc(fmtDay(x.trial_ends_at)) : x.billing_status === "active" ? " to " + esc(fmtDay(x.current_period_end)) : ""}</div></td><td class="sm">${esc(x.owner || "invite pending")}</td><td class="r">${x.members}</td><td class="r">${x.brands}</td><td class="r">${usd(x.spent)}</td><td class="r">${x.slug === o.slug ? '<span class="tagx">Open</span>' : `<button type="button" class="lnk sm" data-org="${esc(x.slug)}">Open</button>`}</td></tr>`).join("")}</tbody></table>
-    </div></div>` : "";
   const verify = APP.user && !APP.user.verified ? `<div class="card note"><div class="pad">${icon("info", 16)} <b>Confirm your email.</b> <span class="muted">We sent a link to ${esc(APP.user.email)} when you signed up. Some things, like operator access, wait for it.</span><button type="button" class="btn ghost sm" data-sendverify>Send it again</button></div></div>` : "";
   $("#teamBody").innerHTML = verify + `<div class="team-head"><div><span class="lp-kicker">Organisation</span><h1>${esc(o.name)}</h1><p class="muted">You're ${o.operatorVisit ? "visiting as a Perfstaq operator (logged)" : `${{ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[o.role]}`} · ${d.members.length} ${d.members.length === 1 ? "person" : "people"}</p></div>${switcher}</div>
     <div class="card"><div class="card-h">${icon("team", 15)}<b>People</b><span class="muted">Owner and admins manage people and keys; editors do the work; viewers watch</span></div><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th class="hide-sm">Joined</th><th class="hide-sm">Last sign-in</th><th></th></tr></thead><tbody>${memberRows}</tbody></table></div>
-    ${billingLink()}${invites}${keys}${budget}${audit}${ops}${APP.operator ? billHealth() + billCatalogue() : ""}`;
+    ${billingLink()}${invites}${keys}${budget}${audit}`;
 }
 const AUDIT_WORDS = { "org.created": "created the organisation", "invite.sent": "invited", "invite.accepted": "joined", "invite.revoked": "cancelled the invite for", "role.changed": "changed the role of", "owner.transferred": "handed ownership to", "member.removed": "removed", "member.left": "left", "keys.changed": "changed AI keys:", "org.updated": "changed settings", "brand.deleted": "deleted the brand", "brand.moved_in": "moved in the brand", "brand.moved_out": "moved out the brand", "integration.saved": "connected", "integration.removed": "disconnected", "check.queued": "queued a check of", "check.skipped": "skipped a scheduled check of", "operator.visit": "opened the organisation as an operator" };
 function auditWords(a) {
@@ -2857,8 +2759,6 @@ $("#team").addEventListener("click", async (e) => {
   try {
     const org = t.closest("[data-org]"); if (org) return switchOrg(org.dataset.org);
     if (await billAction(t)) return;
-    if (await catalogueClick(t)) return;
-    const op = t.closest("[data-opplan]"); if (op) return await operatorPlan(op.dataset.opplan);
     if (t.closest("[data-sendverify]")) { const r = await api("POST", "/api/auth/verify/send"); return toast(r.already ? "Your email is already confirmed." : r.emailed ? `Sent to ${esc(APP.user.email)}.` : "Email isn't set up on this server yet, so the link is in the server log."); }
     const cp = t.closest("[data-copy]"); if (cp) { await navigator.clipboard.writeText(cp.dataset.copy).catch(() => {}); return toast("Link copied."); }
     const rv = t.closest("[data-revoke]"); if (rv) { TEAM.d.invites = (await api("DELETE", `/api/org/invitations/${rv.dataset.revoke}`)).invites; return paintTeam(); }
@@ -2896,11 +2796,6 @@ $("#team").addEventListener("submit", async (e) => {
       TEAM.lastLink = { link: r.invite.link, email: r.invite.email, emailed: r.invite.emailed }; TEAM.d.invites = r.invites;
       TEAM.audit = (await api("GET", "/api/org/audit")).log; paintTeam();
       return toast(r.invite.emailed ? `Invite emailed to ${esc(r.invite.email)}.` : "Invite created. Copy the link and send it.");
-    }
-    if (e.target.id === "newOrgForm") {
-      const r = await api("POST", "/api/orgs", { name: $("#newOrgName").value, ownerEmail: $("#newOrgOwner").value || undefined });
-      TEAM.lastLink = r.invite ? { link: r.invite.link, email: r.invite.email, emailed: r.invite.emailed } : null;
-      await reloadConfig(); await DATA.refresh(); toast(`${esc(r.created.name)} created. You're in it now.`); return openTeam(r.invite ? "#teamInvite" : null);
     }
   } catch (err) { toast(esc(err.message)); }
 });
@@ -3008,6 +2903,26 @@ async function maybeFirstRun() {
   if (hb && DATA.server()) { history.replaceState(null, "", location.pathname); if (await openBrand(decodeURIComponent(hb[1]), { quiet: true })) return; }
   if (DATA.server() && DATA.list.length) return home();
   renderRecent(); $("#startUrl").focus();
+})();
+/* Presence: tells the server which page of the app this person is on (for the operators' Live view and feature analytics).
+   Only a page name from our own navigation and the brand slug are sent, every 45 s while the tab is visible and at once on a change. */
+(() => {
+  const SECTIONS = ["mission", "onboard", "ready", "reportWrap", "team", "billing", "account", "auth", "landing"];
+  const current = () => {
+    const sec = SECTIONS.find((id) => { const el = document.getElementById(id); return el && !el.hidden; }) || "landing";
+    const page = sec === "reportWrap" ? String(DASH.page || "overview") : sec === "mission" ? "running-check" : sec === "onboard" ? "setup" : sec;
+    return { page: page.toLowerCase().replace(/[^a-z0-9_-]/g, "-").slice(0, 30), brand: ["reportWrap", "mission"].includes(sec) ? APP.M?.slug || null : null };
+  };
+  let last = "", sentAt = 0;
+  const beat = () => {
+    if (!APP.user || !DATA.server() || document.visibilityState !== "visible") return;
+    const now = current(), key = now.page + "|" + now.brand;
+    if (key === last && Date.now() - sentAt < 45000) return;
+    last = key; sentAt = Date.now();
+    fetch("/api/presence", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(now), credentials: "same-origin", keepalive: true }).catch(() => {});
+  };
+  setInterval(beat, 3000);
+  document.addEventListener("visibilitychange", beat);
 })();
 /* Instant hover hints. Any element with a title (or data-tip) shows its text in a small bubble as soon as the
    pointer rests on it. The title moves to data-tip on first hover so the browser's own tooltip doesn't double up. */

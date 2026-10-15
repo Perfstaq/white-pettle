@@ -14,9 +14,9 @@ EMAIL = f"e2e{int(time.time()*1000)}{os.getpid()}@example.com"
 def sse(events):
     return "".join(f"event: {e}\ndata: {json.dumps(d)}\n\n" for e, d in events)
 
-RIVALS = ["Deloitte", "Accenture", "IBM", "McKinsey", "BCG"]
+RIVALS = ["Deloitte", "Accenture", "IBM", "McKinsey", "BCG"]  # answers name all five; the profile starts with two and the test adds PwC: three, the free trial's competitor limit
 PROFILE = {"name": "Aixccelerate", "site": "https://aixccelerate.com", "category": "ai implementation partner", "offer": "Enterprise AI execution partner that helps organisations design, prove, deploy and scale role-based AI systems.",
-           "audience": "CIOs and heads of digital", "market": "United States", "competitors": RIVALS, "facts": ["Founded in 2021", "Offices in Austin and Bangalore", "30+ enterprise deployments"],
+           "audience": "CIOs and heads of digital", "market": "United States", "competitors": RIVALS[:2], "facts": ["Founded in 2021", "Offices in Austin and Bangalore", "30+ enterprise deployments"],
            "identity": ["Agnostic by design", "Outcomes-focused", "Proof before commitment"], "products": ["AI strategy", "Forward deployment", "AI readiness assessment", "Fractional AI leadership"],
            "personas": ["Chief Information Officer", "Chief AI Officer", "VP of Digital Transformation"]}
 AUDIT = {"origin": "https://aixccelerate.com", "bots": {"GPTBot": True, "PerplexityBot": True, "ClaudeBot": False}, "llms": False, "sitemap": 42, "avg": 58, "homeSchema": [], "orgSchema": False, "faqSchema": False,
@@ -108,10 +108,14 @@ with sync_playwright() as p:
     pg.click(".ob-sheet-foot [data-act=launch]")
     time.sleep(0.6); shot("09_running")
     time.sleep(2.5); shot("09b_running")
-    pg.click("[data-run=watch]"); time.sleep(4); shot("09c_mission_console")
+    # The run screen re-renders as answers arrive (and a toast can cover it), so a pointer click can miss: click it in the page.
+    pg.wait_for_selector("[data-run=watch]"); pg.evaluate("document.querySelector('[data-run=watch]').click()"); time.sleep(4); shot("09c_mission_console")
     back = pg.query_selector("#mission [data-act=stage], #missionBack, #mission .back")
     print("mission visible:", pg.evaluate("!document.querySelector('#mission').hidden"))
-    pg.wait_for_selector("#ready[data-mode=done]:not([hidden])", timeout=120000); time.sleep(1.2); shot("10_ready")
+    # When the run ends (Stop goes away) the app moves on by itself only while the live feed is followed; otherwise "See results" does.
+    pg.wait_for_function("document.querySelector('#ready[data-mode=done]:not([hidden])') || document.querySelector('#stopBtn').hidden", timeout=120000)
+    if pg.is_visible("#mission"): pg.click("#toReport")
+    pg.wait_for_selector("#ready[data-mode=done]:not([hidden])", timeout=15000); time.sleep(1.2); shot("10_ready")
     pg.click("#readyGo"); time.sleep(1.2); shot("11_overview")
     pg.screenshot(path=str(OUT / "11b_overview_full.png"), full_page=True)
     if W < 800:

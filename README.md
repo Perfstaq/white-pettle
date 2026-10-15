@@ -40,7 +40,7 @@ With a database, White Petal has accounts (email + password, or Sign in with Goo
 | Editor | Run and queue checks, edit prompts and competitors, write drafts. Can't connect tools or delete brands |
 | Viewer | See every dashboard and report, and ask the agent about a run. Changes nothing |
 
-- **Invites.** An admin invites by email from **Team & keys**. The link works for 7 days, once, and is emailed through Resend. Without `RESEND_API_KEY` the admin gets the link to copy instead. People who accept an invite never need `ACCESS_CODE`.
+- **Invites.** An admin invites by email from **Team & keys**. The link works for 7 days, once, and is emailed through Resend. Without `RESEND_API_KEY` the admin gets the link to copy instead.
 - **Platform operators** (`PLATFORM_OPERATORS`, comma-separated emails) create organisations for clients ("AI Xccelerate", owner `rahul@…`): the operator becomes an admin and the owner gets an invite. Operators can open any organisation; each visit is written to its activity log.
 - **Each organisation's own AI keys.** Checks run on the keys an admin saves in Team & keys (encrypted at rest, shown only as `••••last4`). Client organisations never fall back to the platform's keys; the personal organisations made from accounts that existed before organisations did, and new self-serve sign-ups (unless `PLATFORM_KEYS_FOR_SIGNUPS=0`), may.
 - **Budget and usage.** Every AI call is metered at estimated list prices, by engine, person and brand. With a monthly budget set, members see a warning at 80%, and at 100% new checks and scheduled runs stop until the budget is raised or the month ends.
@@ -84,7 +84,7 @@ After that, every push to `main` runs the tests and deploys (`.github/workflows/
 | `DATAFORSEO_LOGIN` + `DATAFORSEO_PASSWORD`, or `SERPAPI_KEY` | optional | Google AI Overviews and AI Mode as engines, and live Google rankings |
 | `GOOGLE_OAUTH_CLIENT_ID` + `_SECRET` | free, optional | Search Console + GA4, and Sign in with Google. Redirect URIs `https://<your host>/api/oauth/google/callback` and `https://<your host>/api/auth/google/callback` |
 | `GOOGLE_API_KEY` | free, optional | Knowledge Graph lookups for the entity check |
-| `ACCESS_CODE` | optional | Code required for sign-ups without an invite link |
+| `ACCESS_CODE` | optional | Without a database only: the code the AI endpoints require, so a public demo can't spend your keys |
 | `PLATFORM_OPERATORS` | optional (Terraform `platform_operators`) | Emails of the people who run White Petal for clients |
 | `RESEND_API_KEY`, `EMAIL_FROM` | optional | Invite and password-reset emails (Terraform `email_from`) |
 

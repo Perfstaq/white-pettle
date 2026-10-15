@@ -216,7 +216,10 @@ test("organisations: invites, roles, own keys, budget, scheduler, audit", { skip
   // AI routes check who is asking before reading the body, and cap its size.
   const big = "x".repeat(3 * 1024 * 1024);
   assert.equal((await call("nobody2", "POST", "/api/ask", { pad: big })).status, 401);
-  assert.equal((await call("m1", "POST", "/api/write", { kind: "chat", data: { question: big } })).status, 413);
+  // The server stops reading at the limit and closes the connection, so a client still uploading may see the socket close (EPIPE /
+  // ECONNRESET) before it reads the 413. Both are the refusal.
+  const tooBig = await call("m1", "POST", "/api/write", { kind: "chat", data: { question: big } }).then((r) => r.status, (e) => e.cause?.code);
+  assert.ok([413, "EPIPE", "ECONNRESET"].includes(tooBig), `refused, got ${tooBig}`);
 });
 
 test("passwords: forgot and reset by email", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
@@ -635,13 +638,13 @@ test("razorpay: change plan, downgrade blockers, withdraw, cancel, resubscribe, 
   delete process.env.BILLING_ENABLED; setClient(null);
 });
 
-test("self-serve: with billing open, anyone signs up, chooses a plan, and that starts their one 7-day trial; otherwise the invite code still applies", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+test("self-serve: anyone signs up with no invite code; with billing open, choosing a plan starts their one 7-day trial", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
   const ip = { "x-forwarded-for": "10.7.7.7" }; // sign-ups are rate limited per address
+  // There is no sign-up code: ACCESS_CODE only guards the AI endpoints when there is no database.
   process.env.ACCESS_CODE = "letmein"; delete process.env.BILLING_ENABLED;
-  assert.equal((await call("st", "POST", "/api/auth/signup", { email: "trial@x.co", password: "longenough1" }, ip)).status, 403);
-  assert.equal((await call("x", "GET", "/api/config")).data.invite, true);
+  assert.equal((await call("so", "POST", "/api/auth/signup", { email: "open-signup@x.co", password: "longenough1" }, ip)).status, 200);
+  assert.ok(!("invite" in (await call("x", "GET", "/api/config")).data));
   process.env.BILLING_ENABLED = "1";
-  assert.equal((await call("x", "GET", "/api/config")).data.invite, false);
   const s = await call("st", "POST", "/api/auth/signup", { email: "trial@x.co", password: "longenough1" }, ip); assert.equal(s.status, 200);
   // Signing up starts the 7-day free trial straight away, with no plan picked yet.
   let me = (await call("st", "GET", "/api/me")).data;
@@ -860,16 +863,16 @@ test("google sign-in: start, callback, linking, takeover protection, trial and t
 
     // Offered only when the server has the credentials; the start redirect carries our client id, redirect URI, scopes and a fresh state.
     assert.equal((await (await fetch(base + "/api/config")).json()).googleLogin, true);
-    process.env.ACCESS_CODE = "letmein"; delete process.env.BILLING_ENABLED; // invite-only, billing off
-    const s1 = await google(good());
+    process.env.ACCESS_CODE = "letmein"; delete process.env.BILLING_ENABLED; // billing off; the code plays no part in sign-up
+    const s1 = await google(good({ sub: "g-099", email: "goog-open@x.co" }));
     assert.equal(s1.start.status, 302); assert.equal(s1.to.origin + s1.to.pathname, "https://accounts.google.com/o/oauth2/v2/auth");
     assert.equal(s1.to.searchParams.get("client_id"), "cid.apps.googleusercontent.com"); assert.equal(s1.to.searchParams.get("redirect_uri"), `${base}/api/auth/google/callback`);
     assert.equal(s1.to.searchParams.get("scope"), "openid email profile"); assert.equal(s1.to.searchParams.get("response_type"), "code"); assert.ok(s1.to.searchParams.get("state").length >= 16);
     assert.match(s1.start.headers.get("set-cookie"), /HttpOnly/);
 
-    // With an access code set and billing off, a stranger with no invite is turned away, and no account is created.
-    assert.match(s1.loc, /#auth-error=.*invite/i); assert.equal(s1.session, undefined);
-    assert.equal((await sql(`select count(*)::int as n from users where email = 'goog@x.co'`))[0].n, 0);
+    // No invite code: a stranger with no invite gets a verified account straight away.
+    assert.equal(s1.loc, "/"); assert.ok(s1.session);
+    assert.equal((await sql(`select count(*)::int as n from users where email = 'goog-open@x.co' and email_verified_at is not null`))[0].n, 1);
 
     // Billing open (self-serve): the same person signs up and gets a verified account and a personal organisation on the free trial.
     process.env.BILLING_ENABLED = "1";
@@ -1033,10 +1036,10 @@ test("catalogue: the database seed matches the code defaults; operators edit it 
 
   // Razorpay ids are entered here, not in Terraform; a replaced id is retired so existing subscribers still resolve.
   r = await edit("growth", { prices: { INR: { amount: 999900, razorpayPlanId: "plan_GrowthINR001" }, USD: { amount: 9900, razorpayPlanId: "plan_GrowthUSD001" } } });
-  assert.equal(r.status, 200); assert.equal(planIdFor("growth", "INR", {}), "plan_GrowthINR001"); assert.deepEqual(planOf("plan_GrowthUSD001", {}), { plan: "growth", currency: "USD" });
+  assert.equal(r.status, 200); assert.equal(planIdFor("growth", "INR", {}), "plan_GrowthINR001"); assert.deepEqual(planOf("plan_GrowthUSD001", {}), { plan: "growth", currency: "USD", cycle: "monthly" });
   assert.equal((await call("x", "GET", "/api/billing/plans")).data.available.growth.USD, true);
   r = await edit("growth", { prices: { INR: { amount: 1099900, razorpayPlanId: "plan_GrowthINR002" }, USD: { amount: 9900, razorpayPlanId: "plan_GrowthUSD001" } } });
-  assert.equal(planIdFor("growth", "INR", {}), "plan_GrowthINR002"); assert.deepEqual(planOf("plan_GrowthINR001", {}), { plan: "growth", currency: "INR" }, "the retired id still maps to Growth");
+  assert.equal(planIdFor("growth", "INR", {}), "plan_GrowthINR002"); assert.deepEqual(planOf("plan_GrowthINR001", {}), { plan: "growth", currency: "INR", cycle: "monthly" }, "the retired id still maps to Growth");
   assert.deepEqual((await sql(`select retired_plan_ids from plan_prices where plan_code = 'growth' and currency = 'INR'`))[0].retired_plan_ids, ["plan_GrowthINR001"]);
   assert.ok(!JSON.stringify((await call("x", "GET", "/api/billing/plans")).data).includes("plan_Growth"), "the public catalogue never shows provider ids");
 
@@ -1549,4 +1552,526 @@ test("queue a check: refused once the trial's check is used; runs even with auto
   process.env.PUBLIC_ORIGIN = "http://localhost:3055"; assert.match(N.preview("trial_ended").link, /^https:\/\/os\.perfstaq\.com\/#plans$/);
   process.env.APP_URL = "https://app.perfstaq.com"; assert.match(N.preview("trial_ended").link, /^https:\/\/app\.perfstaq\.com\//);
   delete process.env.APP_URL; delete process.env.PUBLIC_ORIGIN; delete process.env.BILLING_ENABLED;
+});
+
+test("console: operator-only guard; env operators are founders, table operators get their role, inactive ones get 404", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const ip = { "x-forwarded-for": "10.9.9.9" }; // sign-ups are rate limited per address
+  for (const [who, email] of [["cs", "console-user@x.co"], ["cb", "console-boss@x.co"]]) assert.equal((await call(who, "POST", "/api/auth/signup", { email, password: "longenough1" }, ip)).status, 200);
+  assert.equal((await call("nobody3", "GET", "/api/admin/console/me")).status, 401);
+  assert.equal((await call("cs", "GET", "/api/admin/console/me")).status, 404, "a customer can't see it exists");
+  await sql(`update users set email_verified_at = now() where email in ('console-user@x.co', 'console-boss@x.co')`);
+  assert.equal((await call("cs", "GET", "/api/admin/console/me")).status, 404, "verified but not an operator");
+  await sql(`insert into operators (user_id, role) select id, 'support' from users where email = 'console-user@x.co'`);
+  const me = (await call("cs", "GET", "/api/admin/console/me")).data;
+  assert.equal(me.role, "support"); assert.equal(me.email, "console-user@x.co"); assert.ok(Array.isArray(me.groups));
+  await sql(`update operators set active = false`);
+  assert.equal((await call("cs", "GET", "/api/admin/console/me")).status, 404, "deactivated");
+  process.env.PLATFORM_OPERATORS += ",console-boss@x.co";
+  assert.equal((await call("cb", "GET", "/api/admin/console/me")).data.role, "founder");
+});
+
+test("console: pages answer, roles narrow them, a subscription link stays pending until Razorpay's webhook confirms it", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const crypto = await import("node:crypto");
+  const { setClient } = await import("../../server/razorpay.mjs");
+  const SECRET = "whsec_console";
+  const created = [], cancelled = [];
+  setClient({ createSubscription: async (a) => { created.push(a); return { id: "sub_link_" + created.length, short_url: "https://rzp.io/i/abc" + created.length }; },
+    cancelSubscription: async (id) => { cancelled.push(id); return {}; } });
+  Object.assign(process.env, { RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: SECRET, RAZORPAY_PLAN_GROWTH_INR: "plan_G_INR" });
+  // cb is a founder (PLATFORM_OPERATORS) from the guard test; cs becomes support.
+  await sql(`update operators set active = true, role = 'support'`);
+  for (const p of ["overview", "customers", "platform"]) assert.equal((await call("cb", "GET", "/api/admin/console/" + p)).status, 200, p);
+  assert.equal((await call("cs", "GET", "/api/admin/console/revenue")).status, 403, "support can't see revenue");
+  assert.equal((await call("cs", "GET", "/api/admin/console/subscriptions")).status, 200);
+  assert.equal((await call("cc", "POST", "/api/auth/signup", { email: "console-customer@x.co", password: "longenough1" }, { "x-forwarded-for": "10.9.9.10" })).status, 200);
+  assert.equal((await call("cc", "GET", "/api/admin/console/overview")).status, 404, "customers never see it");
+
+  const slug = (await call("cs", "GET", "/api/me")).data.org.slug, org = (await call("cs", "GET", "/api/me")).data.org.id;
+  await sql(`update organizations set plan_code = 'legacy', billing_status = 'internal', razorpay_subscription_id = null, razorpay_checkout_subscription_id = null where id = $1`, [org]);
+  const send = (who, b) => call(who, "POST", `/api/admin/console/customers/${slug}/subscription`, b);
+  assert.equal((await send("cs", { plan: "growth", currency: "INR", reason: "agreed" })).status, 403, "support can't create subscriptions");
+  assert.equal((await send("cb", { plan: "growth", currency: "INR" })).status, 400, "a reason is required");
+  assert.equal((await send("cb", { plan: "growth", currency: "EUR", reason: "agreed" })).status, 400, "no Razorpay plan for that price");
+  let r = await send("cb", { plan: "growth", currency: "INR", reason: "agreed on call" });
+  assert.equal(r.status, 200); assert.equal(r.data.url, "https://rzp.io/i/abc1"); assert.equal(r.data.sentTo, "console-user@x.co");
+  assert.equal(created[0].planId, "plan_G_INR"); assert.equal(created[0].notifyEmail, "console-user@x.co"); assert.equal(created[0].orgId, org);
+  let o = (await sql(`select * from organizations where id = $1`, [org]))[0];
+  assert.equal(o.razorpay_checkout_subscription_id, "sub_link_1"); assert.equal(o.plan_code, "legacy", "nothing changes before Razorpay confirms");
+  // A second link replaces the first unpaid one.
+  r = await send("cb", { plan: "growth", currency: "INR", reason: "resend" });
+  assert.deepEqual(cancelled, ["sub_link_1"]);
+  const log = (await call("cs", "GET", "/api/org/audit")).data.log.filter((x) => x.action === "billing.link_sent");
+  assert.equal(log.length, 2); assert.equal(log[0].detail.reason, "resend");
+  // Razorpay's signed activation adopts the pending subscription.
+  const raw = JSON.stringify({ event: "subscription.activated", created_at: Math.floor(Date.now() / 1000) + 5, payload: { subscription: { entity: { id: "sub_link_2", plan_id: "plan_G_INR", status: "active", current_start: Math.floor(Date.now() / 1000), current_end: Math.floor(Date.now() / 1000) + 30 * 86400 } } } });
+  const h = await fetch(base + "/api/webhooks/razorpay", { method: "POST", headers: { "x-razorpay-event-id": "evt_console_1", "x-razorpay-signature": crypto.createHmac("sha256", SECRET).update(raw).digest("hex") }, body: raw });
+  assert.equal(h.status, 200);
+  o = (await sql(`select * from organizations where id = $1`, [org]))[0];
+  assert.equal(o.razorpay_subscription_id, "sub_link_2"); assert.equal(o.plan_code, "growth"); assert.equal(o.billing_status, "active");
+  assert.equal((await send("cb", { plan: "growth", currency: "INR", reason: "again" })).status, 409, "already paying");
+  // The console now counts it.
+  const ov = (await call("cb", "GET", "/api/admin/console/overview")).data;
+  assert.ok(ov.kpis.mrrInr >= 999900); assert.ok(ov.kpis.paying >= 1);
+  // Notes and the attention feed.
+  assert.equal((await call("cs", "POST", `/api/admin/console/customers/${slug}/notes`, { body: "Called, happy" })).status, 200);
+  assert.equal((await call("cb", "GET", `/api/admin/console/customers/${slug}`)).data.notes[0].body, "Called, happy");
+  assert.equal((await call("cs", "POST", "/api/admin/console/attention", { key: `payment_failed:${slug}`, days: 2 })).status, 200);
+  assert.equal((await call("cs", "POST", "/api/admin/console/attention", { key: "x; drop table", days: 2 })).status, 400);
+  setClient(null);
+  for (const k of ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "RAZORPAY_PLAN_GROWTH_INR"]) delete process.env[k];
+});
+
+test("console billing: finance runs the catalogue and assigns plans; change plan, cancel, invoices and refunds go through Razorpay with a reason", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const { setClient } = await import("../../server/razorpay.mjs");
+  const calls = [];
+  const invoices = { items: [{ id: "inv_1", payment_id: "pay_ok", amount: 1179882, amount_paid: 1179882, currency: "INR", status: "paid", issued_at: 1790000000, short_url: "https://rzp.io/i/inv1" }] };
+  setClient({ fetchSubscription: async () => ({ status: "active", payment_method: "card" }), updateSubscription: async (id, a) => { calls.push(["update", id, a]); return {}; },
+    cancelScheduledChanges: async () => ({}), cancelSubscription: async (id, a) => { calls.push(["cancel", id, a]); return {}; },
+    listInvoices: async (sid) => { calls.push(["invoices", sid]); return invoices; }, refundPayment: async (id, a) => { calls.push(["refund", id, a]); return { id: "rfnd_1", amount: a.amount ?? 1179882, status: "processed" }; } });
+  Object.assign(process.env, { RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: "wh", RAZORPAY_PLAN_GROWTH_INR: "plan_G_INR", RAZORPAY_PLAN_AGENCY_INR: "plan_A_INR", RAZORPAY_PLAN_STARTER_INR: "plan_S_INR", BILLING_ENABLED: "1" });
+  // cs is a table operator: support can't touch plans, finance can.
+  await sql(`update operators set role = 'support', active = true`);
+  assert.equal((await call("cs", "GET", "/api/admin/plans")).status, 404);
+  await sql(`update operators set role = 'finance'`);
+  assert.equal((await call("cs", "GET", "/api/admin/plans")).status, 200);
+  // Create a custom plan and assign it (no card) with a custom seat limit.
+  const plan = { name: "Acme Custom", description: "", public: false, selfServe: false, active: true, aiCapUsd: 40, limits: { brands: 8, seats: 25, questions: 150 }, engines: ["chatgpt"], schedules: ["off", "weekly"], integrations: [], prices: { INR: { amount: 3000000 } } };
+  assert.equal((await call("cs", "PUT", "/api/admin/plans/acme-custom", plan)).status, 200);
+  const slug = (await call("cc", "GET", "/api/me")).data.org.slug, org = (await call("cc", "GET", "/api/me")).data.org.id;
+  const until = new Date(Date.now() + 30 * 864e5).toISOString();
+  assert.equal((await call("cs", "PATCH", `/api/admin/orgs/${slug}/billing`, { plan: "acme-custom", status: "active", periodEndsAt: until, reason: "annual contract", overrides: { values: { seats: 30 }, expiresAt: until } })).status, 200);
+  const me = (await call("cc", "GET", "/api/me")).data.billing;
+  assert.equal(me.plan.code, "acme-custom"); assert.equal(me.limits.seats, 30); assert.equal(me.limits.brands, 8);
+  const cust = (await call("cs", "GET", "/api/admin/console/customers")).data.orgs.find((o) => o.slug === slug);
+  assert.equal(cust.mrr, 3000000); assert.equal(cust.contracted, true);
+
+  // Now the organisation pays by Razorpay on Growth: change, cancel, invoices, refund.
+  await sql(`update organizations set plan_code = 'growth', billing_status = 'active', billing_currency = 'INR', razorpay_subscription_id = 'sub_cc', cancel_at_period_end = false, pending_plan_code = null,
+             current_period_end = now() + interval '20 days', entitlement_overrides = '{}' where id = $1`, [org]);
+  const post = (path, b) => call("cs", "POST", `/api/admin/console/customers/${slug}/${path}`, b);
+  assert.equal((await post("change-plan", { plan: "agency" })).status, 400, "reason required");
+  let r = await post("change-plan", { plan: "agency", reason: "needs 5 brands" });
+  assert.equal(r.status, 200); assert.equal(r.data.upgrade, true); assert.deepEqual(calls.at(-1), ["update", "sub_cc", { planId: "plan_A_INR", at: "now" }]);
+  r = await post("change-plan", { plan: "starter", reason: "budget" });
+  assert.equal(r.data.pendingPlan, "starter"); assert.equal(calls.at(-1)[2].at, "cycle_end", "downgrades wait for the period end");
+  assert.equal((await post("cancel", { now: true, reason: "fraud", confirm: "wrong" })).status, 400, "ending now needs the slug typed");
+  r = await post("cancel", { reason: "moving to annual invoice" });
+  assert.equal(r.status, 200); assert.deepEqual(calls.at(-1), ["cancel", "sub_cc", { atCycleEnd: true }]);
+  assert.equal((await sql(`select cancel_at_period_end from organizations where id = $1`, [org]))[0].cancel_at_period_end, true);
+  const inv = (await call("cs", "GET", `/api/admin/console/customers/${slug}/invoices`)).data.invoices;
+  assert.equal(inv[0].paymentId, "pay_ok"); assert.equal(inv[0].url, "https://rzp.io/i/inv1");
+  assert.equal((await post("refund", { paymentId: "pay_someone_else", confirm: slug, reason: "dup" })).status, 400, "only this subscription's payments");
+  assert.equal((await post("refund", { paymentId: "pay_ok", confirm: slug, reason: "dup", amount: 99999999 })).status, 400, "not more than charged");
+  assert.equal((await post("refund", { paymentId: "pay_ok", reason: "dup" })).status, 400, "confirmation required");
+  r = await post("refund", { paymentId: "pay_ok", confirm: slug, reason: "charged twice", amount: 100000 });
+  assert.equal(r.status, 200); assert.equal(r.data.refundId, "rfnd_1"); assert.equal(calls.at(-1)[2].amount, 100000);
+  const log = (await call("cc", "GET", "/api/org/audit")).data.log.map((x) => x.action);
+  for (const a of ["billing.operator_set", "billing.upgrade_requested", "billing.downgrade_scheduled", "billing.cancel_requested", "billing.refund_issued"]) assert.ok(log.includes(a), a);
+  // Support can read invoices but not change money.
+  await sql(`update operators set role = 'support'`);
+  assert.equal((await post("refund", { paymentId: "pay_ok", confirm: slug, reason: "x y z" })).status, 403);
+  assert.equal((await call("cs", "GET", `/api/admin/console/customers/${slug}/invoices`)).status, 200);
+  // Active users: today's activity is counted.
+  const act = (await call("cb", "GET", "/api/admin/console/activity?days=30")).data;
+  assert.equal(act.series.length, 30); assert.ok(act.now.dau >= 1); assert.ok(act.now.mau >= act.now.wau && act.now.wau >= act.now.dau);
+  setClient(null);
+  for (const k of ["RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET", "RAZORPAY_PLAN_GROWTH_INR", "RAZORPAY_PLAN_AGENCY_INR", "RAZORPAY_PLAN_STARTER_INR", "BILLING_ENABLED"]) delete process.env[k];
+});
+
+test("presence, live stream, insights and plan delete", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  // Presence: signed in only, page names only, one page view per page change.
+  assert.equal((await call("nobody4", "POST", "/api/presence", { page: "overview" })).status, 401);
+  assert.equal((await call("cc", "POST", "/api/presence", { page: "../etc/passwd" })).status, 400);
+  assert.equal((await call("cc", "POST", "/api/presence", { page: "overview", brand: "Bad Brand!" })).status, 400);
+  const uid = (await sql(`select id from users where email = 'console-customer@x.co'`))[0].id;
+  await sql(`delete from page_views where user_id = $1`, [uid]); await sql(`delete from presence where user_id = $1`, [uid]);
+  for (const page of ["overview", "overview", "prompts"]) assert.equal((await call("cc", "POST", "/api/presence", { page, brand: "acme" }, { "user-agent": "Mozilla/5.0 (iPhone) Mobile" })).status, 200);
+  assert.deepEqual((await sql(`select page from page_views where user_id = $1 order by id`, [uid])).map((r) => r.page), ["overview", "prompts"]);
+  const pr = (await sql(`select page, brand, device from presence where user_id = $1`, [uid]))[0];
+  assert.deepEqual({ ...pr }, { page: "prompts", brand: "acme", device: "mobile" });
+
+  // Live: operator-only SSE; the first snapshot shows this person online on that page.
+  assert.equal((await fetch(base + "/api/admin/console/live", { headers: { cookie: jar.cc } })).status, 404);
+  const ctl = new AbortController(), r = await fetch(base + "/api/admin/console/live", { headers: { cookie: jar.cb }, signal: ctl.signal });
+  assert.equal(r.status, 200); assert.match(r.headers.get("content-type"), /text\/event-stream/);
+  const reader = r.body.getReader(); let buf = "";
+  while (!buf.includes("\n\n")) buf += new TextDecoder().decode((await reader.read()).value);
+  ctl.abort();
+  const snap = JSON.parse(buf.split("\n").find((l) => l.startsWith("data: ")).slice(6));
+  assert.ok(snap.online.some((x) => x.email === "console-customer@x.co" && x.page === "prompts"));
+  assert.equal(snap.perMinute.length, 60); assert.ok(snap.today >= 1);
+
+  // Insights answer and carry findings.
+  const ins = (await call("cb", "GET", "/api/admin/console/engagement")).data;
+  assert.ok(ins.adoption.some((x) => x.page === "prompts")); assert.ok(Array.isArray(ins.cohorts)); assert.ok(Array.isArray(ins.findings));
+  assert.equal(ins.northStar.length, 12);
+
+  // Plan delete: built-ins and plans in use are refused; an unused plan goes, audited.
+  assert.equal((await call("cb", "DELETE", "/api/admin/plans/legacy")).status, 400);
+  await sql(`update operators set role = 'finance'`);
+  const plan = { name: "Spare", public: false, selfServe: false, active: true, limits: {}, engines: ["chatgpt"], schedules: ["off"], integrations: [], prices: {} };
+  assert.equal((await call("cs", "PUT", "/api/admin/plans/spare-plan", plan)).status, 200);
+  const org = (await call("cc", "GET", "/api/me")).data.org.id;
+  await sql(`update organizations set pending_plan_code = 'spare-plan' where id = $1`, [org]);
+  assert.equal((await call("cs", "DELETE", "/api/admin/plans/spare-plan")).status, 409, "someone is moving onto it");
+  await sql(`update organizations set pending_plan_code = null where id = $1`, [org]);
+  assert.equal((await call("cs", "DELETE", "/api/admin/plans/spare-plan")).status, 200);
+  assert.ok(!(await call("cs", "GET", "/api/admin/plans")).data.plans.some((p) => p.code === "spare-plan"));
+  assert.equal((await sql(`select count(*)::int as n from audit_log where action = 'plan.catalogue_deleted' and target = 'spare-plan'`))[0].n, 1);
+  await sql(`update operators set role = 'support'`);
+  assert.equal((await call("cs", "DELETE", "/api/admin/plans/acme-custom")).status, 404, "support can't touch the catalogue");
+});
+
+test("founder command: account groups scope every figure; every page answers; the drawer carries plan and subscription", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const get = (p) => call("cb", "GET", "/api/admin/console/" + p);
+  const cust = (await call("cc", "GET", "/api/me")).data.org;
+  const accounts = async (qs = "") => (await get("customers-page" + qs)).data.accounts.map((a) => a.slug);
+  assert.ok((await accounts()).includes(cust.slug));
+  // Groups: an internal group leaves its organisations out of "customers only" (not out of "all"); a demo group hides with the switch.
+  await sql(`update operators set role = 'analyst'`);
+  assert.equal((await call("cs", "POST", "/api/admin/console/groups", { name: "Nope" })).status, 403, "analysts can't change groups");
+  let g = (await call("cb", "POST", "/api/admin/console/groups", { name: "Founding team", kind: "internal" })).data.group;
+  assert.equal((await call("cb", "PATCH", `/api/admin/console/groups/${g.id}`, { add: [cust.slug, "../bad slug"] })).status, 200);
+  assert.ok(!(await accounts()).includes(cust.slug), "left out of customers only");
+  assert.ok((await accounts("?accounts=all")).includes(cust.slug), "kept in all accounts");
+  assert.deepEqual(await accounts(`?accounts=group:${g.id}`), [cust.slug], "a group view shows only its members");
+  assert.equal((await get("pulse")).data.scope.label.startsWith("customers only"), true);
+  await call("cb", "PATCH", `/api/admin/console/groups/${g.id}`, { leaveOut: false });
+  assert.ok((await accounts()).includes(cust.slug), "unticking leave-out counts it again");
+  const demo = (await call("cb", "POST", "/api/admin/console/groups", { name: "Demo", kind: "demo" })).data.group;
+  await call("cb", "PATCH", `/api/admin/console/groups/${demo.id}`, { add: [cust.slug] });
+  assert.ok((await accounts()).includes(cust.slug)); assert.ok(!(await accounts("?demo=hide")).includes(cust.slug), "demo hides with the switch");
+  assert.equal((await call("cb", "PATCH", `/api/admin/console/groups/${g.id}`, { name: "" })).status, 400);
+  assert.ok((await get("me")).data.groups.some((x) => x.id === g.id));
+  for (const id of [g.id, demo.id]) assert.equal((await call("cb", "DELETE", `/api/admin/console/groups/${id}`)).status, 200);
+  assert.ok((await accounts()).includes(cust.slug));
+
+  // Every Founder Command page answers with its provenance.
+  for (const p of ["pulse", "value", "customers-page", "customers-page?health=blocked", "plans-subs", "operations", "operations?status=failed", "ai", "integrations", "releases"]) {
+    const res = await get(p); assert.equal(res.status, 200, p); assert.ok(res.data.scope && res.data.asOf, p + " carries scope and as-of");
+  }
+  const pulse = (await get("pulse")).data;
+  assert.equal(pulse.weeks.length, 12); assert.ok(pulse.kpis.brands >= 1); assert.ok(Array.isArray(pulse.watch)); assert.ok(pulse.funnel.onboarded >= pulse.funnel.checked);
+  const ps = (await get("plans-subs")).data;
+  assert.ok(ps.plans.some((p) => p.code === "growth" && p.prices.INR.withTax === 1179882), "price shown with GST");
+  // The account drawer: plan and subscription block and group membership.
+  const acct = (await get(`customers/${cust.slug}`)).data;
+  assert.ok(acct.subscription && acct.subscription.plan && "payment" in acct.subscription && Array.isArray(acct.subscription.history)); assert.ok(Array.isArray(acct.groups));
+  await sql(`update operators set role = 'support'`);
+});
+
+test("business in product units: outcomes, plan fit, unit costs and usage depth read one known account right", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (m, p, b) => call("cb", m, "/api/admin/console/" + p, b);
+  // One Starter account (15 questions, 3 competitors) with one brand: 13 questions on and 1 off, 3 competitors, two engines, weekly.
+  const slug = (await C("POST", "accounts", { name: "Units Co", ownerEmail: "units-owner@x.co" })).data.account.slug;
+  assert.equal((await call("cb", "PATCH", `/api/admin/orgs/${slug}/billing`, { plan: "starter", status: "active", periodEndsAt: new Date(Date.now() + 20 * 864e5).toISOString(), reason: "test" })).status, 200);
+  const org = (await sql(`select id from organizations where slug = $1`, [slug]))[0].id;
+  const questions = [...Array.from({ length: 13 }, (_, i) => ({ text: `Q${i}`, intent: i < 5 ? "transactional" : "commercial", on: true })), { text: "off", intent: "informational", on: false }];
+  const ws = (await sql(`insert into workspaces (org_id, slug, name, setup, schedule, samples) values ($1, 'units', 'Units Brand', $2, 'weekly', 1) returning id`,
+    [org, { profile: { name: "Units Brand", competitors: ["Rival Co", "B", "C"] }, questions, engines: ["chatgpt", "gemini"] }]))[0].id;
+  const summary = (score, vis) => ({ score, visibility: vis, rank: 2, brands: 4, leader: { name: "Rival Co" }, engines: { chatgpt: vis, gemini: vis / 2 } });
+  await sql(`insert into runs (id, workspace_id, status, started_at, summary) values ('units-1', $1, 'done', now() - interval '20 days', $2), ('units-2', $1, 'done', now() - interval '1 day', $3)`,
+    [ws, summary(40, 0.3), summary(55, 0.5)]);
+  await sql(`insert into usage (org_id, workspace_id, kind, engine, cost_usd, at) select $1, $2, 'ask', e, 0.01, now() - interval '2 days' from unnest(array['chatgpt', 'chatgpt', 'gemini', 'gemini']) e`, [org, ws]);
+  await sql(`insert into usage (org_id, workspace_id, kind, sub, cost_usd) values ($1, $2, 'write', 'pitch', 0.02)`, [org, ws]);
+  const g = (await C("POST", "groups", { name: "Units", kind: "custom" })).data.group;
+  await C("PATCH", `groups/${g.id}`, { add: [slug] });
+  const get = async (p) => { const r = await C("GET", `${p}?accounts=group:${g.id}`); assert.equal(r.status, 200, p); return r.data; };
+
+  const out = await get("outcomes");
+  assert.equal(out.kpis.brands, 1); assert.equal(out.kpis.comparable, 1, "two checks 19 days apart compare");
+  assert.equal(out.kpis.improving, 1); assert.equal(out.kpis.medianDelta, 15); assert.equal(out.kpis.medianScore, 55);
+  assert.deepEqual(out.rivals, [{ name: "Rival Co", n: 1 }]); assert.equal(out.engines.find((e) => e.engine === "chatgpt").visibility, 50);
+  assert.equal(out.improvers[0].visDelta, 20);
+
+  const fit = await get("plan-fit");
+  assert.equal(fit.plans.length, 1); const st = fit.plans[0];
+  assert.equal(st.code, "starter"); assert.equal(st.metrics.questions.medianUsed, 13, "the switched-off question isn't counted");
+  assert.equal(st.metrics.questions.near, 1); assert.equal(st.metrics.questions.atCap, 0); assert.equal(st.metrics.competitors.atCap, 1);
+  assert.equal(st.metrics.brands.near, 0, "a cap of 1 is the plan's shape, not an expansion signal");
+  assert.deepEqual(fit.expansion.find((a) => a.slug === slug).near, ["questions", "competitors"]);
+  assert.equal(st.metrics.drafts.medianUsed, 1);
+
+  const uc = await get("unit-costs");
+  assert.equal(uc.totals.answers, 4); assert.ok(Math.abs(uc.totals.perAnswer - 0.01) < 1e-9);
+  assert.deepEqual(uc.engines.map((e) => [e.engine, e.answers]).sort(), [["chatgpt", 2], ["gemini", 2]]);
+  const proj = uc.projected.find((b) => b.slug === "units");
+  assert.equal(proj.answersPerMonth, Math.round(13 * 2 * 1 * 4.3), "questions × engines × samples × weekly checks"); assert.equal(proj.projectedUsd, 1.12);
+
+  const ud = await get("usage-depth");
+  assert.equal(ud.kpis.questions, 13); assert.equal(ud.kpis.configured, 1); assert.equal(ud.kpis.medianCompetitors, 3);
+  assert.equal(ud.schedules.find((s) => s.key === "weekly").n, 1);
+  assert.deepEqual(ud.intents, [{ key: "Consideration (compare)", n: 8 }, { key: "Decision (act)", n: 5 }]);
+
+  // Pricing and cost pages are for founders, finance and analysts; support reads customers, not margins.
+  await sql(`update operators set role = 'support'`);
+  for (const p of ["plan-fit", "unit-costs"]) assert.equal((await call("cs", "GET", "/api/admin/console/" + p)).status, 403, p);
+  assert.equal((await call("cs", "GET", "/api/admin/console/outcomes")).status, 200);
+  await C("DELETE", `groups/${g.id}`);
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test" })).status, 200);
+});
+
+test("limits on the current plan: raise questions, brands and website pages for one account; paying accounts too; back to the plan", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (m, p, b) => call("cb", m, "/api/admin/console/" + p, b);
+  const slug = (await C("POST", "accounts", { name: "Limits Co", ownerEmail: "limits-owner@x.co" })).data.account.slug;
+  const org = (await sql(`select id from organizations where slug = $1`, [slug]))[0].id;
+  // On Starter and paying through Razorpay: the old route refuses (it rewrites the plan), the limits route doesn't touch billing.
+  await sql(`update organizations set plan_code = 'starter', billing_status = 'active', billing_currency = 'INR', razorpay_subscription_id = 'sub_limits_test', current_period_end = now() + interval '20 days' where id = $1`, [org]);
+  assert.equal((await call("cb", "PATCH", `/api/admin/orgs/${slug}/billing`, { overrides: { values: { questions: 40 } }, reason: "x y z" })).status, 409);
+  assert.equal((await C("PUT", `customers/${slug}/limits`, { values: { questions: 40 } })).status, 400, "a reason is required");
+  assert.equal((await C("PUT", `customers/${slug}/limits`, { values: { nope: 4 }, reason: "test" })).data.code, "bad_limit");
+  assert.equal((await C("PUT", `customers/${slug}/limits`, { values: { questions: -1 }, reason: "test" })).status, 400);
+  assert.equal((await C("PUT", `customers/${slug}/limits`, { values: { questions: 40 }, expiresAt: "2000-01-01", reason: "test" })).status, 400, "the end date must be ahead");
+  let r = await C("PUT", `customers/${slug}/limits`, { values: { questions: 40, brands: 3, pages: 40 }, reason: "agreed on a call" });
+  assert.equal(r.status, 200);
+  const row = (k) => r.data.subscription.limitRows.find((x) => x.key === k);
+  assert.deepEqual([row("questions").plan, row("questions").now, row("questions").custom], [15, 40, 40]);
+  assert.deepEqual([row("brands").now, row("pages").now, row("pages").plan], [3, 40, null], "pages: empty on the plan = the product default");
+  const st = (await sql(`select plan_code, billing_status, razorpay_subscription_id, entitlement_overrides from organizations where id = $1`, [org]))[0];
+  assert.deepEqual([st.plan_code, st.billing_status, st.razorpay_subscription_id], ["starter", "active", "sub_limits_test"], "plan and subscription untouched");
+  const { billingState } = await import("../../server/billing.mjs");
+  process.env.BILLING_ENABLED = "1";
+  let ent = (await billingState(org)).ent; assert.deepEqual([ent.questions, ent.brands, ent.pages, ent.competitors], [40, 3, 40, 3], "the account's limits apply; the rest stay the plan's");
+  // Changing one keeps the others; null puts one back to the plan's.
+  r = await C("PUT", `customers/${slug}/limits`, { values: { brands: null, questions: 50 }, reason: "more questions" });
+  ent = (await billingState(org)).ent; assert.deepEqual([ent.questions, ent.brands, ent.pages], [50, 1, 40]);
+  // An end date survives a change that doesn't mention one; null removes it.
+  const later = new Date(Date.now() + 30 * 864e5).toISOString(), ends = async () => (await sql(`select entitlement_overrides->>'expiresAt' as e from organizations where id = $1`, [org]))[0].e;
+  await C("PUT", `customers/${slug}/limits`, { values: { questions: 50 }, expiresAt: later, reason: "for a month" });
+  await C("PUT", `customers/${slug}/limits`, { values: { pages: 45 }, reason: "one more page" });
+  assert.equal(await ends(), later, "changing one limit keeps the end date");
+  await C("PUT", `customers/${slug}/limits`, { values: { pages: 40 }, expiresAt: null, reason: "permanent now" });
+  assert.equal(await ends(), null);
+  // Back to the plan's limits entirely.
+  r = await C("PUT", `customers/${slug}/limits`, { values: { questions: null, pages: null }, reason: "back to plan" });
+  assert.equal(r.data.subscription.overrides, null); ent = (await billingState(org)).ent; assert.equal(ent.questions, 15);
+  delete process.env.BILLING_ENABLED;
+  assert.equal((await sql(`select count(*)::int as n from audit_log where org_id = $1 and action = 'billing.limits_set'`, [org]))[0].n, 6);
+  await sql(`update operators set role = 'support'`);
+  assert.equal((await call("cs", "PUT", `/api/admin/console/customers/${slug}/limits`, { values: { questions: 99 }, reason: "test" })).status, 403, "support can't change limits");
+  await sql(`update organizations set razorpay_subscription_id = null where id = $1`, [org]);
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test" })).status, 200);
+});
+
+test("who is on a plan and what they pay; integrations show platform services without ever exposing a key", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (m, p, b) => call("cb", m, "/api/admin/console/" + p, b);
+  // Two accounts on Growth in a group of their own: one paying monthly in INR with 2 extra seats, one on an annual plan in USD.
+  const a = (await C("POST", "accounts", { name: "Plan One Co", ownerEmail: "plan-one@x.co" })).data.account.slug, b = (await C("POST", "accounts", { name: "Plan Two Co", ownerEmail: "plan-two@x.co" })).data.account.slug;
+  await sql(`update organizations set plan_code = 'growth', billing_status = 'active', billing_currency = 'INR', billing_cycle = 'monthly', extra_seats = 2, current_period_end = now() + interval '10 days' where slug = $1`, [a]);
+  const { PLANS } = await import("../../server/plans.mjs");
+  const seat = PLANS.growth.seatPrices?.INR ?? 0, usdYear = PLANS.growth.annualPrices?.USD ?? null;
+  await sql(`update organizations set plan_code = 'growth', billing_status = 'active', billing_currency = 'USD', billing_cycle = $2, current_period_end = now() + interval '300 days' where slug = $1`, [b, usdYear ? "annual" : "monthly"]);
+  const g = (await C("POST", "groups", { name: "Plan test", kind: "custom" })).data.group; await C("PATCH", `groups/${g.id}`, { add: [a, b] });
+  const d = (await C("GET", `plans/growth/accounts?accounts=group:${g.id}`)).data;
+  assert.equal(d.kpis.accounts, 2); assert.equal(d.kpis.paying, 2); assert.equal(d.kpis.viaContract, 2);
+  const one = d.rows.find((r) => r.slug === a);
+  assert.equal(one.recurring, 999900 + 2 * seat, "monthly price plus extra seats"); assert.equal(one.mrrInr, 999900 + 2 * seat);
+  const two = d.rows.find((r) => r.slug === b);
+  if (usdYear) { assert.equal(two.recurring, usdYear, "an annual account pays the yearly price"); assert.equal(two.mrrInr, Math.round(Math.round(usdYear / 12) * 84)); }
+  else { assert.equal(two.recurring, PLANS.growth.prices.USD); assert.equal(two.mrrInr, PLANS.growth.prices.USD * 84, "USD at the console's rate"); }
+  assert.equal(d.kpis.mrrInr, one.mrrInr + two.mrrInr); assert.equal(d.kpis.arrInr, d.kpis.mrrInr * 12);
+  assert.equal((await C("GET", "plans/no-such-plan/accounts")).status, 404);
+  // Integrations: platform services listed by state; a key's value never appears anywhere in the answer.
+  const it = (await C("GET", "integrations")).data;
+  assert.ok(it.platform.some((x) => x.key === "chatgpt" && x.state !== "off"), "OPENAI_API_KEY is set in the tests");
+  assert.ok(it.platform.some((x) => x.key === "razorpay")); assert.ok(it.ownKeys && Array.isArray(it.ownKeys.byKey));
+  const raw = JSON.stringify(it);
+  for (const k of ["OPENAI_API_KEY", "GEMINI_API_KEY", "APP_SECRET", "CRON_SECRET"]) if (process.env[k] && process.env[k].length > 3) assert.ok(!raw.includes(process.env[k]) || ["fake", "test"].includes(process.env[k]), k);
+  for (const s of [a, b]) await C("DELETE", `accounts/${s}`, { confirm: s, reason: "test" });
+  await C("DELETE", `groups/${g.id}`);
+});
+
+test("filters: the Active brands card and its list agree; Growth's people and engagement follow the Accounts and Period filters", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (p) => call("cb", "GET", "/api/admin/console/" + p);
+  for (const q of ["accounts=all&days=30", "accounts=customers&days=7"]) {
+    const card = (await C("pulse?" + q)).data.kpis.active7, list = (await C("customers-page?health=active&" + q)).data;
+    assert.equal(list.kpis.matching, card, q); assert.ok(list.health.rows.every((r) => r.lastAction?.what === "Active"));
+  }
+  // An empty group: Growth shows nobody, whatever the platform has.
+  const g = (await call("cb", "POST", "/api/admin/console/groups", { name: "Empty", kind: "custom" })).data.group;
+  const a = (await C(`activity?accounts=group:${g.id}&days=90`)).data, e = (await C(`engagement?accounts=group:${g.id}`)).data;
+  assert.equal(a.days, 90, "the Period filter sets the window"); assert.equal(a.now.users, 0); assert.equal(a.now.mau, 0); assert.equal(e.activation.orgs, 0); assert.deepEqual(e.adoption, []);
+  assert.ok((await C("activity?accounts=all&days=90")).data.now.users > 0, "everyone, without the group");
+  assert.equal((await C("activity?accounts=all&days=365")).data.days, 365);
+  await call("cb", "DELETE", `/api/admin/console/groups/${g.id}`);
+});
+
+test("delete a user: shows what goes with them, refuses while they own a shared account or one paying by Razorpay, removes them everywhere", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (m, p, b) => call("cb", m, "/api/admin/console/" + p, b);
+  // A person with their own account (only them in it) who is also an editor in a shared one.
+  const mine = (await C("POST", "accounts", { name: "Solo Co", ownerEmail: "solo-user@x.co" })).data;
+  assert.equal((await call("su", "POST", "/api/auth/signup", { email: "solo-user@x.co", password: "longenough1", invite: mine.invite.link.split("#invite=")[1] }, { "x-forwarded-for": "10.21.0.1" })).status, 200);
+  const shared = (await C("POST", "accounts", { name: "Shared Co", ownerEmail: "shared-owner@x.co" })).data;
+  assert.equal((await call("so2", "POST", "/api/auth/signup", { email: "shared-owner@x.co", password: "longenough1", invite: shared.invite.link.split("#invite=")[1] }, { "x-forwarded-for": "10.21.0.2" })).status, 200);
+  const inv = (await C("POST", `accounts/${shared.account.slug}/people`, { email: "solo-user@x.co", role: "editor" })).data.invite;
+  assert.equal((await call("su", "POST", "/api/auth/login", { email: "solo-user@x.co", password: "longenough1", invite: inv.link.split("#invite=")[1] })).status, 200);
+  const uid = (await sql(`select id from users where email = 'solo-user@x.co'`))[0].id, ownerId = (await sql(`select id from users where email = 'shared-owner@x.co'`))[0].id;
+
+  let d = (await C("GET", `users/${uid}/deletion`)).data;
+  assert.deepEqual(d.orgs.map((o) => [o.slug, o.deleted]).sort(), [[mine.account.slug, true], [shared.account.slug, false]].sort());
+  assert.deepEqual(d.blockers, []);
+  // The owner of a shared account can't go until they hand it over.
+  d = (await C("GET", `users/${ownerId}/deletion`)).data; assert.equal(d.blockers.length, 1); assert.match(d.blockers[0], /hand ownership over/);
+  assert.equal((await C("DELETE", `users/${ownerId}`, { confirm: "shared-owner@x.co", reason: "test" })).status, 409);
+  // Their own account paying through Razorpay blocks it too.
+  await sql(`update organizations set razorpay_subscription_id = 'sub_x', billing_status = 'active' where slug = $1`, [mine.account.slug]);
+  assert.match((await C("GET", `users/${uid}/deletion`)).data.blockers.join(" "), /cancel its subscription/);
+  await sql(`update organizations set razorpay_subscription_id = null, billing_status = 'new' where slug = $1`, [mine.account.slug]);
+  // Typed email, reason, founders only.
+  assert.equal((await C("DELETE", `users/${uid}`, { confirm: "wrong@x.co", reason: "test" })).data.code, "confirm");
+  assert.equal((await C("DELETE", `users/${uid}`, { confirm: "solo-user@x.co" })).status, 400, "a reason is required");
+  await sql(`update operators set role = 'support'`);
+  assert.equal((await call("cs", "DELETE", `/api/admin/console/users/${uid}`, { confirm: "solo-user@x.co", reason: "test" })).status, 403);
+  const me = (await C("GET", "me")).data; assert.match((await C("GET", `users/${me.id}/deletion`)).data.blockers.join(" "), /yourself/);
+  const r = await C("DELETE", `users/${uid}`, { confirm: "solo-user@x.co", reason: "asked us to delete their data" });
+  assert.equal(r.status, 200); assert.deepEqual(r.data.organisationsDeleted, [mine.account.slug]);
+  assert.equal((await sql(`select count(*)::int as n from users where id = $1`, [uid]))[0].n, 0);
+  assert.equal((await sql(`select count(*)::int as n from organizations where slug = $1`, [mine.account.slug]))[0].n, 0, "the account only they were in went with them");
+  assert.deepEqual((await C("GET", `accounts/${shared.account.slug}/people`)).data.members.map((m) => m.email), ["shared-owner@x.co"], "the shared account stays, without them");
+  assert.equal((await sql(`select count(*)::int as n from audit_log where action = 'user.deleted' and target = 'solo-user@x.co'`))[0].n, 1);
+  assert.equal((await C("DELETE", `accounts/${shared.account.slug}`, { confirm: shared.account.slug, reason: "test" })).status, 200);
+});
+
+test("console accounts: create with an owner invite, people CRUD, suspend makes it read-only, operators CRUD, delete", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const C = (m, p, b) => call("cb", m, "/api/admin/console/" + p, b);
+  await sql(`update operators set role = 'analyst'`);
+  assert.equal((await call("cs", "POST", "/api/admin/console/accounts", { name: "Nope Co", ownerEmail: "nope@x.co" })).status, 403, "analysts can't create accounts");
+  let r = await C("POST", "accounts", { name: "Client Co", ownerEmail: "client-owner@x.co" });
+  assert.equal(r.status, 200); const slug = r.data.account.slug, token = r.data.invite.link.split("#invite=")[1];
+  assert.equal((await sql(`select count(*)::int as n from memberships m join organizations o on o.id = m.org_id where o.slug = $1`, [slug]))[0].n, 0, "no operator membership");
+  assert.equal((await sql(`select billing_status from organizations where slug = $1`, [slug]))[0].billing_status, "new");
+  assert.equal((await call("co", "POST", "/api/auth/signup", { email: "client-owner@x.co", password: "longenough1", invite: token }, { "x-forwarded-for": "10.9.9.11" })).status, 200);
+  // The owner's organisation is waiting on a plan, but the team can still invite people into it.
+  r = await C("POST", `accounts/${slug}/people`, { email: "client-mate@x.co", role: "editor" }); assert.equal(r.status, 200);
+  assert.equal((await call("cm", "POST", "/api/auth/signup", { email: "client-mate@x.co", password: "longenough1", invite: r.data.invite.link.split("#invite=")[1] }, { "x-forwarded-for": "10.9.9.12" })).status, 200);
+  let people = (await C("GET", `accounts/${slug}/people`)).data.members;
+  const mate = people.find((m) => m.email === "client-mate@x.co"), own = people.find((m) => m.role === "owner");
+  const seen = JSON.stringify((await call("cs", "GET", `/api/admin/console/customers/${slug}`)).data);
+  assert.ok(!seen.includes("@") && !seen.includes("client-mate"), "analysts see no emails or people's names: " + (seen.match(/.{40}@.{20}/) || [""])[0]);
+  // Support and finance can't hand out admin or owner, add themselves, lower an admin or owner, or make internal accounts.
+  await sql(`update operators set role = 'support'`);
+  const S = (m, p, b) => call("cs", m, "/api/admin/console/" + p, b);
+  assert.equal((await S("POST", `accounts/${slug}/people`, { email: "helper@x.co", role: "admin" })).status, 403, "support can't grant admin");
+  assert.equal((await S("POST", `accounts/${slug}/people`, { email: "console-user@x.co", role: "viewer" })).data.code, "self");
+  assert.equal((await S("PATCH", `accounts/${slug}/people/${own.id}`, { role: "viewer" })).status, 403, "support can't lower the owner");
+  assert.equal((await S("POST", "accounts", { name: "Inside Co", ownerEmail: "in@x.co", start: "internal" })).status, 403);
+  await sql(`update operators set role = 'analyst'`);
+  assert.equal((await C("PATCH", `accounts/${slug}/people/${own.id}`, { role: "viewer" })).status, 409, "owner can't be lowered without a hand-over");
+  people = (await C("PATCH", `accounts/${slug}/people/${mate.id}`, { role: "owner" })).data.members;
+  assert.equal(people.find((m) => m.id === mate.id).role, "owner"); assert.equal(people.find((m) => m.id === own.id).role, "admin");
+  assert.equal((await C("DELETE", `accounts/${slug}/people/${mate.id}`)).status, 409, "the owner can't be removed");
+  assert.equal((await C("DELETE", `accounts/${slug}/people/${own.id}`)).data.members.length, 1);
+  // Suspension: read-only with its own message (not an upgrade prompt), and it holds even with billing switched off.
+  await call("cb", "PATCH", `/api/admin/orgs/${slug}/billing`, { plan: "legacy", status: "internal", reason: "test" });
+  assert.equal((await C("PATCH", `accounts/${slug}`, { suspended: true })).status, 400, "a reason is required");
+  assert.equal((await C("PATCH", `accounts/${slug}`, { suspended: true, reason: "abuse report" })).status, 200);
+  delete process.env.BILLING_ENABLED;
+  r = await call("cm", "PUT", "/api/workspaces/blocked", { name: "Blocked", setup: WS.setup });
+  assert.equal(r.status, 403); assert.equal(r.data.code, "suspended");
+  assert.equal((await C("PATCH", `accounts/${slug}`, { suspended: false, reason: "resolved" })).status, 200);
+  assert.equal((await call("cm", "PUT", "/api/workspaces/allowed", { name: "Allowed", setup: WS.setup })).status, 200);
+  // Operators: add (must exist and be verified), change, turn off (loses access at once), remove; founders can't lock themselves out.
+  assert.equal((await C("POST", "operators", { email: "ghost@x.co", role: "support" })).status, 404);
+  assert.equal((await C("POST", "operators", { email: "client-mate@x.co", role: "support" })).status, 200);
+  assert.equal((await call("cm", "GET", "/api/admin/console/me")).data.role, "support");
+  const opId = (await C("GET", "operators")).data.operators.find((o) => o.email === "client-mate@x.co").id;
+  assert.equal((await C("PATCH", `operators/${opId}`, { active: false })).status, 200);
+  assert.equal((await call("cm", "GET", "/api/admin/console/me")).status, 404);
+  assert.equal((await C("DELETE", `operators/${opId}`)).status, 200);
+  const me = (await C("GET", "me")).data;
+  assert.equal((await C("PATCH", `operators/${me.id}`, { active: false })).status, 409);
+  // Delete: founders only, typed id, record kept.
+  await sql(`update operators set role = 'finance', active = true`);
+  assert.equal((await call("cs", "DELETE", `/api/admin/console/accounts/${slug}`, { confirm: slug, reason: "x y z" })).status, 403, "finance can't delete accounts");
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: "nope", reason: "test" })).status, 400);
+  // An unpaid Razorpay link must be withdrawn first, so nobody pays into a deleted organisation (no keys here to withdraw it).
+  await sql(`update organizations set razorpay_checkout_subscription_id = 'sub_pending' where slug = $1`, [slug]);
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test cleanup" })).data.code, "pending_link");
+  await sql(`update organizations set razorpay_checkout_subscription_id = null where slug = $1`, [slug]);
+  assert.equal((await C("DELETE", `accounts/${slug}`, { confirm: slug, reason: "test cleanup" })).status, 200);
+  assert.equal((await C("GET", `customers/${slug}`)).status, 404);
+  assert.equal((await sql(`select count(*)::int as n from audit_log where action = 'org.deleted' and target = $1`, [slug]))[0].n, 1);
+  await sql(`update operators set role = 'support'`);
+});
+
+test("plan parameters: annual checkout and renewal, per-plan trial length, extra seats invoiced or billed through Razorpay", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const crypto = await import("node:crypto");
+  const { setClient } = await import("../../server/razorpay.mjs");
+  const SECRET = "wh_cycles", calls = [];
+  setClient({ createSubscription: async (a) => { calls.push(["sub", a]); return { id: "sub_year" }; }, cancelSubscription: async () => ({}), fetchSubscription: async () => ({ status: "active", payment_method: "card" }),
+    updateSubscription: async (id, a) => { calls.push(["update", a]); return {}; }, cancelScheduledChanges: async () => ({}), createAddon: async (id, a) => { calls.push(["addon", id, a]); return { id: "ao_" + calls.length }; }, deleteAddon: async (id) => { calls.push(["delete_addon", id]); return {}; } });
+  Object.assign(process.env, { BILLING_ENABLED: "1", RAZORPAY_KEY_ID: "rzp_test_key", RAZORPAY_KEY_SECRET: "sk", RAZORPAY_WEBHOOK_SECRET: SECRET });
+  await sql(`update operators set role = 'finance', active = true`);
+  // Catalogue: Growth gets an annual price + yearly Razorpay plan, a 14-day trial, and extra seats at ₹500 up to 10; Starter has no trial.
+  const plans = (await call("cs", "GET", "/api/admin/plans")).data.plans, g = plans.find((p) => p.code === "growth"), st = plans.find((p) => p.code === "starter");
+  const up = (code, f, patch) => call("cs", "PUT", `/api/admin/plans/${code}`, { ...f, ...patch });
+  assert.equal((await up("growth", g, { trialDays: 14, maxExtraSeats: 10, prices: { ...g.prices, INR: { ...g.prices.INR, razorpayPlanId: "plan_GrowMonth01", annualAmount: 9999000, annualRazorpayPlanId: "plan_GrowYear001", seatAmount: 50000 } } })).status, 200);
+  assert.equal((await up("starter", st, { trialDays: 0, prices: { ...st.prices, INR: { ...st.prices.INR, razorpayPlanId: "plan_StarMonth1" } } })).status, 200);
+  const pub = (await call("x", "GET", "/api/billing/plans")).data;
+  const gp = pub.plans.find((p) => p.code === "growth");
+  assert.equal(gp.annualPrices.INR, 9999000); assert.equal(gp.trialDays, 14); assert.equal(gp.seatPrices.INR, 50000); assert.equal(pub.availableAnnual.growth.INR, true);
+
+  // Per-plan trial: no trial on Starter; Growth's 14 days stretch a 7-day trial from its start, never past what it should be.
+  const sig = (raw) => crypto.createHmac("sha256", SECRET).update(raw).digest("hex");
+  assert.equal((await call("x", "POST", "/api/auth/signup", { email: "cycles@x.co", password: "longenough1" }, { "x-forwarded-for": "10.9.9.20" })).status, 200);
+  const me = (await call("x", "GET", "/api/me")).data, org = me.org.id, slug = me.org.slug;
+  let o = (await sql(`select trial_started_at, trial_ends_at, billing_status from organizations where id = $1`, [org]))[0];
+  assert.equal(o.billing_status, "trialing");
+  assert.equal((await call("x", "POST", "/api/billing/start-trial", { plan: "starter" })).data.code, "no_trial");
+  assert.equal((await call("x", "POST", "/api/billing/start-trial", { plan: "growth" })).status, 200);
+  const after = (await sql(`select trial_ends_at from organizations where id = $1`, [org]))[0].trial_ends_at;
+  assert.equal(Math.round((new Date(after) - new Date(o.trial_started_at)) / 864e5), 14, "stretched to Growth's 14 days");
+
+  // Annual checkout: the yearly Razorpay plan, ten cycles; the webhook adopts it as annual; MRR counts a twelfth.
+  await sql(`update organizations set trial_ends_at = now() - interval '1 minute', billing_status = 'trialing' where id = $1`, [org]);
+  let r = await call("x", "POST", "/api/billing/checkout", { plan: "growth", currency: "INR", cycle: "annual" });
+  assert.equal(r.status, 200); assert.equal(r.data.cycle, "annual"); assert.equal(r.data.amount, Math.round(9999000 * 1.18)); assert.equal(r.data.upi, false, "yearly payments are above UPI's limit");
+  const subCall = calls.find((x) => x[0] === "sub")[1]; assert.equal(subCall.planId, "plan_GrowYear001"); assert.equal(subCall.cycle, "annual");
+  assert.equal((await call("x", "POST", "/api/billing/checkout", { plan: "starter", currency: "INR", cycle: "annual" })).data.code, "no_annual");
+  const T = Math.floor(Date.now() / 1000);
+  const raw = JSON.stringify({ event: "subscription.charged", created_at: T + 5, payload: { subscription: { entity: { id: "sub_year", plan_id: "plan_GrowYear001", status: "active", current_start: T, current_end: T + 365 * 86400 } } } });
+  assert.equal((await fetch(base + "/api/webhooks/razorpay", { method: "POST", headers: { "x-razorpay-event-id": "evt_year_1", "x-razorpay-signature": sig(raw) }, body: raw })).status, 200);
+  o = (await sql(`select plan_code, billing_status, billing_cycle from organizations where id = $1`, [org]))[0];
+  assert.deepEqual({ ...o }, { plan_code: "growth", billing_status: "active", billing_cycle: "annual" });
+  const sub = (await call("cb", "GET", `/api/admin/console/customers/${slug}`)).data.subscription;
+  assert.equal(sub.cycleKey, "annual"); assert.equal(sub.price, 9999000); assert.equal(sub.monthly, 833250);
+  assert.equal((await call("x", "GET", "/api/me")).data.billing.plan.cycle, "annual");
+
+  // Extra seats: capped by the plan; invoiced ones only raise the limit; Razorpay ones go on the next invoice and again at each renewal.
+  const seats = (b) => call("cs", "POST", `/api/admin/console/customers/${slug}/seats`, { reason: "agreed", ...b });
+  assert.equal((await seats({ extraSeats: 11 })).data.code, "seat_cap");
+  const before = (await call("x", "GET", "/api/me")).data.billing.limits.seats;
+  r = await seats({ extraSeats: 3 }); assert.equal(r.status, 200); assert.equal(r.data.charged, null);
+  assert.equal((await call("x", "GET", "/api/me")).data.billing.limits.seats, before + 3);
+  r = await seats({ extraSeats: 5, billing: "razorpay" });
+  assert.equal(r.data.charged.seats, 2, "only the added seats are charged for this cycle"); assert.equal(r.data.charged.months, 12);
+  assert.equal(calls.at(-1)[0], "addon"); assert.equal(calls.at(-1)[2].amount, Math.round(50000 * 2 * 12 * 1.18));
+  const renew = JSON.stringify({ event: "subscription.charged", created_at: T + 50, payload: { subscription: { entity: { id: "sub_year", plan_id: "plan_GrowYear001", status: "active", current_start: T + 365 * 86400, current_end: T + 730 * 86400 } } } });
+  await fetch(base + "/api/webhooks/razorpay", { method: "POST", headers: { "x-razorpay-event-id": "evt_year_2", "x-razorpay-signature": sig(renew) }, body: renew });
+  assert.equal(calls.at(-1)[2].amount, Math.round(50000 * 5 * 12 * 1.18), "renewal bills all 5 seats for the next year");
+  const n = calls.filter((x) => x[0] === "addon").length;
+  await fetch(base + "/api/webhooks/razorpay", { method: "POST", headers: { "x-razorpay-event-id": "evt_year_2", "x-razorpay-signature": sig(renew) }, body: renew });
+  assert.equal(calls.filter((x) => x[0] === "addon").length, n, "a repeated webhook doesn't charge twice");
+  const cust = (await call("cb", "GET", "/api/admin/console/customers")).data.orgs.find((x) => x.slug === slug);
+  assert.equal(cust.mrr, 833250 + 5 * 50000, "MRR: a twelfth of the year plus the seats");
+  // Seats added mid-cycle pay only for what is left of it; lowering them withdraws that not-yet-invoiced add-on, not the renewal's.
+  await sql(`update organizations set current_period_end = now() + interval '6 months' where id = $1`, [org]);
+  r = await seats({ extraSeats: 7, billing: "razorpay" });
+  const full = 50000 * 2 * 12, half = r.data.charged.amount / 1.18;
+  assert.ok(half > full * 0.45 && half < full * 0.55, `about half a year for 2 seats, got ${half} of ${full}`);
+  const raiseId = (await sql(`select detail->>'addonId' as id from audit_log where org_id = $1 and action = 'billing.seats_charged' order by id desc limit 1`, [org]))[0].id;
+  r = await seats({ extraSeats: 5, billing: "razorpay" });
+  assert.equal(r.data.withdrawn.withdrawn, 2); assert.equal(r.data.withdrawn.recharged, null);
+  assert.deepEqual(calls.at(-1), ["delete_addon", raiseId], "the mid-cycle raise is withdrawn");
+  assert.equal(calls.filter((x) => x[0] === "delete_addon").length, 1, "the renewal's add-on is left alone");
+  // A plan change keeps the yearly cycle.
+  const ag = plans.find((p) => p.code === "agency");
+  await up("agency", ag, { prices: { ...ag.prices, INR: { ...ag.prices.INR, razorpayPlanId: "plan_AgenMonth1", annualAmount: 24999000, annualRazorpayPlanId: "plan_AgenYear01" } } });
+  r = await call("cs", "POST", `/api/admin/console/customers/${slug}/change-plan`, { plan: "agency", reason: "more brands" });
+  assert.equal(r.status, 200); assert.equal(calls.at(-1)[1].planId, "plan_AgenYear01");
+  // Clean up the catalogue for the tests after this one.
+  await up("growth", g, {}); await up("starter", st, {}); await up("agency", ag, {});
+  setClient(null);
+  for (const k of ["BILLING_ENABLED", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]) delete process.env[k];
+  await sql(`update operators set role = 'support'`);
 });

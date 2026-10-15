@@ -71,7 +71,7 @@ To switch it on:
 2. Authorised redirect URIs: `<PUBLIC_ORIGIN>/api/auth/google/callback` (and `http://localhost:3000/api/auth/google/callback` for local runs). The
    Search Console connection uses a different one: `<PUBLIC_ORIGIN>/api/oauth/google/callback`.
 3. Set `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` (Secret Manager via `infra/secrets.sh`). The "Continue with Google" button then appears.
-4. With `BILLING_ENABLED=1` the invite code is no longer required; a new Google user gets a verified account, a personal organisation and the 7-day
+4. With `BILLING_ENABLED=1` a new Google user gets a verified account, a personal organisation and the 7-day
    trial. One trial per person: extra organisations they create inherit the first one's window.
 
 ## Configuration
@@ -155,8 +155,7 @@ Record test event ids and the resulting states (no card data).
 ## Rollback
 
 1. `billing_enabled = "0"` and redeploy. This is a true kill switch: **nobody is limited or locked**, whatever their plan, trial or payment
-   state says (an ended trial, a failed payment). Checkout and plan changes close and new sign-ups stop getting trials (the invite code applies
-   again). Webhooks and reconciliation keep recording and applying, so no payment is lost and turning it back on picks up the real state.
+   state says (an ended trial, a failed payment). Checkout and plan changes close and new sign-ups stop getting trials. Webhooks and reconciliation keep recording and applying, so no payment is lost and turning it back on picks up the real state.
    Cancelling a subscription stays possible. `operators` enforces limits for everyone but only operators can start checkout.
 2. Never drop billing columns or `billing_events`.
 3. To free one organisation permanently, an operator sets `billing_status = 'internal'`, `plan_code = 'legacy'` (audit it).
@@ -164,3 +163,28 @@ Record test event ids and the resulting states (no card data).
 
 Rollback triggers: a valid signature rejected or an invalid one accepted; one event changing state twice; existing organisations losing
 access; a limit exceeded server-side; paid access without a webhook; secrets in logs; usage attributed across organisations.
+
+## Annual prices, trial length per plan, extra seats (added 2026-10-15)
+
+Set in the plan catalogue (Command Deck → Plan catalogue, or `PUT /api/admin/plans/:code`). All optional; empty keeps today's behaviour.
+
+- **Annual price** (per currency, before tax): a second Razorpay plan billed **yearly** (`period: yearly`), created from the editor's
+  "Create in Razorpay" button on the Annual row, or pasted. Env fallback: `RAZORPAY_PLAN_<PLAN>_<CCY>_ANNUAL`. Checkout takes
+  `cycle: "annual"`; the subscription runs 10 yearly cycles (effectively until cancelled). The webhook records `organizations.billing_cycle`
+  from the plan id it was paid on; plan changes keep the cycle (an annual subscriber moves to the target plan's annual Razorpay plan).
+  MRR counts a twelfth of the yearly price. A yearly INR charge is above UPI Autopay's limit, so it is card or net banking. A replaced
+  annual id is retired like a monthly one, so existing subscribers keep resolving.
+- **Free trial (days)**: empty = `BILLING_TRIAL_DAYS`; 0 = no free trial on that plan (start-trial is refused; people subscribe).
+  Picking a plan with a longer trial during a running trial stretches it to that length from the trial's start; a shorter one never cuts it.
+  The trial still belongs to the person, once.
+- **Extra seats**: `seat_amount_minor` (per seat per month, before tax, per currency) and `max_extra_seats` (empty = no cap, 0 = not sold).
+  An operator sets an organisation's extra seats in its drawer (`POST /api/admin/console/customers/:slug/seats`, reason required). They add
+  to the seat limit and to MRR. Billing either **invoice** (outside Razorpay) or **razorpay**: the seats added go on the subscription's next
+  invoice as a Razorpay add-on, prorated to what is left of the current cycle (by `current_period_end`), and every `subscription.charged`
+  (renewal) adds the cycle's seats again in full: billed in arrears, 12 months' worth on an annual plan. Lowering seats withdraws this
+  cycle's mid-cycle add-ons Razorpay hasn't invoiced yet (newest first); the renewal's add-on stays, so a cut takes effect at the next
+  renewal. A repeated webhook doesn't charge twice (events are idempotent). Owners can't buy seats themselves yet.
+- **Before relying on it in production**, run once in Razorpay test mode: create a yearly plan from the editor, subscribe yearly, confirm
+  the webhook sets `billing_cycle = annual`, add razorpay-billed seats and check the add-on appears on the next invoice.
+- The customer plans page shows a Monthly/Annual switch and each plan's trial length, but it is hidden while `PAY_HIDDEN = true` in
+  `public/app.js` (the current product decision).

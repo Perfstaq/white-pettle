@@ -30,3 +30,15 @@ test("drafts carry forward from the previous run", async () => {
 test("a brand with no prompts fails clearly", async () => {
   await assert.rejects(runCheck({ ...WS, setup: { ...WS.setup, questions: [] } }, { engines: ["chatgpt"] }), /no prompts/);
 });
+test("the account's \"pages\" limit sets how many cited pages a scheduled check reads (default 18)", async () => {
+  // Every answer cites 30 different pages, so the limit, not the supply, decides how many are opened.
+  const { sse } = await import("../../api/_lib.js");
+  const ask = async (req) => { const b = await req.json(); return sse(async (send) => {
+    const sources = Array.from({ length: 30 }, (_, i) => ({ url: `https://site${i}.example/${b.engine}`, title: "p", cited: i < 3 }));
+    send("final", { answer: "Options: Deloitte.", sources, brands: ["Deloitte"], model: "fake-1" }); }); };
+  for (const [pages, want] of [[5, 5], [null, 18], [25, 25]]) {
+    setHandlers({ ...fakes, ask }); fakes.calls.inspect = 0;
+    const M = await runCheck(WS, { engines: ["chatgpt"], samples: 1, pages });
+    assert.equal(fakes.calls.inspect, want, `pages ${pages}`); assert.equal(Object.keys(M.inspections).length, want);
+  }
+});

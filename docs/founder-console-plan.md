@@ -1,0 +1,547 @@
+# White Petal Command Deck: the complete plan
+
+Founder console, business analytics, subscription management, support tools and platform analytics, in one operator-only product inside White Petal.
+
+Status: PLAN, nothing implemented. Written 2026-10-15.
+Open dependency: `perfstaq-b2b` (its founder dashboard) is not accessible yet; section 17 says exactly what to reconcile when it is.
+
+---
+
+## 0. How to read this
+
+1. Vision and principles (1-2)
+2. What exists today (3)
+3. Everything we will build, module by module (4-12)
+4. Cross-cutting: roles, security, compliance, notifications (13)
+5. Data model, API, UI architecture (14-16)
+6. Reconcile with b2b, phases, tests, risks, estimates (17-21)
+7. Decisions I need from you (22)
+
+---
+
+## 1. Vision: if I were the founder
+
+I run a small AI-visibility SaaS. I have no ops team. So the console must do three jobs:
+
+- **Tell me** what changed and what needs me today (briefing, not charts).
+- **Protect me**: margin (AI cost is my COGS), payments, abuse, outages.
+- **Let me act** from the same screen: extend, grant, pause, refund, message, fix.
+
+North-star metric for White Petal: **Weekly Recovery Loops**, the number of orgs that, in a week, ran a check, drafted a fix, and completed or rechecked an action. That is the product's promise (find the gap → fix the evidence → track recovery), so growth is measured on it, not on logins.
+
+Supporting metrics: MRR, trial→paid, gross margin per org, 4-week retention, time-to-first-check.
+
+## 2. Design principles
+
+1. Every number is clickable down to the orgs behind it; every org row has its action next to it.
+2. Briefing first: ranked "needs you" feed on the home page; empty state says "Nothing needs you".
+3. Margin is a first-class citizen (AI product): revenue and AI cost always shown together.
+4. One definition per metric, written down (section 12) and shown on hover. No two screens disagree.
+5. Operators can't silently do anything: every write is an `audit_log` row (`console.*`).
+6. Reuse before build; no new data store; no build step for the front end.
+7. Read-heavy queries are cached and snapshotted; the app database is shared with production.
+
+## 3. What already exists (we reuse it)
+
+| Capability | Where |
+|---|---|
+| Operator identity, visiting any org (audited) | `server/orgs.mjs` (`PLATFORM_OPERATORS`, `isOperator`, `operatorVisit`) |
+| Plan catalogue editor, Razorpay plan sync, billing health checklist | `server/billing-routes.mjs` (`/api/admin/plans*`, `/api/admin/billing/*`); UI `public/app.js` ~2441 |
+| Org list for operators | `GET /api/admin/orgs` |
+| AI cost per call and per period | tables `usage`, `usage_counters`; `plans.ai_cap_usd` margin guard; `organizations.monthly_cap_usd` |
+| Subscription state and webhook log | `organizations.billing_status/plan_code/trial_ends_at`, `billing_events` |
+| Audit | `audit_log` (billing.*, plan.catalogue_edited, operator visits) |
+| Runs and failures | `runs` (status, source, error, started/finished) |
+| Email history | `email_log` |
+| Scheduler | Cloud Scheduler → `POST /api/cron/tick` every 10 min |
+| Slack, Resend | `server/integrations/slack.mjs`, `server/mail.mjs` |
+| Writing model for AI text | `api/write.js` provider chain (Gemini → Groq → OpenAI → Anthropic) |
+
+---
+
+## 4. Module A: Today (the founder briefing)
+
+Landing page of the console.
+
+**A1. Headline strip**: MRR, net new MRR (30d), paying orgs, trials running, Weekly Recovery Loops, runs today, AI cost today, gross margin (MTD). Each with a 30-day sparkline and delta vs previous period.
+
+**A2. Needs attention feed** (ranked by money at risk, then urgency). Rule catalogue:
+
+| Rule | Trigger | Suggested action |
+|---|---|---|
+| Payment failed | `billing_status = past_due` | Send dunning email, view org |
+| Trial ending, active | trial ends ≤48h and ≥1 check run | Send upgrade nudge |
+| Trial ending, dormant | trial ends ≤48h and 0 checks | Offer a call / extend trial 3 days |
+| Budget near/over | ≥80% / ≥100% of `monthly_cap_usd` | Raise cap or upsell |
+| Margin negative | AI cost this period > revenue | Throttle / contact |
+| Scheduled runs failing | ≥2 consecutive failed scheduled runs | Open runs, check keys |
+| Org keys invalid | engine auth errors from org's own keys | Notify admin |
+| Webhook failed | `billing_events.status = failed` | Retry event |
+| Reconcile stale | Razorpay-linked org not reconciled in >N days | Reconcile now |
+| Churn risk | health score dropped ≥25 points in 14d, paying | Open org 360 |
+| Cancellation pending | cancel requested, renews ≤7d | Win-back offer |
+| Abuse signal | cost spike >5× 7-day median in a day | Pause org |
+| Invite stuck | invite unaccepted >5d on a paying org | Resend |
+| Big win | org upgraded / new paying org | Celebrate (shown as a positive item) |
+
+Items can be snoozed (1d/7d), assigned, or marked done; snooze state in `console_attention_state`.
+
+**A3. AI founder briefing**: a 5-sentence plain-language summary generated by the existing writing model from the day's numbers ("MRR is ₹X, up Y; two payments failed; the Growth plan's margin fell to 41% because of Perplexity cost at Acme"). Generated once per day by the cron tick, stored, shown on top. It only restates computed numbers (the model gets the JSON, not the database), so it can't invent figures; numbers in the text are validated against the input before saving.
+
+**A4. Ask the console**: a box that answers questions over the console's own aggregates ("which paying orgs ran no check in 14 days?", "margin by plan last month"). Implemented as the Agent drawer pattern with a fixed allowlist of read-only queries (the same approach as the existing agent), never raw SQL from the model.
+
+**A5. Goals**: founder sets monthly targets (MRR, new paying orgs, trial→paid, margin %); Today shows progress bars and a "on pace / behind" label.
+
+## 5. Module B: Revenue analytics
+
+- **MRR & ARR**: by plan, by currency (INR/USD, with a configurable USD→INR display rate), operator-contracted shown separately from card-subscribed.
+- **MRR waterfall**: new, expansion, contraction, churn, reactivation, per month and per week.
+- **ARPA, LTV (simple: ARPA × gross margin ÷ churn), payback.**
+- **Trial funnel**: signup → verified email → first brand → first check complete → first draft → trial ends → paid. Drop-off per step with the org list behind each drop.
+- **Cohort heatmap**: paid retention by signup month (months 0-6) and by plan.
+- **Churn analysis**: voluntary (cancel requested) vs involuntary (payment failed), reasons (collected in cancel flow, phase 3), time-to-churn distribution.
+- **Plan mix & upgrade paths**: Sankey of plan transitions (Starter→Growth, Growth→Agency…).
+- **Tax & invoices**: GST collected vs revenue (INR prices are pre-tax, 18% added), downloadable monthly GST summary CSV for accounting.
+- **Pricing what-if simulator**: change a plan price/limit in a sandbox and see projected MRR and margin using current subscribers and last-30-day usage. Reads the catalogue, writes nothing.
+- **Forecast**: 3-month MRR projection from trailing growth and churn, shown as a band, labelled as an estimate.
+
+## 6. Module C: Margin and cost control (the AI-product edge)
+
+- **Per-org margin**: price (ex-tax) vs `ai_usd` in the current period, with plan `ai_cap_usd` marker. Colour by margin.
+- **Cost anatomy**: by engine, by kind (ask/write/inspect/serp), by plan, per completed check, per brand, per seat.
+- **Platform-keys exposure**: orgs allowed to use our keys (`allow_platform_keys`), their cost, and a one-click "ask them to bring keys".
+- **Cost forecast**: month-end AI cost projection per org from run schedules (daily/weekly × prompts × samples × engines × average cost).
+- **Margin guard actions** (opt-in, phase 4): at X% of cap, auto-reduce samples per prompt to 1, then pause scheduled runs, then block new checks (blocking already exists at 100% of budget); every automatic step audited and emailed to the org admin.
+- **Anomaly detection**: daily cost per org vs trailing median; spike >5× or an engine returning errors but still billed raises an attention item.
+- **Provider price table**: editable list of per-engine estimated prices (currently list prices in code) so the cost model is corrected without a deploy; reconcile estimate vs actual provider invoice monthly (manual entry of the invoice total, shows drift %).
+- **Unit economics page**: CAC (manual spend input), LTV, LTV:CAC, gross margin, burn multiple if costs entered.
+
+## 7. Module D: Customers (org list and 360)
+
+**D1. Org list**: search, saved views, columns (plan, status, MRR, margin, health, last check, seats, brands, signup, country), filters (plan, status, health band, platform-keys, trial state, has-integrations), bulk actions (send email, add tag), CSV export.
+
+**D2. Health score (0-100)**, transparent formula, weights editable:
+
+| Signal | Weight |
+|---|---|
+| Checks completed in last 14d vs expected | 30 |
+| Recovery actions moved forward | 20 |
+| Active seats / purchased seats | 10 |
+| Integrations connected | 10 |
+| Budget headroom | 10 |
+| Payment state | 10 |
+| Last login recency (any member) | 10 |
+
+Bands: Thriving ≥75, Steady 50-74, At risk 25-49, Dormant <25. Score trend stored daily in `console_snapshots` so "dropped 25 points" is computable.
+
+**D3. Org 360** (one scroll, tabs for depth):
+- Header: name, plan, status, MRR, margin, health, owner, tags, notes pin.
+- **Timeline**: signup, invites, brands created, checks, drafts, actions, plan changes, payments, emails, operator visits, support notes, all from existing tables.
+- Usage vs limits (brands/questions/competitors/seats/drafts/checks) as bars with the plan limit.
+- Billing: subscription, next charge, invoices, events, Razorpay ids.
+- People: members and roles, last seen, invite status.
+- Brands: each brand with its latest score, schedule, last run result.
+- Keys & integrations: which engines use org key vs platform key (masked), integration connection health.
+- Audit: org-scoped `audit_log`.
+- Notes and tasks: internal, with @mention of another operator, due date.
+
+**D4. Operator actions** (each audited, each with a required reason for money-affecting ones):
+extend trial, grant plan (until date), change plan, set/raise budget, set `allow_platform_keys`, pause/resume scheduled runs, pause org (read-only mode), resend invite, transfer ownership, merge duplicate orgs (phase 5), delete org (soft, 14-day grace, phase 5), impersonate-visit (exists).
+
+**D5. Lifecycle states**: lead → trial → paying → at-risk → churned → won-back, derived, shown as a badge and used in filters.
+
+## 8. Module E: Subscription management
+
+**E1. Subscriptions table**: org, plan, currency, amount, status, started, next charge, payment method type (UPI/card, no card data), Razorpay subscription id, last event, reconcile age.
+
+**E2. Dunning centre**: past_due queue with days overdue, retry state, templated reminder emails (3-step sequence, day 1/3/7, from `email_log`-tracked sends), pause-after-N-days policy, recovered-revenue counter.
+
+**E3. Upcoming**: renewals next 7/30 days (expected cash), trials ending, scheduled downgrades, pending cancellations.
+
+**E4. Plan catalogue**: moved here from the team page. Same editor; added: price history, "grandfather" flag (existing subscribers keep old price when plan price changes, relying on `retired_plan_ids`), per-plan subscriber count, per-plan margin.
+
+**E5. Coupons, credits, trial rules** (phase 3):
+- Coupons: percent/amount, duration, plan scope, max redemptions, expiry (Razorpay offers or applied as operator credit).
+- Operator credit: add a free period or ₹ credit to an org with reason.
+- Trial rules: default length (7d now), extend by operator, trial abuse guard (same email domain/IP/card fingerprint flags).
+- Referral program (phase 6): invite link, reward as credit, tracked by `signup_source`.
+
+**E6. Refunds & adjustments** (phase 5): record a refund issued in Razorpay dashboard (or issue via API), reflects in MRR/GST; adjustment ledger with reason.
+
+**E7. Invoices**: list and download per org per month (GST-compliant invoice PDF from existing billing data), resend invoice email. (Verify with accountant before launch.)
+
+**E8. Usage add-ons** (phase 6): top-up packs for checks or drafts beyond the plan; overage rules per plan; shown in Revenue as expansion.
+
+**E9. Seat management**: seats used vs allowed per org, force-remove inactive seats, over-seat alerts (seats count includes open invites, as today).
+
+## 9. Module F: Platform analytics and health
+
+**F1. Reliability board**: runs started/succeeded/failed/stopped, success rate, p50/p95 duration, by engine, by source (live/scheduled), failures grouped by normalised error text with first/last seen and affected orgs.
+
+**F2. Engine status**: per engine error rate and latency last 24h/7d, key source (platform vs org), rate-limit hits, "engine degraded" banner toggle that tells the app to warn users.
+
+**F3. Scheduler health**: last `cron/tick` time, ticks missed, workspaces overdue (`next_run_at` past), queue depth, longest-running run (`running_at`).
+
+**F4. Webhooks & email**: Razorpay events received/processed/failed, replay button; email sends/failures/bounces from `email_log` and Resend.
+
+**F5. Infra**: `/api/health` (db, revision), Cloud Run revision, error logs summary (link out to Cloud Logging; no log ingestion here), DB size and connection count if exposed.
+
+**F6. Abuse & security**: signups per hour per IP/domain, failed logins, rate-limit trips (`security.mjs`), new orgs from disposable email domains.
+
+**F7. Platform kill switches and flags** (stored in DB, read by server with 30s cache): `billing_enabled` (replaces env flow), per-engine disable, maintenance banner, signups open/closed, ORG_CREATION open/closed, scheduled runs global pause. Every flip audited and shown on Today when active.
+
+**F8. Announcements**: in-app banner/message targeted by plan or org, with start/end and dismiss tracking (e.g. "Gemini is degraded", "New: Fanouts page").
+
+## 10. Module G: Product analytics
+
+- **Event stream** (new, small): `product_events` via `POST /api/events`, allowlisted names (page_view, brand_created, check_started, check_completed, draft_created, draft_published, action_done, integration_connected, plan_viewed, checkout_started, checkout_completed, invite_sent). No free-text or PII in props; org/user ids only.
+- **Activation funnel**, **time-to-first-check**, **time-to-first-draft**.
+- **Feature adoption** by plan and by org age (which dashboard pages, which integrations, which draft kinds).
+- **Stickiness**: weekly active orgs, WAU/MAU, checks per active org.
+- **Recovery loop completion**: of gaps found, % with a draft, % with an action done, % rechecked, % that improved on recheck (reported as an observed change, never as caused by the action, matching `public/product-language.js`).
+- **Pricing-page and checkout funnel**: plan viewed → checkout started → completed, with failure reasons from Razorpay.
+- **Experiments** (phase 6): simple server-side flags with deterministic bucketing by org id for pricing page copy or trial length; results table with conversion per variant and a minimum-sample warning.
+
+## 11. Module H: Support and communication
+
+- **Notes & tasks** per org (D3), @mention, due dates; "My tasks" list on Today.
+- **Email composer** from org 360: templates (welcome, nudge, dunning, win-back, incident), merge fields, logged in `email_log` with sender and org; Resend send.
+- **Lifecycle emails** (rules, phase 4): trial day 1/3/5/7, dormant 7d, budget 80%, first check done. Each rule on/off, with sent counts and conversion.
+- **Support inbox light**: a "contact support" form in the app writes `support_requests` (org, user, subject, body, status); operators answer by email, status open/pending/closed. (Link a real helpdesk later if volume grows.)
+- **Impersonation**: existing operator visit; add visible banner "You are viewing as Perfstaq operator" and a mandatory reason on entry, logged.
+- **Changelog / status page** (phase 6): public `/status` page driven by F2/F7.
+
+## 12. Metric glossary (single source of truth)
+
+| Metric | Definition |
+|---|---|
+| MRR | Sum over orgs with `billing_status in (active, past_due)` of monthly plan price (ex-tax) in org currency, converted at the configured rate for totals. Operator-contracted MRR reported as a separate line. |
+| New MRR | MRR of orgs whose first paid period started in the window |
+| Expansion / Contraction | Plan change up / down, or add-on change |
+| Churned MRR | MRR of orgs that moved to cancelled/expired in the window |
+| Net new MRR | New + Expansion + Reactivation − Contraction − Churn |
+| Trial→paid | Orgs paying within 14 days of trial end ÷ trials ended in the window |
+| Logo churn | Paying orgs lost in window ÷ paying orgs at window start |
+| Gross margin | (Revenue ex-tax − AI cost in period) ÷ revenue ex-tax |
+| AI cost | `usage_counters` metric `ai_usd` (estimated at list prices) |
+| Weekly Recovery Loop | Org with ≥1 completed check AND ≥1 draft AND ≥1 recovery action update in the ISO week |
+| Active org (WAO) | Org with ≥1 completed check or draft in the ISO week |
+| Health score | Section 7, D2 |
+| Time to first check | org created → first run `done` |
+
+Every definition appears in a "How we measure" popover on the console, like the one on the user dashboard.
+
+---
+
+## 13. Cross-cutting
+
+**13.1 Operator roles** (new, today every operator is all-powerful):
+
+| Role | Can |
+|---|---|
+| Founder | everything incl. flags, catalogue, refunds, operator management |
+| Finance | revenue, subscriptions, refunds, invoices; read customers |
+| Support | customers, notes, emails, trial extension; no pricing, no refunds |
+| Analyst | read-only dashboards, exports without emails |
+
+Stored in `operators(user_id, role, active)`; `PLATFORM_OPERATORS` env stays as the bootstrap founder list.
+
+**13.2 Security**
+- Operator-only routes return 404 to non-operators (matches existing guard).
+- Require verified email (already) and add optional TOTP MFA for operators (phase 5; mandatory for Founder/Finance once built).
+- Session timeout for operator sessions 8h; re-auth for money actions (refund, grant, delete).
+- Rate limit all console writes (`limited()` helper exists).
+- Never log or display secrets; org keys stay masked `••••last4`.
+- Exports (CSV) are audited and exclude emails for Analyst.
+- Optional IP allowlist for `/api/admin/console/*`.
+
+**13.3 Compliance (India)**
+- DPDP Act: data export per org/user, deletion with grace period and a deletion log, consent for lifecycle emails (marketing opt-out link on non-transactional mail).
+- GST: invoice numbering, tax shown separately, SAC code, monthly summary.
+- Retention: `product_events` 90 days, `audit_log` kept (statutory), `email_log` 12 months.
+
+**13.4 Notifications**: Slack channel for P1 items (payment failed on ≥₹10k MRR org, webhook failures, margin negative, outage), Monday digest email, daily briefing optional. Per-operator preferences.
+
+**13.5 Performance**: aggregates computed in `server/console.mjs`; 60s in-memory cache; daily snapshot rows for history; heavy queries run on a read replica later if needed; all list endpoints paginated.
+
+**13.6 Accessibility and design**: same Perfstaq brand system (Geist, orange middle bar), WCAG AA contrast, keyboard operable tables, colour never the only signal (icons + text for health/margin), light and dark if the app has both.
+
+---
+
+## 14. Data model (migration `008_console.sql`, additive only)
+
+```sql
+-- operators beyond the env bootstrap list
+create table operators (
+  user_id uuid primary key references users on delete cascade,
+  role text not null check (role in ('founder','finance','support','analyst')),
+  active boolean not null default true,
+  mfa_secret text,                       -- sealed with APP_SECRET
+  created_at timestamptz not null default now()
+);
+
+-- daily history written by the cron tick (idempotent per day)
+create table console_snapshots (
+  day date primary key,
+  mrr_minor jsonb not null,              -- {INR: n, USD: n, contracted: n}
+  mrr_by_plan jsonb not null,
+  orgs_by_status jsonb not null,
+  ai_usd numeric(12,4) not null,
+  runs_ok int not null, runs_failed int not null,
+  wao int not null, wrl int not null,
+  created_at timestamptz not null default now()
+);
+create table org_health_daily (
+  org_id uuid references organizations on delete cascade,
+  day date, score int not null, parts jsonb not null,
+  primary key (org_id, day)
+);
+
+create table org_notes (
+  id bigserial primary key,
+  org_id uuid not null references organizations on delete cascade,
+  by_user uuid references users on delete set null,
+  body text not null, pinned boolean not null default false,
+  due_at timestamptz, done_at timestamptz, assignee uuid references users on delete set null,
+  at timestamptz not null default now()
+);
+create table org_tags (org_id uuid references organizations on delete cascade, tag text, primary key (org_id, tag));
+
+create table console_attention_state (
+  key text primary key,                  -- rule + org
+  snoozed_until timestamptz, done_at timestamptz, by_user uuid references users on delete set null
+);
+create table console_goals (month date primary key, targets jsonb not null);
+create table console_briefings (day date primary key, body text not null, facts jsonb not null);
+
+create table product_events (
+  id bigserial primary key,
+  at timestamptz not null default now(),
+  org_id uuid, user_id uuid, name text not null, props jsonb not null default '{}'
+);
+create index product_events_name_time on product_events (name, at);
+
+create table platform_flags (
+  key text primary key, value jsonb not null,
+  updated_by uuid references users on delete set null, updated_at timestamptz not null default now()
+);
+create table announcements (
+  id bigserial primary key, title text not null, body text not null,
+  audience jsonb not null default '{}',  -- {plans:[..], orgs:[..]}
+  starts_at timestamptz not null, ends_at timestamptz,
+  level text not null default 'info' check (level in ('info','warn','incident'))
+);
+create table coupons (
+  code text primary key, kind text not null check (kind in ('percent','amount','free_days')),
+  value numeric not null, plans text[], max_redemptions int, redeemed int not null default 0,
+  expires_at timestamptz, active boolean not null default true
+);
+create table org_credits (
+  id bigserial primary key, org_id uuid not null references organizations on delete cascade,
+  kind text not null, amount_minor bigint, days int, reason text not null,
+  by_user uuid references users on delete set null, at timestamptz not null default now()
+);
+create table support_requests (
+  id bigserial primary key, org_id uuid references organizations on delete set null,
+  user_id uuid references users on delete set null, subject text not null, body text not null,
+  status text not null default 'open' check (status in ('open','pending','closed')), at timestamptz not null default now()
+);
+create table provider_prices (engine text primary key, input_per_mtok numeric, output_per_mtok numeric, per_call numeric, updated_at timestamptz not null default now());
+create table provider_invoices (month date, engine text, amount_usd numeric not null, primary key (month, engine));
+
+alter table users add column if not exists signup_source text, add column if not exists utm jsonb;
+alter table organizations add column if not exists paused_at timestamptz, add column if not exists lifecycle text;
+```
+
+Derived (no new tables): MRR, margin, funnel, cohorts, waterfall from `organizations`, `plan_prices`, `usage_counters`, `audit_log`, `billing_events`, `runs`.
+
+## 15. API surface
+
+All `/api/admin/console/*`, operator-guarded, role-checked per route, cached reads, audited writes.
+
+| Group | Endpoints |
+|---|---|
+| Today | `GET summary`, `attention`, `briefing`, `goals`; `POST attention/:key/{snooze,done}`; `PUT goals` |
+| Revenue | `GET revenue/{mrr,waterfall,funnel,cohorts,churn,plan-mix,tax}`, `POST simulate` |
+| Margin | `GET margin/{orgs,anatomy,forecast,anomalies}`, `PUT provider-prices`, `PUT provider-invoices` |
+| Customers | `GET orgs`, `orgs/:slug`, `orgs/:slug/timeline`; `POST orgs/:slug/{extend-trial,grant-plan,set-budget,platform-keys,pause,resume,note,tag,remind,transfer-owner}` |
+| Subscriptions | `GET subs`, `dunning`, `upcoming`; `POST subs/:org/{reconcile,retry-reminder}`; existing `plans` & `billing/*` stay |
+| Coupons/credits | `GET/POST coupons`, `POST orgs/:slug/credit` |
+| Platform | `GET health/{runs,engines,scheduler,webhooks,email,abuse}`; `POST webhooks/:id/replay`; `GET/PUT flags` |
+| Product | `GET product/{activation,adoption,stickiness,loop}`; public-ish `POST /api/events` (authenticated user, allowlisted names, rate-limited) |
+| Comms | `POST email`, `GET/PUT email-templates`, `GET/POST announcements`, `GET/PATCH support` |
+| Ops | `GET audit`, `GET export/:report` (CSV, audited), `GET/PUT operators` |
+| Ask | `POST ask` (allowlisted tools only, streams SSE like the agent) |
+
+Server code layout: `server/console.mjs` (queries), `server/console-routes.mjs` (routes, same pattern as `billing-routes.mjs`), `server/console-jobs.mjs` (daily snapshot, health, briefing, digest, dunning, lifecycle emails, called from the existing cron tick). Front end: `public/console.js` + `public/console.css`, lazy-loaded.
+
+## 16. UI blueprint
+
+Left rail: Today · Revenue · Margin · Customers · Subscriptions · Platform · Product · Comms · Settings. Top bar: command palette (`⌘K`: jump to org, run action), date range, "viewing as" chip, operator avatar.
+
+- **Today**: briefing paragraph, headline strip with sparklines, attention feed (left, wide), right column: goals, my tasks, platform status light, flags currently on.
+- **Revenue**: waterfall bars, plan/currency stacked area, funnel with drop-off counts, cohort heatmap, what-if simulator drawer.
+- **Margin**: org table with inline margin bar (price | AI cost | cap), engine/kind donut replaced by sorted bars (easier to read), forecast band, anomalies list.
+- **Customers**: dense table + saved views; Org 360 as a full page with sticky header and tabs.
+- **Subscriptions**: tabs Subscriptions · Dunning · Upcoming · Catalogue · Coupons · Invoices.
+- **Platform**: reliability cards, error groups table, engine status chips with disable toggles, scheduler lag, webhooks with replay, flags panel.
+- **Product**: activation funnel, adoption matrix (feature × plan), loop completion funnel.
+- **Comms**: composer, templates, lifecycle rules, announcements, support requests.
+- Mobile: single column; Today and attention feed must be fully usable on a phone (founder checks it there).
+- Charts: d3 (already loaded), small reusable helpers `sparkline`, `bars`, `heatmap`, `funnel`, `waterfall` in `console.js`; no new library.
+
+---
+
+## 17. Reconcile with `perfstaq-b2b` (blocked until access)
+
+Checklist when the repo is readable:
+1. Compare its founder dashboard's metric set and definitions to section 12; adopt its definitions if the business already reports on them.
+2. Adopt its navigation, naming and visual language so the two products feel like one company.
+3. Check data source and tenant model: separate database? shared auth? cross-product customers (one company on both)?
+4. Decide: **embed the Command Deck in White Petal** (this plan) vs **one shared Perfstaq admin** over both products. Default recommendation: embed now, keep `console.mjs` queries pure functions of the DB so they lift out later.
+5. Pull in anything it has that this plan lacks; drop what it shows that nobody uses.
+
+## 18. Phases (each ends shippable, behind a platform flag)
+
+| # | Phase | Contents | Exit criteria |
+|---|---|---|---|
+| 0 | Foundations | Local Postgres via docker compose; fix 2 failing tests (DB-dependent); `008_console.sql`; operators table + roles; `console-routes.mjs` skeleton with guard; flag `console_enabled` | Tests green with DB; non-operator gets 404; migration idempotent |
+| 1 | Read-only core | Today (strip + attention feed rules), Customers list + Org 360 (timeline, usage, billing, people, audit), Subscriptions list/upcoming; catalogue editor relocated | Real numbers match SQL spot-checks; every attention rule has a test with seeded data |
+| 2 | History & revenue | Daily snapshots job, Revenue (MRR, waterfall, funnel, cohorts, tax CSV), health score + history | Waterfall sums to MRR change; snapshot job idempotent; GST CSV matches billing rows |
+| 3 | Margin | Margin pages, forecast, anomalies, provider prices/invoices, unit economics | Margin matches `usage_counters` to the cent; anomaly fires on seeded spike |
+| 4 | Actions & dunning | Operator actions with reasons + audit, notes/tasks, email composer, dunning sequence, lifecycle emails, Slack P1 alerts | Each action: test + audit row; dunning sends once per step |
+| 5 | Platform ops | Reliability board, engine status, scheduler/webhook health + replay, flags & kill switches, announcements, abuse signals, operator MFA, soft-delete org, refunds ledger, invoices | Flipping a flag changes app behaviour within 30s; replay is idempotent |
+| 6 | Product intelligence | Events stream, activation/adoption/loop analytics, goals, AI briefing, Ask-the-console, weekly digest, what-if simulator, coupons/credits, support requests | Briefing numbers verified against inputs; Ask uses allowlist only |
+| 7 | Growth levers | Referral, add-ons/top-ups, experiments, public status page, margin-guard auto-actions | Opt-in per rule; every automatic action audited and emailed |
+
+## 19. Testing strategy
+
+- **Unit** (node:test, existing style): metric functions (MRR, waterfall, health, margin, funnel) as pure functions with fixtures; money math through `plans.mjs` helpers.
+- **API** (with `TEST_DATABASE_URL`, existing `_fake.mjs` patterns): guard (404 for non-operators, 403 per role), each write action writes `audit_log`, rate limits, pagination, CSV exports exclude emails for Analyst.
+- **Seeded scenario harness** (`npm run seed:console`): creates ~40 orgs across statuses (trial active/dormant, paying, past_due, cancelled, over-budget) plus runs/usage, so dashboards are verifiable by eye and by assertion. Runs only against local/test DB and cleans up after itself.
+- **Reconciliation checks**: console MRR vs sum of Razorpay plan amounts for active subs (script, run manually per release); console AI cost vs `usage` rows.
+- **E2E** (`test/e2e/flow.py` style, Playwright): operator login → Today → org 360 → extend trial → audit row visible.
+- **Load**: summary endpoint under 300ms p95 with 10k orgs / 5M usage rows (snapshots + indexes).
+
+## 20. Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| Wrong MRR/churn erodes trust | Written definitions; reconciliation script vs Razorpay; label estimates |
+| Console queries slow production DB | Snapshots, 60s cache, indexes after `EXPLAIN`, replica if needed |
+| Operator misuse / mistakes | Roles, reasons on money actions, audit, MFA, undo window for pause/grant |
+| PII exposure | Operator-only, masked secrets, exports audited, Analyst without emails |
+| Auto margin-guard hurts a good customer | Opt-in, staged, email-notified, easily reversible |
+| AI briefing hallucinates | Numbers validated against input facts; falls back to template text |
+| Scope explosion | Phases 1-4 deliver the founder's daily value; 5-7 only after phases 1-4 are used weekly |
+| Event stream privacy | Allowlisted names, no free text, 90-day retention |
+| Two products, two admins | Section 17 decision before phase 2 |
+
+## 21. Effort (one developer, rough)
+
+| Phase | Estimate |
+|---|---|
+| 0 Foundations | 2-3 days |
+| 1 Read-only core | 6-8 days |
+| 2 History & revenue | 5-6 days |
+| 3 Margin | 4-5 days |
+| 4 Actions & dunning | 6-7 days |
+| 5 Platform ops | 7-9 days |
+| 6 Product intelligence | 7-9 days |
+| 7 Growth levers | 6-8 days |
+| **Total** | **~9-12 weeks**; phases 0-4 (the part that changes how you run the company) ≈ 4-5 weeks |
+
+## 22. Decisions needed from you
+
+1. Embed in White Petal, or one shared Perfstaq admin for both products? (needs `perfstaq-b2b` access)
+2. Who are the operators and which roles (founder / finance / support / analyst)?
+3. Base currency for totals (INR with USD converted at a fixed rate?).
+4. Auto margin-guard: allowed to throttle customers automatically, or alert-only?
+5. Email policy: may the console send lifecycle/dunning emails automatically, or draft-for-approval first?
+6. Data retention for product events and who may export customer emails.
+7. Are Razorpay refunds issued from the console, or recorded after you do them in Razorpay?
+
+---
+
+## 23. Architecture as built (2026-10-15) and Razorpay from the console
+
+**Shape.** One app, one database, one deploy. The console is a separate operator-only page inside White Petal, not a second service:
+
+| Layer | File | Job |
+|---|---|---|
+| Page | `public/console/` (`index.html`, `console.js`, `console.css`) | Hash-routed pages (Today, Revenue, Margin, Organisations, Org 360, Subscriptions, Health, Audit) drawn with the results dashboard's own `app.css` classes, so it looks like the app. ⌘K jumps to any page or organisation. |
+| Read models | `server/console.mjs` | Every number on screen, derived from existing tables. Pure rules (`mrrOf`, `marginPct`, `health`, `attention`) are unit-tested in `test/server/console.test.mjs`. |
+| Routes | `server/console-routes.mjs` | 404 for non-operators; per-role access (founder, finance, support, analyst; analysts get emails redacted); every write audited. |
+| Billing state | `server/billing-routes.mjs` (unchanged) | Still the **only** writer of plan/billing state. The console never sets a plan from a browser request. |
+
+**Why not a separate admin service:** it would need its own auth, a copy of the billing rules, and cross-service calls into the same Postgres. Today's size (one Cloud Run service, one small Cloud SQL) doesn't justify that. Upgrade path when the per-request aggregates get slow (thousands of organisations): fill `console_snapshots` / `org_health_daily` from the cron tick and read history from them, then a read replica.
+
+**Razorpay from the dashboard: what is done here, what stays in Razorpay.**
+
+| Task | Where | Status |
+|---|---|---|
+| Create / verify Razorpay plans per catalogue price | White Petal (plan catalogue, `/api/admin/plans/:code/razorpay`, sync all) | existed |
+| **Create a subscription for a customer** | Console → Org 360 → Billing actions → "Send subscription link" | **built**: creates the Razorpay subscription (any catalogue price with a plan id, Enterprise included), Razorpay emails the owner a link, stored as the *pending* subscription, adopted only by the signed webhook. Reason required, audited (`billing.link_sent`). During a trial the first charge waits for the trial's end. |
+| Sync one organisation with Razorpay now | Console → Org 360 | **built** (`syncOrg`) |
+| Owner upgrades / downgrades / cancels | Owner's Plans & payment | existed |
+| **Change a paying customer's plan** | Console → Org 360 → Change plan | **built**: same shared `changePlan` as the owner's page (upgrade now, downgrade at period end, UPI/e-mandate refusal, downgrade blockers); operators may move to any plan with a Razorpay price (e.g. Enterprise). Reason required. |
+| **Cancel** | Console → Org 360 → Cancel subscription | **built**: at period end, or now (type the organisation id to confirm; the Razorpay webhook then moves it off the plan) |
+| **Invoices and refunds** | Console → Org 360 → Invoices and refunds | **built**: invoices listed live from Razorpay with hosted links; refund full or partial, only for a payment that belongs to this subscription, typed confirmation, reason, rate limit, audited (`billing.refund_issued`) |
+| **Create a plan and assign it** | Console → Plans (create/edit, create the Razorpay plan per price, "create missing") and Org 360 → Assign a plan (no card) | **built**: custom plans for one customer, assigned as an invoiced contract, extended trial or internal account, with optional per-organisation limits (seats, brands, …) that expire with the grant. Finance operators can do this now, not only `PLATFORM_OPERATORS`. |
+| KYC / account activation, settlements and payouts, disputes, enabling USD/international, webhook secret | Razorpay dashboard | stays there: account-level and regulated, not something an app should do |
+
+## 24. Active users (day, week, month)
+
+Console → **Active users**. "Active" = the person signed in, ran a check, made an AI call, or did anything audited that day.
+
+| Metric | Definition |
+|---|---|
+| DAU | distinct people active that day |
+| WAU | distinct people active in the 7 days ending that day |
+| MAU | distinct people active in the 30 days ending that day |
+| Stickiness | DAU ÷ MAU (20%+ is healthy for a weekly-loop product) |
+| Active organisations | organisations with a check or AI call, per day / 7 days / 30 days |
+
+The page charts DAU/WAU/MAU per day for 30, 90 or 180 days, active organisations and new accounts per day, MAU by plan, and the most active organisations. Known limit: a sign-in with no other action counts only while its session row exists (sign-out deletes it); checks, AI calls and audited actions are permanent. If sign-in-only visits matter, add a `user_activity(user_id, day)` upsert at login.
+
+Plan limits are still per billing period (brands, questions, seats, drafted fixes, checks, AI cost). Daily or weekly caps (for example "N checks a day") are not built; they would be new metrics in `plan_limits` plus a check in `server/billing.mjs`.
+
+## 25. Verified (2026-10-15)
+
+- `npm test` 151/151 against Postgres 16, three runs in a row. Console tests cover: operator guard (404), roles (support vs finance vs analyst), subscription link stays pending until the signed webhook, change plan (upgrade now / downgrade at cycle end), cancel (end of period / now with confirmation), invoices, refunds (foreign payment, over-amount and missing confirmation refused), catalogue edit and plan assignment by finance with a custom seat limit enforced in `billingSummary`, notes, attention snooze, active-user counts.
+- Guards checked by breaking them: removing the operator guard and the refund payment check each turns the suite red.
+- The old flaky test ("organisations…", Node 24 EPIPE) was the 413 path: the server closes the connection at the 2 MB limit by design, so a client still uploading can see the socket close before the 413. The test now accepts either as the refusal; the server is unchanged.
+- In the browser: every page at desktop and phone width; creating a custom plan; assigning it to an organisation (status, MRR and audit updated; 30-seat override enforced server-side); the Command Deck link clicked from the account menu by an Analyst (restricted nav, emails redacted).
+- **Not verified against a live Razorpay account** (no test keys here): send link, change plan, cancel, invoices, refund were exercised with a fake Razorpay client. Run each once with `rzp_test_` keys before switching it on in production.
+
+## 26. Live, Insights and plan CRUD (2026-10-15, later)
+
+**Live** (Console → Live): who is in White Petal right now and what is happening, streamed over Server-Sent Events every 5 seconds.
+People online (heartbeat in the last 2 minutes) with the page and brand they are on, device and time on page; active today; organisations online;
+checks running with live timers; events per minute for the last hour (page views, AI calls, checks); AI spend in the last hour and day; a feed of the
+last 30 minutes. Data comes from a browser heartbeat (`POST /api/presence`, every 45 s while the tab is visible and on every page change) into
+`presence` (latest page per person) and `page_views` (one row per page opened, 90-day retention). Only page names from the app's own navigation and
+a brand slug are stored; operators visiting a customer's organisation are not counted.
+
+**Insights** (Console → Insights), written for a product manager or analyst:
+- Findings: plain sentences built from the numbers (biggest activation drop-off, time to first check, most-used page after the overview, pages under
+  10% adoption, week-4 retention, revenue concentration, recovery-loop trend, phone share). Each names its evidence.
+- North star: organisations completing a full recovery loop per week, 12 weeks.
+- Activation funnel (sign-up → check → draft → action → paid) and time to value (median hours to first check and draft, day-1 and week-1 rates, days to pay).
+- Weekly retention heatmap by sign-up cohort (W0–W7).
+- Feature adoption (share of active people per page) and a plan × page heatmap normalised to each plan's active people.
+- Depth (AI calls and checks per active organisation per week), revenue concentration (largest customer, next 4, next 5, everyone else), devices.
+
+**Plan CRUD**: create, read, update (existed), plus **duplicate** (copies everything except Razorpay ids) and **delete** (refused for Legacy/Trial and for
+any plan an organisation is on or moving to; those are archived by unticking Active). Typed confirmation, audited as `plan.catalogue_deleted`.
+
+**Design notes**: one stat-tile system everywhere (as many columns as tiles on wide screens, an even wrap below, an odd last tile spanning the row on
+phones; 1px gaps draw the dividers); one accent hue for heat and emphasis with semantic green/amber/red kept for state; every chart mark has a hover
+readout; live elements pulse only while live and respect reduced motion.
+
+**Verified**: 154/154 tests (presence validation and de-duplication, live stream is operator-only and carries the person on the right page, insights
+shape, plan delete rules, cohort maths, findings). In the browser with `node scripts/seed-console.mjs --live 8` simulating use: Live updating every 5 s,
+Insights, plan duplicate and delete, archive note for a plan in use; Live and Insights at 375 px with no horizontal overflow.
+
+**Known limits**: presence relies on the browser heartbeat, so a tab in the background counts as offline after 2 minutes; the live stream holds a
+connection per open console (30-minute cap, then the page reconnects), and a dev-server restart waits for it to close.

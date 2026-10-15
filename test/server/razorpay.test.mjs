@@ -52,7 +52,7 @@ test("plan ids map both ways, only for configured self-serve plans and currencie
   const env = { RAZORPAY_PLAN_GROWTH_INR: "plan_g", RAZORPAY_PLAN_STARTER_USD: "plan_s" };
   assert.equal(planIdFor("growth", "INR", env), "plan_g"); assert.equal(planIdFor("agency", "INR", env), null);
   assert.equal(planIdFor("enterprise", "INR", { RAZORPAY_PLAN_ENTERPRISE_INR: "x" }), null); assert.equal(planIdFor("growth", "EUR", env), null);
-  assert.deepEqual(planOf("plan_s", env), { plan: "starter", currency: "USD" }); assert.equal(planOf("plan_x", env), null); assert.equal(planOf("", env), null); assert.equal(planOf(undefined, env), null);
+  assert.deepEqual(planOf("plan_s", env), { plan: "starter", currency: "USD", cycle: "monthly" }); assert.equal(planOf("plan_x", env), null); assert.equal(planOf("", env), null); assert.equal(planOf(undefined, env), null);
 });
 test("billing config: unknown flag values mean off; ready needs all three keys", () => {
   assert.equal(billingConfig({}).enabled, "0"); assert.equal(billingConfig({ BILLING_ENABLED: "yes" }).enabled, "0");
@@ -88,4 +88,17 @@ test("UPI Autopay only up to the ₹15,000 recurring limit (with GST): Starter a
   assert.equal(upiAllowed(499900, "INR"), true); assert.equal(upiAllowed(999900, "INR"), true);
   assert.equal(upiAllowed(2499900, "INR"), false); assert.equal(upiAllowed(1271186, "INR"), true, "₹14,999.99 with GST is still allowed, a paisa more is not"); assert.equal(upiAllowed(1271187, "INR"), false);
   assert.equal(upiAllowed(4900, "USD"), false, "no UPI outside India");
+});
+
+test("annual billing and seat add-ons: yearly subscriptions, yearly plans, add-on charges, both-way plan ids", async () => {
+  const { calls, fetch } = recorder(); const c = rz(fetch);
+  await c.createSubscription({ planId: "plan_y", orgId: "o", plan: "growth", cycle: "annual" });
+  assert.equal(calls[0].body.total_count, 10, "ten years, effectively until cancelled");
+  await c.createPlan({ name: "Growth yearly", amount: 100, currency: "INR", period: "yearly" });
+  assert.equal(calls[1].body.period, "yearly"); assert.equal(calls[1].body.interval, 1);
+  await c.createAddon("sub_1", { name: "2 extra seats", amount: 59000, currency: "INR" });
+  assert.equal(calls[2].url.endsWith("/subscriptions/sub_1/addons"), true); assert.deepEqual(calls[2].body, { item: { name: "2 extra seats", amount: 59000, currency: "INR", description: "" }, quantity: 1 });
+  const env = { RAZORPAY_PLAN_GROWTH_INR: "plan_m", RAZORPAY_PLAN_GROWTH_INR_ANNUAL: "plan_a" };
+  assert.equal(planIdFor("growth", "INR", "annual", env), "plan_a"); assert.equal(planIdFor("growth", "INR", env), "plan_m", "the old (plan, currency, env) call still works");
+  assert.deepEqual(planOf("plan_a", env), { plan: "growth", currency: "INR", cycle: "annual" });
 });

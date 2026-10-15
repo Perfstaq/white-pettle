@@ -11,6 +11,7 @@ import { connect, migrate, ping, hasDb, close, q } from "./db.mjs";
 import { loadCatalogue, catalogueStamp } from "./plans.mjs";
 import { ROUTES, aiAuth, aiAllow, currentUser, isLocalDev } from "./routes.mjs";
 import * as O from "./orgs.mjs";
+import { consoleRole } from "./console-routes.mjs";
 import * as B from "./billing.mjs";
 import { billingConfig } from "./razorpay.mjs";
 import { HttpError, sendJson, readBody, fail } from "./http.mjs";
@@ -99,9 +100,9 @@ async function sendConfig(req, res, url) {
   const get = async () => (await (await aiHandler("config"))(new Request(url))).json();
   const cfg = ctx?.org ? await O.withOrgKeys(ctx.org.id, get) : await get();
   const budget = ctx?.org ? await O.capState(ctx.org.id) : null;
-  return sendJson(res, 200, { ...cfg, db: hasDb(), auth: hasDb(), access: hasDb() || isLocalDev(req) ? false : cfg.access, invite: hasDb() && !!process.env.ACCESS_CODE && billingConfig().enabled !== "1",
+  return sendJson(res, 200, { ...cfg, db: hasDb(), auth: hasDb(), access: hasDb() || isLocalDev(req) ? false : cfg.access,
     user: user ? { id: user.id, email: user.email, name: user.name, verified: !!user.email_verified_at } : null,
-    org: ctx ? O.orgOut(ctx) : null, orgs: ctx ? ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })) : [], operator: !!ctx?.operator,
+    org: ctx ? O.orgOut(ctx) : null, orgs: ctx ? ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })) : [], operator: !!ctx?.operator, console: user ? !!(await consoleRole(user)) : false,
     budget: budget ? { warn: budget.warn, over: budget.over, pct: budget.pct, source: budget.source } : null, billing: ctx?.org ? { ...(await B.billingSummary(ctx.org.id)), checkout: { enabled: billingConfig().enabled === "1" || (billingConfig().enabled === "operators" && !!ctx.operator) } } : null,
     // Billing screens show only when billing is open: "1" for everyone, "operators" for platform operators, nothing at "0".
     billingUi: billingConfig().enabled === "1" || (billingConfig().enabled === "operators" && !!ctx?.operator),
@@ -158,7 +159,7 @@ if (!quiet) {
   console.log(`\n  Perfstaq AI Visibility → http://localhost:${server.address().port}`);
   console.log(`  accounts: ${hasDb() ? "on (Postgres)" : "off (no DATABASE_URL, data stays in the browser)"}`);
   console.log(`  engines:  ${keys.length ? keys.join(", ") : "none: add GEMINI_API_KEY or OPENAI_API_KEY to .env.local"}`);
-  if (process.env.ACCESS_CODE) console.log(`  access code: ${hasDb() ? "required at sign-up" : "required, except from this machine"}`);
+  if (process.env.ACCESS_CODE && !hasDb()) console.log("  access code: required, except from this machine");
   console.log("");
 }
 return { server, port: server.address().port, stop: () => new Promise((ok) => { clearInterval(catTimer); server.close(() => close().finally(ok)); }) };

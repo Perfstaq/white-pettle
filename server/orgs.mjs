@@ -24,6 +24,14 @@ export const operators = () => String(process.env.PLATFORM_OPERATORS || "").toLo
 // Only for an address the person has proved they own (an emailed link or a verified Google sign-in): otherwise
 // anyone could sign up with an operator's email before the operator does.
 export const isOperator = (u) => !!u?.email && !!u.email_verified_at && operators().includes(normEmail(u.email));
+// Command Deck role: PLATFORM_OPERATORS emails are founders; others come from the operators table (active, verified email).
+export async function consoleRole(u) {
+  if (!u?.email_verified_at) return null;
+  if (isOperator(u)) return "founder";
+  return (await one(`select role from operators where user_id = $1 and active`, [u.id]))?.role || null;
+}
+// Plans and billing administration (catalogue, setting an organisation's plan): founders and finance. 404 for anyone else.
+export async function needBillingAdmin(u) { if (!["founder", "finance"].includes(await consoleRole(u))) fail(404, "Not found"); return u; }
 
 // ── organisation context ──────────────────────────────────────────────────────
 export async function orgsOf(userId) {

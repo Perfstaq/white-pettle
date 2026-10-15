@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Command Deck · White Petal</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/brand/favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="/console/console.css?v=202610172300">
+</head>
+<body>
+<div class="fc" id="fc">
+  <aside class="fc-side" id="side" aria-label="Command Deck">
+    <a class="fc-brand" href="#pulse" aria-label="Command Deck home">
+      <svg class="pq" viewBox="0 0 56 30" aria-hidden="true"><rect x="0" y="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/><rect x="20" y="0" width="16" height="30" rx="4.5" fill="var(--coral)"/><rect x="40" y="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/></svg>
+      <span><b>White Petal</b><small>FOUNDER COMMAND</small></span>
+    </a>
+    <button class="fc-search" id="jump" type="button"><i data-ic="search"></i><span>Search</span><kbd>⌘K</kbd></button>
+    <nav class="fc-nav" id="nav" aria-label="Console pages">
+      <div class="grp">Company</div>
+      <button type="button" data-page="pulse"><i data-ic="pulse"></i>Company Pulse<span class="cnt" id="navAttn"></span></button>
+      <button type="button" data-page="growth"><i data-ic="growth"></i>Growth</button>
+      <button type="button" data-page="value"><i data-ic="value"></i>Product Value</button>
+      <button type="button" data-page="customers"><i data-ic="team"></i>Customers</button>
+      <div class="grp">Revenue</div>
+      <button type="button" data-page="subscriptions" data-role="founder finance support analyst"><i data-ic="card"></i>Plans &amp; Subscriptions</button>
+      <button type="button" data-page="fit" data-role="founder finance analyst"><i data-ic="value"></i>Plan fit</button>
+      <button type="button" data-page="revenue" data-role="founder finance analyst"><i data-ic="rupee"></i>Revenue</button>
+      <button type="button" data-page="margin" data-role="founder finance analyst"><i data-ic="margin"></i>Margin</button>
+      <button type="button" data-page="plans" data-role="founder finance"><i data-ic="doc"></i>Plan catalogue</button>
+      <div class="grp">Platform</div>
+      <button type="button" data-page="live"><i data-ic="live"></i>Live<span class="cd-navlive" aria-hidden="true"></span></button>
+      <button type="button" data-page="operations"><i data-ic="ops"></i>Operations</button>
+      <button type="button" data-page="ai"><i data-ic="spark"></i>AI &amp; Cost</button>
+      <button type="button" data-page="integrations"><i data-ic="link"></i>Integrations</button>
+      <button type="button" data-page="releases"><i data-ic="flag"></i>Releases &amp; Feedback</button>
+      <button type="button" data-page="team" data-role="founder"><i data-ic="key"></i>Team &amp; access</button>
+    </nav>
+    <div class="fc-side-foot">
+      <a class="fc-navlike" href="/"><i data-ic="back"></i>Back to the app</a>
+      <div class="fc-me"><span id="meEmail">Operator</span> · <span id="meRole"></span></div>
+      <button class="fc-navlike" type="button" id="collapse"><i data-ic="side"></i><span>Collapse sidebar</span></button>
+    </div>
+  </aside>
+  <div class="fc-main" id="main">
+    <header class="fc-bar" id="bar">
+      <button class="fc-icon" id="sideToggle" type="button" aria-label="Menu"><i data-ic="side"></i></button>
+      <div class="fc-pill ro"><span>Environment</span><b id="envName">—</b></div>
+      <label class="fc-pill"><span>Accounts</span><select id="fAccounts" aria-label="Accounts"><option value="customers">Customers only</option><option value="all">All accounts</option></select></label>
+      <label class="fc-pill"><span>Period</span><select id="fDays" aria-label="Period"><option value="7">Last 7 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option></select></label>
+      <label class="fc-pill fc-switch"><span class="t">Hide demo accounts</span><input type="checkbox" id="fDemo" role="switch"><i aria-hidden="true"></i></label>
+      <span class="sp"></span>
+      <button class="fc-pill fc-jump" id="jump2" type="button"><i data-ic="search"></i>Jump to…<kbd>⌘K</kbd></button>
+    </header>
+    <div class="pages" id="pages"><div class="pg"><p class="muted">Loading…</p></div></div>
+  </div>
+</div>
+<div class="fc-sheet-wrap" id="sheet" hidden><div class="fc-sheet-scrim" data-close></div><aside class="fc-sheet" role="dialog" aria-modal="true" aria-labelledby="sheetTitle"><header><div><span class="eyebrow">Account</span><h2 id="sheetTitle"></h2></div><button class="fc-icon" type="button" data-close aria-label="Close">✕</button></header><div class="fc-sheet-body" id="sheetBody"></div></aside></div>
+<div class="fc-modal-wrap" id="modal" hidden><div class="fc-modal-scrim" data-mclose></div><section class="fc-modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><header><div><span class="eyebrow" id="modalEyebrow"></span><h2 id="modalTitle"></h2><p class="muted" id="modalSub"></p></div><button class="fc-icon" type="button" data-mclose aria-label="Close">✕</button></header><div class="fc-modal-body" id="modalBody"></div></section></div>
+<script src="/select-popup.js?v=202610171200"></script>
+<script src="/console/console.js?v=202610172400"></script>
+</body>
+</html>
