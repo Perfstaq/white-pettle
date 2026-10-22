@@ -70,7 +70,7 @@ export async function orgRows(scope = null) {
       (select u.email from memberships m join users u on u.id = m.user_id where m.org_id = o.id and m.role = 'owner' limit 1) as owner,
       (select count(*)::int from memberships m where m.org_id = o.id) as members,
       exists (select 1 from payment_links p where p.org_id = o.id and p.status = 'paid' and p.period_end = o.current_period_end) as one_time,
-      (select count(*)::int from workspaces w where w.org_id = o.id) as brands,
+      (select count(*)::int from workspaces w where w.org_id = o.id and w.parent_id is null) as brands,
       (select count(*)::int from runs r join workspaces w on w.id = r.workspace_id where w.org_id = o.id and r.status = 'done' and r.started_at > now() - interval '14 days') as checks14,
       (select count(*)::int from runs r join workspaces w on w.id = r.workspace_id where w.org_id = o.id and r.status = 'done') as checks_all,
       (select count(*)::int from runs r join workspaces w on w.id = r.workspace_id where w.org_id = o.id and r.source = 'scheduled' and r.status = 'failed' and r.started_at > now() - interval '3 days') as failed3,

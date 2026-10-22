@@ -24,6 +24,8 @@ export const fakes = {
       send("delta", { text: t }); send("final", { text: t });
     });
   },
+  // The site re-read a scheduled check starts with (api/_audit.js auditSite), without the network.
+  audit: async (url) => { fakes.calls.audit = (fakes.calls.audit || 0) + 1; return { audit: { origin: "https://acme.ai", scope: "", site: "https://acme.ai", avg: 55, bots: { GPTBot: true, ClaudeBot: false }, llms: true, pages: [{ url: "https://acme.ai", title: "Acme", score: 55, fails: [] }], checkedAt: Date.now(), from: url } }; },
   inspect: async (req) => { const b = await req.json(); fakes.calls.inspect++; return json({ ok: true, url: b.url, final: b.url, domain: new URL(b.url).hostname, title: "Top AI partners", you: false, rivals: ["Deloitte"], evidence: [], contacts: { emails: ["ed@clutch.co"] } }); },
 };
 export const WS = {

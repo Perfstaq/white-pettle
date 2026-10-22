@@ -4,6 +4,7 @@ import askHandler from "../api/ask.js";
 import writeHandler from "../api/write.js";
 import inspectHandler from "../api/inspect.js";
 import { readSSE, engines as availableEngines } from "../api/_lib.js";
+import { auditSite } from "../api/_audit.js";
 import { norm, hostOf, isYou, textHasYou, finished, summarize } from "./metrics.mjs";
 
 const headers = () => ({ "content-type": "application/json", "x-access-code": process.env.ACCESS_CODE || "" });
@@ -14,8 +15,8 @@ async function stream(handler, payload, on = {}) {
   for await (const { event, data } of readSSE(res)) { if (event === "error") throw new Error(data.message || "failed"); on[event]?.(data); }
 }
 // Swappable for tests (setHandlers), so the runner can be exercised without real AI keys.
-let ask = askHandler, write = writeHandler, inspect = inspectHandler;
-export function setHandlers(h = {}) { ask = h.ask || askHandler; write = h.write || writeHandler; inspect = h.inspect || inspectHandler; }
+let ask = askHandler, write = writeHandler, inspect = inspectHandler, audit = auditSite;
+export function setHandlers(h = {}) { ask = h.ask || askHandler; write = h.write || writeHandler; inspect = h.inspect || inspectHandler; audit = h.audit || auditSite; }
 async function writeText(kind, data) { let t = ""; await stream(write, { kind, data }, { delta: (d) => { t += d.text; } }); return t; }
 export function parseLoose(t) {
   try { return JSON.parse(t); } catch {}
@@ -65,9 +66,15 @@ export async function runCheck(ws, opts = {}) {
   let spent = 0; const budget = opts.budgetUsd == null ? null : Number(opts.budgetUsd);
   const afford = (kind, engine) => { if (budget == null) return true; const c = opts.costOf ? opts.costOf(kind, engine) : 0; if (spent + c > budget) { M.budgetStopped = true; return false; } spent += c; return true; };
   const M = { id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6), slug: ws.slug, source: "scheduled", startedAt: Date.now(), finishedAt: null,
-    profile, audit: setup.audit || {}, siteText: setup.siteText || "", engines, samples,
+    profile, audit: setup.audit || {}, siteText: setup.siteText || "", engines, samples, market: ws.market || null,
     questions: qs.map((q, i) => ({ id: "q" + (i + 1), intent: q.intent, topic: q.topic, persona: q.persona, text: q.text })),
     answers: {}, inspections: {}, perception: null, insights: "", assets: prev?.assets || null, pitches: prev?.pitches || {}, fixpack: prev?.fixpack || "", articles: prev?.articles || {}, deck: {}, chat: [], done: { questions: true } };
+
+  // 0. read the site again (no AI): a robots.txt, llms.txt, schema or page fix made since the last check shows up in this
+  // report, its deck and its email. If the site can't be read now, the last reading is kept and the run says so.
+  try { M.audit = (await audit(ws.site || profile.site, () => {})).audit; }
+  catch (e) { M.audit = { ...(setup.audit || {}), stale: true }; log("site re-read skipped: " + e.message); }
+  M.done.site = true;
 
   // 1. ask every prompt on every engine, `samples` times (answers are noisy; averaging is how the trackers stay stable)
   const jobs = []; for (const q of M.questions) for (const e of engines) for (let s = 0; s < samples; s++) jobs.push([q, e, s]);

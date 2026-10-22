@@ -1,5 +1,6 @@
 // The headline numbers of a run, computed on the server for trend lines, the brand list and alerts.
 // Same definitions as public/app.js `metrics()` (Peec / Profound / Otterly naming); keep the two in step.
+import { ownUrl } from "../api/_markets.js";
 export const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 export const hostOf = (u) => { try { return new URL(String(u).includes("://") ? u : "https://" + u).hostname.replace(/^www\./, ""); } catch { return String(u || ""); } };
 export const finished = (a) => a && (a.status === "yes" || a.status === "no") && !a.absent; // an AI Overview Google did not show is not a miss
@@ -37,8 +38,8 @@ export function summarize(M) {
   const leader = brands.find((b) => !b.you) || null;
   const engines = {};
   for (const e of new Set(A.map((a) => a.engine))) { const x = A.filter((a) => a.engine === e); engines[e] = x.length ? x.filter((a) => a.named).length / x.length : null; }
-  const own = hostOf(profile.site || "");
-  const used = A.filter((a) => (a.sources || []).some((s) => { const h = hostOf(s.url); return own && (h === own || h.endsWith("." + own)); })).length;
+  // Your own pages in this market: a /us page cited in an India check is your site, but not this market (api/_markets.js).
+  const used = A.filter((a) => profile.site && (a.sources || []).some((s) => ownUrl(s.url, profile.site))).length;
   const leaderSov = Math.max(you.sov, ...brands.filter((b) => !b.you).map((b) => b.sov), 0);
   return {
     n: A.length, visibility: you.vis, sov: you.sov, position: you.position, sentiment: you.sentiment, win: you.win, mentions: you.mentions,
@@ -48,4 +49,33 @@ export function summarize(M) {
     pagesOpened: Object.values(M.inspections || {}).filter((p) => p.ok).length,
     onPages: Object.values(M.inspections || {}).filter((p) => p.ok && p.you).length,
   };
+}
+
+// What changed between two checks of one brand (market), for the scheduled report: prompts you started or stopped being
+// named for, each engine's visibility, rivals that passed you, and the site's crawler access and AI-readiness.
+// Prompts are matched by their text, because a run numbers them afresh (q1, q2...).
+export function changesBetween(prev, M) {
+  const now = summarize(M), before = prev ? summarize(prev) : null;
+  const byText = (R) => {
+    const out = new Map();
+    for (const q of R?.questions || []) {
+      const A = Object.values(R.answers || {}).filter((a) => a.qid === q.id && finished(a));
+      if (A.length) out.set(norm(q.text), { text: q.text, named: A.some((a) => a.named), engines: [...new Set(A.filter((a) => a.named).map((a) => a.engine))] });
+    }
+    return out;
+  };
+  const cur = byText(M), old = byText(prev);
+  const gained = [], lost = [];
+  for (const [k, q] of cur) { const o = old.get(k); if (!o) continue; if (q.named && !o.named) gained.push({ text: q.text, engines: q.engines }); if (!q.named && o.named) lost.push({ text: q.text, engines: o.engines }); }
+  const engines = Object.entries(now.engines).map(([e, v]) => ({ engine: e, now: v, before: before?.engines?.[e] ?? null }));
+  // A rival that was named less often than you last time, and more often now.
+  const rivals = (S, R) => { const m = new Map(); for (const a of Object.values(R?.answers || {}).filter(finished)) for (const b of new Set(a.brands || [])) if (!isYou(b, R.profile || {})) m.set(norm(b), { name: b, n: (m.get(norm(b))?.n || 0) + 1 }); return { m, total: S?.n || 0 }; };
+  const rc = rivals(now, M), ro = prev ? rivals(before, prev) : null;
+  const overtook = [];
+  if (ro && before.n && now.n) for (const [k, r] of rc.m) { const was = ro.m.get(k); const vNow = r.n / rc.total, vWas = was ? was.n / ro.total : 0; if (vNow > now.visibility && vWas <= before.visibility) overtook.push({ name: r.name, vis: vNow }); }
+  const a = M.audit || {}, p = prev?.audit || {};
+  const blocked = (x) => Object.entries(x.bots || {}).filter(([, v]) => !v).map(([k]) => k);
+  const site = prev ? { newlyBlocked: blocked(a).filter((b) => !blocked(p).includes(b)), unblocked: blocked(p).filter((b) => !blocked(a).includes(b)),
+    llms: a.llms === p.llms ? null : !!a.llms, avg: a.avg ?? null, avgBefore: p.avg ?? null } : null;
+  return { now, before, gained: gained.slice(0, 8), lost: lost.slice(0, 8), engines, overtook: overtook.sort((x, y) => y.vis - x.vis).slice(0, 3), site };
 }

@@ -29,7 +29,7 @@ const backendOf = (cfg) => (String(cfg.backend || (cfg.apiKey && !cfg.login ? "s
 const loc = (cfg) => cfg.locationName || "United States";
 const lang = (cfg) => cfg.languageCode || "en";
 const GL = { "united states": "us", "united kingdom": "uk", canada: "ca", australia: "au", india: "in", germany: "de", france: "fr", spain: "es", italy: "it", netherlands: "nl", ireland: "ie", "new zealand": "nz", singapore: "sg", brazil: "br", mexico: "mx", japan: "jp", sweden: "se", switzerland: "ch", "south africa": "za", "united arab emirates": "ae" };
-const glOf = (cfg) => GL[String(loc(cfg)).split(",").pop().trim().toLowerCase()] || "us";
+const glOf = (cfg) => cfg.gl || GL[String(loc(cfg)).split(",").pop().trim().toLowerCase()] || "us";
 const ref = (url, title) => ({ url: url || null, title: title || null, domain: hostOf(url) || null });
 const dedupe = (refs) => { const seen = new Set(); return refs.filter((r) => r.url && !seen.has(r.url) && seen.add(r.url)); };
 const EMPTY = { present: false, text: "", references: [], brands: [] };

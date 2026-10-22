@@ -23,7 +23,7 @@ async function userDeletion(id, actor) {
   const u = await one(`select id, email, name from users where id = $1`, [id]);
   if (!u) fail(404, "No such person.");
   const orgs = await q(`select o.id, o.slug, o.name, m.role, o.billing_status, o.razorpay_subscription_id, o.razorpay_checkout_subscription_id as pending,
-      (select count(*)::int from memberships x where x.org_id = o.id) as members, (select count(*)::int from workspaces w where w.org_id = o.id) as brands
+      (select count(*)::int from memberships x where x.org_id = o.id) as members, (select count(*)::int from workspaces w where w.org_id = o.id and w.parent_id is null) as brands
     from memberships m join organizations o on o.id = m.org_id where m.user_id = $1 order by o.name`, [id]);
   const blockers = [];
   if (u.id === actor.id) blockers.push("You can't delete yourself.");
@@ -418,7 +418,7 @@ export function makeConsoleRoutes({ needUser }) {
       if (reason.length < 3) fail(400, "Say why (a few words): it goes in the audit log.");
       if (org.razorpay_subscription_id && ["active", "past_due", "trialing"].includes(org.billing_status)) fail(409, "This organisation has a live Razorpay subscription. Cancel it first.", { code: "has_subscription" });
       await withdrawPendingLink(org.id, org.razorpay_checkout_subscription_id);
-      const counts = await one(`select (select count(*)::int from workspaces where org_id = $1) as brands, (select count(*)::int from memberships where org_id = $1) as members`, [org.id]);
+      const counts = await one(`select (select count(*)::int from workspaces where org_id = $1 and parent_id is null) as brands, (select count(*)::int from memberships where org_id = $1) as members`, [org.id]);
       await O.audit(null, user.id, "org.deleted", org.slug, { name: org.name, reason, ...counts });
       await q(`delete from organizations where id = $1`, [org.id]);
       sendJson(res, 200, { deleted: org.slug, ...counts });

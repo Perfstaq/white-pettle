@@ -9,6 +9,15 @@ const $$ = (s, r = document) => [...r.querySelectorAll(s)];
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const host = (u) => { try { return new URL(String(u).includes("://") ? u : "https://" + u).hostname.replace(/^www\./, ""); } catch { return String(u || ""); } };
+// A brand tracked per country (meshopcheap.com/in): a page under another country's path (/us/...) is your site but not this
+// market. Mirrors api/_markets.js ownUrl (which also checks the segment is a known country).
+const localeSeg = (p) => { const x = String(p || "").split("/").filter(Boolean)[0] || ""; return /^[a-z]{2}([-_][a-z]{2})?$/i.test(x) ? x.toLowerCase() : ""; };
+const marketPath = (site) => { try { return localeSeg(new URL(String(site).includes("://") ? site : "https://" + site).pathname); } catch { return ""; } };
+function ownUrl(u, site) {
+  const h = host(u), o = host(site || ""); if (!o || !(h === o || h.endsWith("." + o))) return false;
+  const scope = marketPath(site); if (!scope) return true;
+  let seg = ""; try { seg = localeSeg(new URL(u).pathname); } catch {} return !seg || seg === scope;
+}
 const slugify = (s) => norm(s).replace(/ /g, "-").slice(0, 48) || "brand";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; } };
@@ -98,18 +107,19 @@ const DATA = {
   async refresh() { if (!DATA.server()) return []; DATA.list = (await api("GET", "/api/workspaces")).workspaces || []; return DATA.list; },
   ws: (slug) => DATA.list.find((w) => w.slug === slug) || null,
   company(slug) {
-    if (DATA.server()) { const w = DATA.ws(slug); return w && w.setup?.profile ? { slug, ...w.setup, schedule: w.schedule, samples: w.samples } : null; }
+    if (DATA.server()) { const w = DATA.ws(slug); return w && w.setup?.profile ? { slug, ...w.setup, schedule: w.schedule, samples: w.samples, parent: w.parent, market: w.market } : null; }
     return store.get("companies", {})[slug] || null;
   },
   companies() {
-    if (DATA.server()) return DATA.list.map((w) => ({ slug: w.slug, profile: w.setup?.profile || { name: w.name, site: w.site }, savedAt: Date.parse(w.updatedAt) || 0, ws: w }));
+    // A brand's markets show under the brand (its market tabs), not as more brands.
+    if (DATA.server()) return DATA.list.filter((w) => !w.parent).map((w) => ({ slug: w.slug, profile: w.setup?.profile || { name: w.name, site: w.site }, savedAt: Date.parse(w.updatedAt) || 0, ws: w, markets: DATA.list.filter((x) => x.parent === w.slug) }));
     return Object.values(store.get("companies", {})).sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
   },
   async saveCompany(c) {
     const cos = store.get("companies", {}); cos[c.slug] = c; store.set("companies", cos);
     if (!DATA.server()) return;
-    const { slug, savedAt, schedule, samples, ...setup } = c;
-    const d = await api("PUT", "/api/workspaces/" + encodeURIComponent(slug), { name: c.profile.name, site: c.profile.site, setup });
+    const { slug, savedAt, schedule, samples, parent, market, ...setup } = c;
+    const d = await api("PUT", "/api/workspaces/" + encodeURIComponent(slug), { name: c.profile.name, site: c.profile.site, setup, parent: parent || undefined, market: market || undefined });
     const i = DATA.list.findIndex((w) => w.slug === slug); const w = { ...(DATA.list[i] || {}), ...d.workspace };
     if (i >= 0) DATA.list[i] = w; else DATA.list.unshift(w);
     if (samples && samples !== w.samples) await DATA.patch(slug, { samples });
@@ -143,6 +153,13 @@ const DATA = {
     if (now || M.finishedAt) go(); else DATA._t = setTimeout(go, 4000);
   },
 };
+// A brand and its markets (country versions of its site), the brand first. Markets need an account; without one, a brand is one market.
+function marketsOf(slug) {
+  const w = DATA.ws(slug); if (!w) return [];
+  const top = w.parent ? DATA.ws(w.parent) || w : w;
+  return [top, ...DATA.list.filter((x) => x.parent === top.slug)];
+}
+const marketLabel = (w) => w?.market?.name || w?.setup?.profile?.market || "Global";
 const trendOf = (slug) => (DATA.ws(slug)?.trend || []).map((t) => ({ at: Date.parse(t.started_at), source: t.source, ...t.summary })).filter((t) => t.n);
 
 /* ---------- sign in / sign up / forgot / reset, and invite links ---------- */
@@ -318,7 +335,7 @@ function paintLanding() {
     return `<button type="button" class="bcard" data-brand="${esc(c.slug)}">${favImg(host(c.profile.site))}<span class="bc-main"><b>${esc(c.profile.name)}</b><span class="muted">${esc(host(c.profile.site || ""))}</span></span>
       <span class="bc-num"><b>${last ? last.score : "–"}</b><span class="muted">score</span></span><span class="bc-num"><b>${last ? pct(last.visibility, 0) : "–"}</b><span class="muted">visibility</span></span>
       <span class="bc-spark">${sparkline(t.map((x) => x.summary?.visibility))}</span>
-      <span class="bc-sched ${w.schedule && w.schedule !== "off" ? "on" : ""}">${w.schedule && w.schedule !== "off" ? `${w.schedule === "daily" ? "Daily" : "Weekly"} checks` : "Manual"}</span></button>`;
+      ${c.markets?.length ? `<span class="bc-mk">${c.markets.length + 1} markets</span>` : ""}<span class="bc-sched ${w.schedule && w.schedule !== "off" ? "on" : ""}">${w.schedule && w.schedule !== "off" ? `${w.schedule === "daily" ? "Daily" : "Weekly"} checks` : "Manual"}</span></button>`;
   }).join("");
 }
 $("#lpBrands").addEventListener("click", (e) => { const b = e.target.closest("[data-brand]"); if (b) openBrand(b.dataset.brand); });
@@ -995,22 +1012,42 @@ let DECK = [], DI = 0;
 function buildDeck() {
   const M = APP.M, a = M.audit || {}, as = M.assets || {}, out = [];
   const blocked = Object.entries(a.bots || {}).filter(([, v]) => !v).map(([k]) => k);
-  if (blocked.length) out.push({ id: "robots", kind: "2-minute fix", title: "Let AI crawlers read your site", why: `${blocked.join(", ")} ${blocked.length > 1 ? "are" : "is"} blocked in robots.txt, so ${blocked.length > 1 ? "those assistants" : "that assistant"} can't cite you.`, code: blocked.map((b) => `User-agent: ${b}\nAllow: /`).join("\n\n"), label: "Add to robots.txt" });
+  if (blocked.length) out.push({ id: "robots", evidence: { blocked }, kind: "2-minute fix", title: "Let AI crawlers read your site", why: `${blocked.join(", ")} ${blocked.length > 1 ? "are" : "is"} blocked in robots.txt, so ${blocked.length > 1 ? "those assistants" : "that assistant"} can't cite you.`, code: blocked.map((b) => `User-agent: ${b}\nAllow: /`).join("\n\n"), label: "Add to robots.txt" });
   if (!a.llms && as.llms_txt) out.push({ id: "llms", kind: "5-minute fix", title: "Publish llms.txt", why: "A plain-language briefing AI tools read to understand your company. You don't have one yet.", code: as.llms_txt, label: "Save as /llms.txt at your site root" });
   if (!a.orgSchema && as.org_schema) out.push({ id: "org", kind: "5-minute fix", title: "Tell AI exactly who you are", why: "Your homepage has no Organization schema, so AI has to guess your name, URL and description.", code: '<script type="application/ld+json">\n' + JSON.stringify(as.org_schema, null, 2) + "\n</" + "script>", label: "Paste into your homepage <head>" });
   (M.perception?.claims || []).filter((c) => ["wrong", "outdated"].includes(c.verdict)).forEach((c, i) => out.push({ id: "claim" + i, kind: "Correct AI", title: `AI says: “${c.claim}”`, why: c.fix || "Publish a clear correction on your site." }));
   pitchTargets(M).slice(0, 8).forEach((t) => out.push({ id: "pitch:" + t.url, kind: "Get listed", title: `Get named on ${t.domain}`, why: `AI cited this page ${t.n}×${(t.rivals || []).length ? `. ${t.rivals.slice(0, 3).join(", ")} ${t.rivals.length > 1 ? "are" : "is"} already on it` : ""}.`, t }));
   const missing = RM.questionGaps(M, { engines: M.engines, isYou: (b) => isYou(b, M), requireCompetitor: false }).map((g) => M.questions.find((q) => q.id === g.questionId));
   missing.slice(0, 2).forEach((q) => out.push({ id: "article:" + q.id, kind: "Publish a page", title: `Win “${q.text}”`, why: "No engine named you for this. A page built to answer it gives AI something to cite.", q }));
-  const weak = (a.pages || [])[0]; if (weak && weak.score < 60) out.push({ id: "fix:" + weak.url, kind: "Improve a page", title: `Make “${weak.title || host(weak.url)}” quotable`, why: `Scores ${weak.score}/100. Missing: ${(weak.fails || []).slice(0, 3).join(", ")}.`, page: weak });
+  const weak = (a.pages || [])[0]; if (weak && weak.score < 60) out.push({ id: "fix:" + weak.url, evidence: { score: weak.score }, kind: "Improve a page", title: `Make “${weak.title || host(weak.url)}” quotable`, why: `Scores ${weak.score}/100. Missing: ${(weak.fails || []).slice(0, 3).join(", ")}.`, page: weak });
   DECK = out.filter((x) => !M.deck[x.id]); DI = 0; drawDeck();
 }
+/* ---------- re-checking one fix (server/recheck.mjs): no AI, so it's free and instant ---------- */
+// Fixes a page or a file can confirm. The others (a page that wins a prompt, a corrected claim) show up in the next full check.
+const RECHECK = { robots: "robots.txt", llms: "llms.txt", org: "homepage schema", fix: "this page", pitch: "that page" };
+const recheckable = (id) => !!RECHECK[String(id).split(":")[0]];
+const RA_KIND = { robots: "technical", llms: "technical", org: "technical", fix: "page", pitch: "outreach" };
+// The last recheck of each fix, per brand: from the server's recovery plan (kept across checks), else this browser.
+APP.checks = {};
+const lastCheck = (slug, id) => APP.checks[slug]?.[id] || APP.M?.checks?.[id] || null;
+async function loadChecks(slug) {
+  if (!DATA.server() || !slug) return;
+  try { const d = await api("GET", `/api/workspaces/${encodeURIComponent(slug)}/recovery-actions`); APP.checks[slug] = Object.fromEntries((d.actions || []).filter((a) => a.lastCheck).map((a) => [a.sourceKey, a.lastCheck])); if (APP.M?.slug === slug && DASH.page === "actions") drawDeck(); }
+  catch (e) { console.warn("[checks]", e.message); }
+}
+async function recheckCard(c) {
+  const M = APP.M, body = { sourceKey: c.id, kind: RA_KIND[c.id.split(":")[0]], title: c.title, problem: c.why, evidence: c.evidence || {} };
+  const d = DATA.server() ? await api("POST", "/api/recheck", { ...body, slug: M.slug }) : await post("/api/recheck", { ...body, site: M.profile.site, brand: { name: M.profile.name, site: M.profile.site, competitors: M.profile.competitors } });
+  (APP.checks[M.slug] ||= {})[c.id] = d.check; M.checks = { ...(M.checks || {}), [c.id]: d.check }; save();
+  return d.check;
+}
+const checkLine = (k) => (k ? `<p class="rcheck ${k.pass ? "ok" : "no"}">${icon(k.pass ? "check" : "x", 13)}<span><b>${k.pass ? "Confirmed" : "Not fixed yet"}</b> · checked ${esc(fmtWhen(k.at))}${k.by === "schedule" ? " by the scheduled check" : ""}. ${esc(k.detail || "")}</span></p>` : "");
 function drawDeck() {
   const M = APP.M, total = DECK.length, el = $("#deck");
-  const doneN = Object.keys(M.deck).length;
+  const doneN = Object.keys(M.deck).length, okN = Object.values(M.deck).filter((v) => v === "verified").length;
   if ($("#navActions")) $("#navActions").textContent = total || "";
   if (!el) return;
-  $("#deckCount").innerHTML = `<span>${doneN} done</span><span class="bar" style="width:90px"><i style="width:${(100 * doneN) / Math.max(1, doneN + total)}%"></i></span><span>${total} left</span>`;
+  $("#deckCount").innerHTML = `<span>${doneN} done${okN ? ` · ${okN} confirmed` : ""}</span><span class="bar" style="width:90px"><i style="width:${(100 * doneN) / Math.max(1, doneN + total)}%"></i></span><span>${total} left</span>`;
   if (!total) { el.innerHTML = `<div class="dcard"><span class="kind">All clear</span><h4>Nothing left in the deck.</h4><p class="why">Run again next week to see what moved. Mentions on third-party pages usually take 2–6 weeks to show up in AI answers.</p></div>`; return; }
   const c = DECK[0]; let body = "", acts = "";
   if (c.code) { body = `<span class="muted" style="font-size:.78rem">${esc(c.label)}</span><div class="pre code">${esc(c.code)}</div>`; acts = `<button class="btn" type="button" data-act="copy">Copy code</button>`; }
@@ -1021,13 +1058,20 @@ function drawDeck() {
     acts += `<a class="btn ghost sm" href="${esc(safeUrl(c.t.final || c.t.url) || "#")}" target="_blank" rel="noopener">Open page</a>`;
   } else if (c.q) { const txt = M.articles[c.q.id]; body = `<div class="pre" id="dkText">${txt ? esc(txt) : "I'll write a 1,000–1,400 word page built to be cited for this question. Proof points I can't verify are marked [TODO]."}</div>`; acts = txt ? `<button class="btn" type="button" data-act="copy">Copy article</button>` : `<button class="btn" type="button" data-act="write">Write the page</button>`; }
   else if (c.page) { const txt = M.fixpack; body = `<div class="pre md" id="dkText">${txt ? md(txt) : "I'll rewrite the opening, add question headings and an FAQ for this page."}</div>`; acts = txt ? `<button class="btn" type="button" data-act="copy">Copy fixes</button>` : `<button class="btn" type="button" data-act="write">Write the fixes</button>`; }
-  el.innerHTML = `<div class="dcard" id="dk"><span class="kind">${esc(c.kind)} · ${Object.keys(M.deck).length + 1} of ${Object.keys(M.deck).length + DECK.length}</span><h4>${esc(c.title)}</h4><p class="why">${esc(c.why)}</p>${body}<div class="acts">${acts}<span style="flex:1"></span><button class="btn ghost sm" type="button" data-act="skip">Skip <span class="kbd">←</span></button><button class="btn ghost sm" type="button" data-act="done">Done <span class="kbd">→</span></button></div></div><div class="stack-under"></div>`;
+  if (recheckable(c.id) && canEdit()) acts += `<button class="btn ghost sm" type="button" data-act="recheck" title="Reads ${esc(RECHECK[c.id.split(":")[0]])} again now. No AI is asked, so it's free.">${icon("check", 14)}Recheck</button>`;
+  el.innerHTML = `<div class="dcard" id="dk"><span class="kind">${esc(c.kind)} · ${Object.keys(M.deck).length + 1} of ${Object.keys(M.deck).length + DECK.length}</span><h4>${esc(c.title)}</h4><p class="why">${esc(c.why)}</p>${body}${checkLine(lastCheck(M.slug, c.id))}<div class="acts">${acts}<span style="flex:1"></span><button class="btn ghost sm" type="button" data-act="skip">Skip <span class="kbd">←</span></button><button class="btn ghost sm" type="button" data-act="done">Done <span class="kbd">→</span></button></div></div><div class="stack-under"></div>`;
 }
 const gmail = (to, txt) => { const m = txt.match(/^Subject:\s*(.+)\n+([\s\S]*)$/i); return `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(to)}&su=${encodeURIComponent(m ? m[1] : "")}&body=${encodeURIComponent(m ? m[2] : txt)}`; };
 document.addEventListener("click", async (e) => {
   const b = e.target.closest("#deck [data-act]"); if (!b) return; const act = b.dataset.act, c = DECK[0], M = APP.M;
   if (act === "skip" || act === "done") return advance(act);
   if (act === "sent") { setTimeout(() => advance("done"), 500); return; }
+  if (act === "recheck") {
+    b.setAttribute("aria-disabled", "true"); b.textContent = "Checking…";
+    try { const k = await recheckCard(c); toast(`${k.pass ? "Confirmed" : "Not fixed yet"}: ${esc(k.detail)}`, k.pass ? "ok" : "bad"); if (k.pass) return advance("verified"); }
+    catch (err) { toast(esc(err.message)); }
+    return drawDeck();
+  }
   if (act === "copy") { const t = c.code || (c.t ? M.pitches[c.t.url] : c.q ? M.articles[c.q.id] : M.fixpack); try { await navigator.clipboard.writeText(t); b.textContent = "Copied ✓"; } catch { b.textContent = "Select the text to copy"; } return; }
   if (act === "write") {
     b.setAttribute("aria-disabled", "true"); b.innerHTML = `<svg class="pq think" viewBox="0 0 56 30" style="height:12px;width:22px"><rect x="0" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/><rect x="20" width="16" height="30" rx="4.5" fill="#111114"/><rect x="40" width="16" height="30" rx="4.5" fill="currentColor" opacity=".55"/></svg> Writing`;
@@ -1145,6 +1189,9 @@ const FOCUS = { research: ["Research", "More emphasis on exploring problems and 
 const ENG_KEY = { chatgpt: "OPENAI_API_KEY", perplexity: "PERPLEXITY_API_KEY", gemini: "GEMINI_API_KEY", groq: "GROQ_API_KEY", aio: "DATAFORSEO_LOGIN", aimode: "DATAFORSEO_LOGIN" };
 const ENG_ALL = ["chatgpt", "perplexity", "gemini", "groq", "aio", "aimode"];
 const MARKETS = ["Global", "United States", "United Kingdom", "India", "Europe", "Australia"];
+// A market's country code from what was picked or typed ("India", "IN"), using the server's country list. null = Global/region.
+const countryCode = (t) => { const n = norm(t); return (APP.cfg.countries || []).find(([c, name]) => norm(name) === n || c.toLowerCase() === n)?.[0] || null; };
+const countryName = (code) => (APP.cfg.countries || []).find(([c]) => c === code)?.[1] || code;
 const OB_BACK = { scan: "home", profile: "home", market: "profile", rivals: "market", topicsGen: "rivals", topics: "rivals", focus: "topics", promptsGen: "focus", promptsReady: "focus", review: "promptsReady" };
 let OB = null;
 const splitList = (s) => String(s || "").split(/,|;|\/|\band\b/).map((x) => x.trim()).filter((x) => x.length > 1).slice(0, 6);
@@ -1173,9 +1220,10 @@ const promptMsg = () => `Your ${PLANL.name()} plan tracks up to ${promptCap()} p
 const perOpts = () => { const cap = promptCap(), T = Math.max(1, OB.topics.length); if (cap === Infinity) return [2, 3, 4, 5]; const f = [1, 2, 3, 4, 5].filter((k) => k * T <= cap); return f.some((k) => k >= 2) ? f.filter((k) => k >= 2) : f; }; // 2 to 5 as before, down to 1 only when the plan leaves no room for 2
 const effPer = () => { const o = perOpts(); return o.includes(OB.perTopic) ? OB.perTopic : o.length ? o[o.length - 1] : 1; };
 
-async function startOnboarding(url, saved) {
+// opts.parent: the brand this is a new market of (another country version of its site).
+async function startOnboarding(url, saved, opts = {}) {
   APP.ctl?.abort(); APP.ctl = new AbortController(); const sig = APP.ctl.signal; APP.running = false; await refreshBilling();
-  OB = { url, saved, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(PLANL.samples(), saved?.samples || 1)), questions: [], selTopic: null, engines: PLANL.engines(APP.cfg.engines.filter((e) => e !== "aimode")), gen: false, err: "" };
+  OB = { url, saved, parent: opts.parent || saved?.parent || null, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(PLANL.samples(), saved?.samples || 1)), questions: [], selTopic: null, engines: PLANL.engines(APP.cfg.engines.filter((e) => e !== "aimode")), gen: false, err: "" };
   screen("onboard"); $("#obSite").textContent = host(url); obRender();
   try {
     let result = null;
@@ -1187,7 +1235,8 @@ async function startOnboarding(url, saved) {
     }, sig);
     if (!result) throw new Error("The site scan didn't finish.");
     OB.scan = result;
-    const p = { ...result.profile, ...(saved?.profile || {}), site: result.profile.site };
+    // The site decides where it sells when it says so (a /in path, lang="en-IN", ₹ prices); otherwise the saved choice stands.
+    const p = { ...result.profile, ...(saved?.profile || {}), site: result.profile.site, ...(result.audit?.locale?.country ? { market: result.profile.market, country: result.profile.country } : {}) };
     for (const k of ["identity", "products", "facts"]) p[k] = p[k]?.length ? p[k] : result.profile[k] || [];
     p.personas = p.personas?.length ? p.personas : result.profile.personas?.length ? result.profile.personas : splitList(p.audience);
     OB.profile = p;
@@ -1276,7 +1325,9 @@ function obAsk() {
     return `<h1>Reading ${esc(host(OB.url))}<span class="dots"></span></h1><p>${esc(cur?.text || "Connecting to your site")}</p><div class="ob-prog"><i style="width:${Math.min(96, 6 + done * 15)}%"></i></div>`;
   }
   if (s === "profile") return `<h1>Review your brand profile</h1><p>We pulled this from ${esc(host(p.site))}.</p><div class="ob-btns"><button class="btn" type="button" data-act="openProfile">Open profile</button></div>`;
-  if (s === "market") return `<h1>Where do you sell?</h1><p>The market AI should answer for. We write prompts the way buyers there ask them.</p>${pill("market", p.market, "Search countries or regions", "globe")}<div class="ob-sugs">${[...new Set([p.market, ...MARKETS].filter(Boolean))].slice(0, 6).map((m) => `<button type="button" data-market="${esc(m)}"${norm(m) === norm(p.market) ? ' class="on"' : ""}>${esc(m)}</button>`).join("")}</div>`;
+  if (s === "market") { const lc = OB.scan?.audit?.locale, tracked = new Set(OB.parent ? marketsOf(OB.parent).map((w) => w.market?.code) : []), sib = (OB.scan?.audit?.markets || []).filter((x) => !tracked.has(x.code));
+    const note = lc?.country ? `<p class="muted sm">We read the ${esc(lc.country.name)} version of ${esc(host(p.site))}${OB.scan.audit.scope ? ` (${esc(OB.scan.audit.scope)})` : ""}${lc.redirectedTo ? ", where the site sent us" : ""}, so we've picked ${esc(lc.country.name)}.${sib.length ? ` It also has ${esc(sib.slice(0, 4).map((x) => x.name).join(", "))}${sib.length > 4 ? ` and ${sib.length - 4} more` : ""}: add ${sib.length > 1 ? "them" : "it"} as markets once this one is set up.` : ""}</p>` : "";
+    return `<h1>Where do you sell?</h1><p>The market AI should answer for. We write prompts the way buyers there ask them, and ask each AI from there.</p>${note}${pill("market", p.market, "Search countries or regions", "globe")}<div class="ob-sugs">${[...new Set([p.market, ...MARKETS].filter(Boolean))].slice(0, 6).map((m) => `<button type="button" data-market="${esc(m)}"${norm(m) === norm(p.market) ? ' class="on"' : ""}>${esc(m)}</button>`).join("")}</div>`; }
   if (s === "rivals") return `<h1>Review your competitors</h1><p>Remove any that aren't real rivals, or add your own. Suggested from your brand profile. <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Add competitor</button><button class="btn" type="button" data-go="topicsGen">Continue</button></div>`;
   if (s === "topicsGen") return `<h1>Generating topics<span class="dots"></span></h1><p>The themes your buyers research, from your products and services.</p>`;
   if (s === "topics") return `<h1>Review your topics</h1><p>Remove any that do not fit your brand, or add your own. Generated from your brand profile. <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Add topics</button><button class="btn" type="button" data-go="focus" ${OB.topics.length ? "" : 'aria-disabled="true"'}>Continue</button></div>`;
@@ -1433,7 +1484,7 @@ $("#onboard").addEventListener("change", (e) => {
 });
 $("#onboard").addEventListener("submit", (e) => {
   e.preventDefault(); const f = e.target.dataset.form, inp = e.target.querySelector("input"), v = inp.value.trim();
-  if (f === "market") { if (!v) return inp.focus(); OB.profile.market = v; return obGo("rivals"); }
+  if (f === "market") { if (!v) return inp.focus(); OB.profile.market = v; OB.profile.country = countryCode(v); return obGo("rivals"); }
   if (!v) return inp.focus();
   if (f === "rival" && !OB.rivals.some((r) => norm(r.name) === norm(v))) { if (OB.rivals.length >= PLANL.rivals()) return toast(`Your ${esc(PLANL.name())} plan tracks up to ${PLANL.rivals()} competitors per brand. Remove one to add another, or upgrade in Plans &amp; payment.`); OB.rivals.push({ name: v, added: true }); }
   if (f === "topic" && !OB.topics.some((t) => norm(t.name) === norm(v))) OB.topics.push({ name: v });
@@ -1447,7 +1498,7 @@ $("#onboard").addEventListener("click", (e) => {
   if (d.rm) { const [k, i] = d.rm.split(":"); OB.profile[k].splice(+i, 1); return obRender(); }
   if (d.rvx != null) { OB.rivals.splice(+d.rvx, 1); return obRender(); }
   if (d.tpx != null) { const t = OB.topics.splice(+d.tpx, 1)[0]; OB.questions = OB.questions.filter((q) => q.topic !== t?.name); return obRender(); }
-  if (d.market) { OB.profile.market = d.market; return obGo("rivals"); }
+  if (d.market) { OB.profile.market = d.market; OB.profile.country = countryCode(d.market); return obGo("rivals"); }
   if (d.focus) { OB.focus = d.focus; return obRender(); }
   if (d.per) { OB.perTopic = +d.per; return obRender(); }
   if (d.samples) { OB.samples = +d.samples; return obRender(); }
@@ -1472,15 +1523,19 @@ async function obLaunch() {
   if (!qs.length) return toast("Pick at least one prompt.");
   if (qs.length > promptCap()) return toast(esc(promptMsg()));
   if (!OB.engines.length) { obSheet("focus"); return toast("Pick at least one AI engine."); }
-  const slug = slugify(profile.name);
+  // A rerun keeps its own brand (or market); a new market is "<brand>-<country>", e.g. meshopcheap-us.
+  const code = profile.country || countryCode(profile.market);
+  if (OB.parent && !OB.saved?.slug && !code) { obGo("market"); return toast("Pick the country this market is for."); }
+  const slug = OB.saved?.slug || (OB.parent ? `${OB.parent}-${code.toLowerCase()}` : slugify(profile.name));
+  const market = code ? { code, path: r.audit?.scope || "" } : null;
   if (await lockedElsewhere(slug)) return toast("This brand is running in another tab right now.");
   OB.sheet = null; document.body.classList.remove("sheet-open");
   const company = { slug, profile, audit: r.audit, siteText: r.siteText, topics: OB.topics.map((t) => t.name), focus: OB.focus, perTopic: OB.perTopic, samples: OB.samples,
-    questions: OB.questions.map(({ topic, intent, persona, text, on }) => ({ topic, intent, persona, text, on })), engines: OB.engines.slice(), savedAt: Date.now() };
+    questions: OB.questions.map(({ topic, intent, persona, text, on }) => ({ topic, intent, persona, text, on })), engines: OB.engines.slice(), savedAt: Date.now(), parent: OB.parent || undefined, market: market || undefined };
   try { await DATA.saveCompany(company); } catch (e) { return toast(esc(e.message)); }
   const prev = APP.M?.slug === slug && APP.M.finishedAt ? APP.M : store.get("mission:" + slug, null);
   if (prev?.finishedAt) { store.set("prev:" + slug, prev); APP.prev = prev; }
-  APP.M = newMission(profile, r.audit, r.siteText); const M = APP.M;
+  APP.M = newMission(profile, r.audit, r.siteText); const M = APP.M; M.slug = slug; M.market = market;
   M.engines = ENG_ALL.filter((e) => OB.engines.includes(e) && APP.cfg.engines.includes(e));
   M.questions = qs.map((q, i) => ({ id: "q" + (i + 1), intent: q.intent, topic: q.topic, persona: q.persona, text: q.text }));
   M.samples = OB.samples; M.done.questions = true; save(true);
@@ -1537,7 +1592,7 @@ function metrics(M, eng = "all") {
   const D = new Map(); let ownAns = 0;
   for (const a of A) {
     const seen = new Set(); let own = false;
-    for (const s of a.sources || []) { const d = host(s.url); if (!d) continue; const r = D.get(d) || { d, retr: 0, chats: 0, cited: 0, urls: new Set() }; r.retr++; r.urls.add(s.url); if (s.cited) r.cited++; if (!seen.has(d)) { r.chats++; seen.add(d); } D.set(d, r); if (domainType(d, M) === "You") own = true; }
+    for (const s of a.sources || []) { const d = host(s.url); if (!d) continue; const r = D.get(d) || { d, retr: 0, chats: 0, cited: 0, urls: new Set() }; r.retr++; r.urls.add(s.url); if (s.cited) r.cited++; if (!seen.has(d)) { r.chats++; seen.add(d); } D.set(d, r); if (ownUrl(s.url, M.profile.site)) own = true; }
     if (own) ownAns++;
   }
   const insp = Object.values(M.inspections || {});
@@ -1705,10 +1760,10 @@ function showReport(page) {
   const M = APP.M; if (!M) return goHome();
   screen("reportWrap");
   if (page) DASH.page = page; if (DASH.eng !== "all" && !M.engines.includes(DASH.eng)) DASH.eng = "all";
-  $("#projName").textContent = M.profile.name; $("#projAv").innerHTML = favImg(host(M.profile.site));
+  const mk = DATA.ws(M.slug)?.market; $("#projName").textContent = M.profile.name + (mk && marketsOf(M.slug).length > 1 ? ` · ${mk.name}` : ""); $("#projAv").innerHTML = favImg(host(M.profile.site));
   buildDeck(); renderSugs(); renderChat();
   dashRender();
-  if (DATA.server()) { loadInts(M.slug); DATA.refresh().then(() => { if (APP.M === M && ["overview", "settings"].includes(DASH.page)) dashRender(); }).catch(() => {}); }
+  if (DATA.server()) { loadInts(M.slug); loadChecks(M.slug); DATA.refresh().then(() => { if (APP.M === M && ["overview", "settings"].includes(DASH.page)) dashRender(); }).catch(() => {}); }
 }
 function filtersHtml(M) {
   const pm = APP.prev?.slug === M.slug && APP.prev.id !== M.id ? APP.prev : store.get("prev:" + M.slug, null);
@@ -1732,7 +1787,7 @@ function dashRender() {
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
   $("#navTeam").hidden = !DATA.server(); $("#navConsole").hidden = !APP.cfg.console; $("#navBilling").hidden = !billingOn() || PAY_HIDDEN; /* PAY_HIDDEN: no Plans & payment in the nav */ $("#navAccount").hidden = !billingOn(); paintAccount(); paintTrialPill();
   const m = metrics(M, DASH.eng), pm = prevMetrics(M, DASH.eng);
-  $("#pages").innerHTML = `<div class="pg">${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
+  $("#pages").innerHTML = `<div class="pg">${marketStrip(M)}${(PAGE[DASH.page] || PAGE.overview)(M, m, pm)}</div>`;
   if (DASH.page === "actions") drawDeck();
   if (DASH.page === "insights") renderMatrix($("#matrixBig"), M, true);
   $(".main").scrollTop = 0; $("#side").classList.remove("open");
@@ -1744,7 +1799,7 @@ const PAGE = {
     const h = !y?.mentions ? "AI doesn't recommend you yet" : m.rank === 1 ? "You're #1 in AI visibility" : `You're #${m.rank} in AI visibility`;
     const p = !y?.mentions ? `${lead ? `${esc(lead.name)} appears in ${pct(lead.vis)} of answers. ` : ""}You weren't named in any of the ${m.n} answers.` : m.rank === 1 ? `You appear in more AI answers than any competitor, and are often the default choice.` : `${esc(lead.name)} appears in ${pct(lead.vis)} of answers; you appear in ${pct(y.vis)}.`;
     const acts = DECK.slice(0, 3);
-    return head(h, p) + kpiHtml(M, m, pm) + (trendPoints(M).length < 2 ? trendHtml(M) : "") + referralHtml(M) + `<div class="grid2">${visChartHtml(M, m)}${brandsTableHtml(M, m)}</div>`
+    return head(h, p) + kpiHtml(M, m, pm) + marketsCompare(M) + (trendPoints(M).length < 2 ? trendHtml(M) : "") + referralHtml(M) + `<div class="grid2">${visChartHtml(M, m)}${brandsTableHtml(M, m)}</div>`
       + `<div class="grid2"><div class="card"><div class="card-h"><b>Visibility by engine</b></div>${m.byEngine.map((x) => { const top = metrics(M, x.e).brands.find((b) => !b.you); return `<div class="erow"><span class="en">${engDot(x.e)}${ENG[x.e]}</span><span class="eb"><i style="width:${(100 * (x.vis || 0)).toFixed(0)}%"></i></span><b>${pct(x.vis, 0)}</b><span class="muted el">${top ? `Leader: ${esc(top.name)} ${pct(top.vis, 0)}` : ""}</span></div>`; }).join("")}</div>
         <div class="card"><div class="card-h"><b>Top recommended actions</b><span class="sp"></span><button class="lnk" type="button" data-page="actions">${DECK.length} actions ${icon("chev", 12)}</button></div>${acts.length ? acts.map((c) => `<button type="button" class="arow" data-page="actions" data-card="${esc(c.id)}"><span class="ak">${esc(c.kind)}</span><b>${esc(c.title)}</b><span class="muted">${esc(c.why)}</span></button>`).join("") : '<p class="muted pad">Nothing left to do. Run again next week.</p>'}</div></div>`
       + chatCardsHtml(M, m) + topDomainsHtml(M, m);
@@ -1832,7 +1887,7 @@ const PAGE = {
   },
   actions(M) {
     return head("Actions", "Ranked fixes with the evidence behind each one. Work through them one at a time.") + `<div class="grid2 act"><div class="card pad"><div class="deckbar" id="deckCount"></div><p class="muted sm"><span class="kbd">→</span> done · <span class="kbd">←</span> skip</p><div class="deck" id="deck"></div></div>
-      <div class="card"><div class="card-h"><b>Up next</b><span class="muted">${Math.max(0, DECK.length - 1)}</span></div>${DECK.slice(1).map((c) => `<button type="button" class="arow" data-card="${esc(c.id)}"><span class="ak">${esc(c.kind)}</span><b>${esc(c.title)}</b></button>`).join("") || '<p class="muted pad">Nothing queued.</p>'}</div></div>`;
+      <div class="card"><div class="card-h"><b>Up next</b><span class="muted">${Math.max(0, DECK.length - 1)}</span></div>${DECK.slice(1).map((c) => { const k = lastCheck(M.slug, c.id); return `<button type="button" class="arow" data-card="${esc(c.id)}"><span class="ak">${esc(c.kind)}${k ? ` · ${k.pass ? "confirmed" : "not fixed yet"}` : ""}</span><b>${esc(c.title)}</b></button>`; }).join("") || '<p class="muted pad">Nothing queued.</p>'}</div></div>`;
   },
 };
 const TOPIC_OF = { best: "Best-of lists", alternatives: "Alternatives", comparison: "Comparisons", problem: "Problems to solve", local: "Budget & location", informational: "Research", commercial: "Comparisons", transactional: "Ready to buy" };
@@ -1916,7 +1971,7 @@ $("#projBtn").addEventListener("click", (e) => {
   e.stopPropagation(); const menu = $("#projMenu"), open = menu.hidden;
   if (open) {
     const cos = DATA.companies();
-    menu.innerHTML = `<div class="pm-h">Your brands</div>${cos.map((c) => { const at = c.ws ? c.ws.lastRunAt : store.get("mission:" + c.slug, null)?.finishedAt; const sc = c.ws?.trend?.[0]?.summary?.score; return `<button type="button" data-proj="${esc(c.slug)}" class="${APP.M?.slug === c.slug ? "on" : ""}">${favImg(host(c.profile.site))}<span>${esc(c.profile.name)}</span><span class="sp"></span>${sc != null ? `<span class="pm-score">${sc}</span>` : ""}<span class="muted sm">${at ? new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "set up"}</span></button>`; }).join("")}${!DATA.server() || canEdit() ? `<button type="button" data-proj="__new">${icon("plus", 14)}<span>New brand</span></button>` : ""}`;
+    menu.innerHTML = `<div class="pm-h">Your brands</div>${cos.map((c) => { const at = c.ws ? c.ws.lastRunAt : store.get("mission:" + c.slug, null)?.finishedAt; const sc = c.ws?.trend?.[0]?.summary?.score; return `<button type="button" data-proj="${esc(c.slug)}" class="${APP.M?.slug === c.slug || c.markets?.some((x) => x.slug === APP.M?.slug) ? "on" : ""}">${favImg(host(c.profile.site))}<span>${esc(c.profile.name)}${c.markets?.length ? ` <span class="muted sm">· ${c.markets.length + 1} markets</span>` : ""}</span><span class="sp"></span>${sc != null ? `<span class="pm-score">${sc}</span>` : ""}<span class="muted sm">${at ? new Date(at).toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "set up"}</span></button>`; }).join("")}${!DATA.server() || canEdit() ? `<button type="button" data-proj="__new">${icon("plus", 14)}<span>New brand</span></button>` : ""}`;
   }
   menu.hidden = !open; $("#projBtn").setAttribute("aria-expanded", String(open));
 });
@@ -2007,6 +2062,38 @@ function referralHtml(M) {
     ${by.slice(0, 6).map((r) => `<div class="erow"><span class="en">${esc(r.assistant)}</span><span class="eb"><i style="width:${Math.round((100 * r.sessions) / Math.max(1, by[0].sessions))}%"></i></span><b>${r.sessions}</b></div>`).join("") || '<p class="muted pad">No visits from AI assistants in this period yet.</p>'}</div>`;
 }
 
+/* ---------- markets: one brand, one tab per country ---------- */
+function marketStrip(M) {
+  if (!DATA.server()) return "";
+  const list = marketsOf(M.slug), found = (M.audit?.markets || []).filter((x) => !list.some((w) => w.market?.code === x.code));
+  if (list.length < 2 && !(found.length && canEdit())) return "";
+  const last = (w) => (w.trend || [])[0]?.summary;
+  return `<div class="mkts" role="tablist" aria-label="Markets">${list.map((w) => `<button type="button" class="mkt" role="tab" data-mkt="${esc(w.slug)}" aria-current="${w.slug === M.slug}">${icon("globe", 13)}<b>${esc(marketLabel(w))}</b>${last(w) ? `<span class="muted">${pct(last(w).visibility, 0)}</span>` : '<span class="muted">not checked</span>'}</button>`).join("")}
+    ${canEdit() ? `<button type="button" class="mkt add" data-addmkt>${icon("plus", 13)}Add market${found.length ? ` <span class="muted">${found.length} found</span>` : ""}</button>` : ""}</div>`;
+}
+// Overview: every market of the brand side by side, from each one's latest check.
+function marketsCompare(M) {
+  const list = marketsOf(M.slug); if (list.length < 2) return "";
+  return `<div class="card"><div class="card-h"><b>By market</b><span class="muted">Each country is checked with its own prompts, from that country</span></div><table class="tbl click"><thead><tr><th>Market</th><th class="r">Score</th><th class="r">Visibility</th><th class="r">Share of voice</th><th>Leader</th><th class="r">Last check</th></tr></thead><tbody>
+    ${list.map((w) => { const t = (w.trend || [])[0], x = t?.summary; return `<tr data-mkt="${esc(w.slug)}" class="${w.slug === M.slug ? "you" : ""}"><td><b>${esc(marketLabel(w))}</b> <span class="muted sm">${esc(host(w.site || ""))}${esc(w.market?.path || "")}</span></td><td class="r">${x ? x.score : "–"}</td><td class="r">${x ? pct(x.visibility) : "–"}</td><td class="r">${x ? pct(x.sov) : "–"}</td><td>${x?.leader ? `${esc(x.leader.name)} <span class="muted">${pct(x.leader.vis, 0)}</span>` : "–"}</td><td class="r">${t ? esc(fmtDay(t.started_at)) : "not yet"}</td></tr>`; }).join("")}</tbody></table></div>`;
+}
+function addMarketModal(M) {
+  const list = marketsOf(M.slug), top = list[0], have = new Set(list.map((w) => w.market?.code).filter(Boolean));
+  const found = (M.audit?.markets || []).filter((x) => !have.has(x.code));
+  const lim = APP.cfg.billing?.limits?.markets;
+  modal(`<span class="status">${esc(top.name)}</span><h3>Add a market</h3><p class="muted">Track another country version of ${esc(host(top.site || M.profile.site))}. It gets its own prompts and competitors, is asked from that country, and has its own schedule and report.${lim != null ? ` Your plan tracks up to ${lim} market${lim === 1 ? "" : "s"} per brand (you have ${list.length}).` : ""}</p>
+    ${found.length ? `<div class="ob-sugs">${found.map((x) => `<button type="button" data-mkturl="${esc(x.url)}">${esc(x.name)} <span class="muted">${esc(x.path)}</span></button>`).join("")}</div>` : ""}
+    <form class="pill" id="mktForm" style="margin-top:12px"><span class="pill-ic">${icon("globe", 17)}</span><input id="mktUrl" placeholder="${esc((M.audit?.origin || host(M.profile.site)) + "/us")}" aria-label="The address of that country's site"><button class="go" type="submit" aria-label="Set it up">${icon("arrow", 16)}</button></form>`);
+  const box = $(".modal:last-of-type");
+  const go = (url) => { box.remove(); startOnboarding(url, { profile: Object.fromEntries(Object.entries(M.profile).filter(([k]) => ["name", "category", "offer", "identity", "products", "personas", "facts"].includes(k))) }, { parent: top.slug }); };
+  box.addEventListener("click", (e) => { const b = e.target.closest("[data-mkturl]"); if (b) go(b.dataset.mkturl); });
+  $("#mktForm").addEventListener("submit", (e) => { e.preventDefault(); const v = $("#mktUrl").value.trim(); if (v) go(v); });
+}
+$("#reportWrap").addEventListener("click", (e) => {
+  const t = e.target.closest("[data-mkt]"); if (t && APP.M && t.dataset.mkt !== APP.M.slug) return openBrand(t.dataset.mkt);
+  if (e.target.closest("[data-addmkt]") && APP.M) addMarketModal(APP.M);
+});
+
 /* ---------- pages ---------- */
 Object.assign(PAGE, {
   gaps(M, m) {
@@ -2060,6 +2147,7 @@ Object.assign(PAGE, {
     if (!DATA.server()) return head("Settings", "Scheduling, integrations and history need an account.") + `<div class="card pad"><p>This copy of Perfstaq is running without a database, so everything is kept in this browser. Deploy it on Google Cloud (see <code>infra/README</code>) or set <code>DATABASE_URL</code>, and you get accounts, weekly checks that run on their own, trend history and integrations with Search Console, GA4, Bing, Cloudflare and Slack.</p></div>`;
     const d = APP.ints[M.slug]; const ints = d?.integrations || [];
     const sched = ws?.schedule || "off", samples = ws?.samples || 1;
+    if (APP.emailPrefs === undefined) { APP.emailPrefs = null; api("GET", "/api/me/email-prefs").then((x) => { APP.emailPrefs = x; if (DASH.page === "settings") dashRender(); }).catch(() => {}); }
     const c = DATA.company(M.slug) || {};
     const prompts = (c.questions || M.questions).filter((q) => q.on !== false).length;
     const moveTo = APP.orgs.filter((o) => o.slug !== APP.org?.slug && ["owner", "admin"].includes(o.role));
@@ -2072,6 +2160,8 @@ Object.assign(PAGE, {
     if (tab === "checks") body = `<div class="card st-card">
         ${row("Automatic checks", "Re-runs every prompt on the server. You can close the tab.", `<div class="seg">${[["off", "Off"], ["weekly", "Weekly"], ["daily", "Daily"]].map(([k, l]) => `<button type="button" data-sched="${k}" aria-pressed="${sched === k}" ${PLANL.schedules().includes(k) ? "" : `disabled title="Not on your ${esc(PLANL.name())} plan"`}>${l}</button>`).join("")}</div>`)}
         ${row("Answers per prompt", "Asking more than once averages out AI's run-to-run variation.", `<div class="seg">${[1, 2, 3].map((k) => `<button type="button" data-samp="${k}" aria-pressed="${samples === k}" ${k <= PLANL.samples() ? "" : `disabled title="Not on your ${esc(PLANL.name())} plan"`}>${k}×</button>`).join("")}</div>`)}
+        ${sched !== "off" ? row("When", `In ${esc(ws?.runTz || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")} time. "Any time" runs ${sched === "daily" ? "a day" : "a week"} after the last check.`, `<div class="st-time">${sched === "weekly" ? `<select class="sel" data-rundow aria-label="Day"><option value="">Any day</option>${["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"].map((d, i) => `<option value="${i}" ${ws?.runDow === i ? "selected" : ""}>${d}</option>`).join("")}</select>` : ""}<select class="sel" data-runhour aria-label="Time"><option value="">Any time</option>${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${ws?.runHour === h ? "selected" : ""}>${String(h).padStart(2, "0")}:00</option>`).join("")}</select></div>`) : ""}
+        ${canAdmin() ? row("Results email", "After each automatic check: what changed, which fixes are confirmed live, and results after publishing. Sent to owners and admins.", `<label class="tgl"><input type="checkbox" data-emailme ${APP.emailPrefs?.reports === false ? "" : "checked"}> <span>Email me</span></label>`) : ""}
         ${row("Run a check now", `${when}${ws?.lastRunAt ? ` Last check ${new Date(ws.lastRunAt).toLocaleDateString(undefined, { day: "numeric", month: "short" })}.` : ""}`, `<button type="button" class="btn ghost sm" data-queue>Queue a check</button>`)}
       </div>
       <p class="st-foot">Each check collects about ${prompts * M.engines.length * samples} AI answers: ${prompts} prompts × ${M.engines.length} engine${M.engines.length === 1 ? "" : "s"} (${M.engines.map((e) => ENG[e]).join(", ")}) × ${samples}.</p>`;
@@ -2089,8 +2179,9 @@ Object.assign(PAGE, {
         + (canAdmin() ? "" : `<p class="st-foot">Connecting and disconnecting is for admins.</p>`);
     }
     if (tab === "brand") body = `<div class="card st-card">
-        ${canAdmin() && moveTo.length ? row("Move to another organisation", "Brings its history, prompts and integrations along.", `<div class="st-inline"><select id="moveOrg" class="sel">${moveTo.map((o) => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join("")}</select><button type="button" class="btn ghost sm" data-move>Move</button></div>`) : ""}
-        ${row("Delete this brand", `Removes ${esc(M.profile.name)}, its checks and history. This can't be undone.`, `<button type="button" class="btn ghost sm st-danger" id="delBrand" data-del>Delete brand</button>`)}
+        ${canAdmin() && moveTo.length && !ws?.parent ? row("Move to another organisation", "Brings its history, prompts and integrations along.", `<div class="st-inline"><select id="moveOrg" class="sel">${moveTo.map((o) => `<option value="${esc(o.slug)}">${esc(o.name)}</option>`).join("")}</select><button type="button" class="btn ghost sm" data-move>Move</button></div>`) : ""}
+        ${ws?.parent ? row("Delete this market", `Removes ${esc(marketLabel(ws))} from ${esc(M.profile.name)}: its prompts, checks and history. The brand's other markets stay. This can't be undone.`, `<button type="button" class="btn ghost sm st-danger" id="delBrand" data-del>Delete market</button>`)
+          : row("Delete this brand", `Removes ${esc(M.profile.name)}, its checks and history${marketsOf(M.slug).length > 1 ? `, and its ${marketsOf(M.slug).length - 1} other market${marketsOf(M.slug).length > 2 ? "s" : ""}` : ""}. This can't be undone.`, `<button type="button" class="btn ghost sm st-danger" id="delBrand" data-del>Delete brand</button>`)}
       </div>`;
     return head("Settings", `How Perfstaq tracks ${esc(M.profile.name)}.`) + roleNote
       + `<div class="st"><nav class="st-nav" aria-label="Settings sections">${TABS.map(([k, l, h]) => `<button type="button" data-settab="${k}" aria-current="${k === tab}"><b>${l}</b><span>${h}</span></button>`).join("")}
@@ -2117,6 +2208,17 @@ function intCard(M, i) {
 }
 
 /* ---------- actions on these pages ---------- */
+$("#reportWrap").addEventListener("change", async (e) => {
+  const t = e.target, M = APP.M; if (!M) return;
+  try {
+    if (t.matches("[data-rundow],[data-runhour]")) {
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      const w = await DATA.patch(M.slug, { [t.matches("[data-rundow]") ? "runDow" : "runHour"]: t.value === "" ? null : +t.value, runTz: tz });
+      toast(w.nextRunAt ? `Next check ${esc(new Date(w.nextRunAt).toLocaleString(undefined, { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }))}.` : "Saved."); return dashRender();
+    }
+    if (t.matches("[data-emailme]")) { APP.emailPrefs = await api("PUT", "/api/me/email-prefs", { reports: t.checked }); toast(t.checked ? "You'll get the results email after each automatic check." : "No more results emails for you. Checks keep running."); }
+  } catch (err) { toast(esc(err.message)); dashRender(); }
+});
 $("#reportWrap").addEventListener("click", async (e) => {
   const t = e.target, M = APP.M; if (!M) return;
   const slug = M.slug, card = t.closest("[data-int]"), id = card?.dataset.int;
@@ -2130,14 +2232,14 @@ $("#reportWrap").addEventListener("click", async (e) => {
     if (t.closest("[data-queue]")) { if (await runBlocked()) return; await DATA.patch(slug, { runNow: true }); toast("Queued. The server starts it within about 10 minutes, so you can close this tab. Results appear here."); return dashRender(); }
     if (t.closest("[data-editsetup]")) { const c = DATA.company(slug); return startOnboarding(M.profile.site, c || { profile: M.profile, questions: M.questions.map((q) => ({ ...q, on: true })), engines: M.engines }); }
     const del = t.closest("[data-del]");
-    if (del) { if (del.dataset.armed !== "1") { del.dataset.armed = "1"; del.textContent = "Click again to delete everything"; del.classList.add("danger"); return; } await api("DELETE", `/api/workspaces/${encodeURIComponent(slug)}`); await DATA.refresh(); APP.M = null; toast("Brand deleted."); return home(); }
+    if (del) { if (del.dataset.armed !== "1") { del.dataset.armed = "1"; del.textContent = "Click again to delete everything"; del.classList.add("danger"); return; } const parent = DATA.ws(slug)?.parent; await api("DELETE", `/api/workspaces/${encodeURIComponent(slug)}`); await DATA.refresh(); APP.M = null; toast(parent ? "Market deleted." : "Brand deleted."); return parent ? openBrand(parent) : home(); }
     const art = t.closest("[data-article]"); if (art) return articleModal(art.dataset.article);
     const mv = t.closest("[data-move]");
     if (mv) { const to = $("#moveOrg").value, name = $("#moveOrg").selectedOptions[0]?.textContent; if (mv.dataset.armed !== "1") { mv.dataset.armed = "1"; mv.textContent = `Click again to move it to ${name}`; return; }
       await api("PATCH", `/api/workspaces/${encodeURIComponent(slug)}`, { moveTo: to }); toast(`${esc(M.profile.name)} moved to ${esc(name)}.`); await switchOrg(to); return; }
     const sq = t.closest("[data-serp]");
     if (sq) { const done = busy(sq, "Checking…"); const q = sq.dataset.serp; M.serp = M.serp || {};
-      try { const r = await api("POST", "/api/serp/organic", { query: q, market: M.profile.market }); M.serp[norm(q)] = { results: r.results, at: Date.now() }; }
+      try { const r = await api("POST", "/api/serp/organic", { query: q, market: M.profile.market, country: M.profile.country }); M.serp[norm(q)] = { results: r.results, at: Date.now() }; }
       catch (err) { M.serp[norm(q)] = { error: err.message }; toast(esc(err.message)); }
       done(); save(true); return dashRender(); }
     if (!id) return;

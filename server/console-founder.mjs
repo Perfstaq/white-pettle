@@ -493,7 +493,7 @@ const CAPS = ["brands", "questions", "competitors", "seats", "drafts"];
 export async function planFit(scope) {
   const [orgs, usage] = await Promise.all([orgRows(scope), q(`
     select o.id,
-      (select count(*)::int from workspaces w where w.org_id = o.id) as brands,
+      (select count(*)::int from workspaces w where w.org_id = o.id and w.parent_id is null) as brands,
       (select count(*)::int from workspaces w, ${ACTIVE_QS} e where w.org_id = o.id and e->>'on' is distinct from 'false') as questions,
       (select coalesce(max(${arrLen("w.setup->'profile'->'competitors'")}), 0)::int from workspaces w where w.org_id = o.id) as competitors,
       (select coalesce(max(${arrLen("w.setup->'engines'")}), 0)::int from workspaces w where w.org_id = o.id) as engines,

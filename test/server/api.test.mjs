@@ -21,6 +21,8 @@ before(async () => {
   Object.assign(process.env, { DATABASE_URL: DB, CRON_SECRET: "tick-secret", APP_SECRET: "test", OPENAI_API_KEY: "fake", GEMINI_API_KEY: "fake", ACCESS_CODE: "", PLATFORM_OPERATORS: "op@x.co, boss@x.co", RESEND_API_KEY: "" });
   (await import("../../server/mail.mjs")).setSender(async (m) => { mails.push(m); return { sent: true }; });
   (await import("../../server/runner.mjs")).setHandlers(fakes);
+  // Fix rechecks after scheduled checks read real sites; here nothing leaves the machine (a test sets its own pages).
+  (await import("../../server/recheck.mjs")).setFetch(async (url) => ({ ok: false, status: 404, url, body: "" }));
   app = await (await import("../../server/app.mjs")).start({ port: 0, quiet: true });
   base = `http://127.0.0.1:${app.port}`;
 });
@@ -2168,4 +2170,110 @@ test("upgrading from a trial is immediate; one-month payment links activate a pl
   setClient(null);
   for (const k of ["BILLING_ENABLED", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]) delete process.env[k];
   await sql(`update operators set role = 'support'`);
+});
+
+test("markets: one brand per country, its own limit, moved and deleted with the brand", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  process.env.BILLING_ENABLED = "operators";
+  assert.equal((await call("mk", "POST", "/api/auth/signup", { email: "markets@x.co", password: "longenough1" }, { "x-forwarded-for": "10.9.0.1" })).status, 200);
+  const org = (await call("mk", "GET", "/api/me")).data.org.id;
+  await sql(`update organizations set plan_code = 'starter', billing_status = 'active', current_period_start = now(), current_period_end = now() + interval '30 days' where id = $1`, [org]);
+  const setup = (country) => ({ profile: { name: "MeShopCheap", site: `https://meshopcheap.com/${country.toLowerCase()}`, country, competitors: [] }, questions: [{ text: `best deals ${country}`, on: true }] });
+  // The brand itself is India; Starter tracks 1 brand and 2 markets per brand.
+  let r = await call("mk", "PUT", "/api/workspaces/meshopcheap", { name: "MeShopCheap", setup: setup("IN"), market: { code: "IN", path: "/in" } });
+  assert.equal(r.status, 200); assert.deepEqual(r.data.workspace.market, { code: "IN", name: "India", path: "/in" });
+  r = await call("mk", "PUT", "/api/workspaces/meshopcheap-us", { name: "MeShopCheap", setup: setup("US"), parent: "meshopcheap", market: { code: "US", path: "/us" } });
+  assert.equal(r.status, 200, "a market is not another brand"); assert.equal(r.data.workspace.parent, "meshopcheap");
+  r = await call("mk", "PUT", "/api/workspaces/meshopcheap-gb", { name: "MeShopCheap", setup: setup("GB"), parent: "meshopcheap", market: { code: "GB", path: "/uk" } });
+  assert.equal(r.status, 402); assert.equal(r.data.capability, "markets"); assert.match(r.data.error, /2 markets per brand/);
+  assert.equal((await call("mk", "PUT", "/api/workspaces/other", { name: "Other", setup: setup("IN") })).data.capability, "brands", "still one brand");
+  await sql(`update organizations set plan_code = 'growth' where id = $1`, [org]);
+  assert.equal((await call("mk", "PUT", "/api/workspaces/meshopcheap-in2", { name: "x", setup: setup("IN"), parent: "meshopcheap", market: { code: "IN" } })).status, 409, "India is already tracked");
+  assert.equal((await call("mk", "PUT", "/api/workspaces/x", { name: "x", setup: setup("IN"), parent: "meshopcheap-us", market: { code: "FR" } })).status, 400, "markets hang off the brand, not off a market");
+  assert.equal((await call("mk", "PUT", "/api/workspaces/x", { name: "x", setup: setup("IN"), parent: "meshopcheap", market: { code: "ZZ" } })).status, 400);
+  assert.equal((await call("mk", "PUT", "/api/workspaces/meshopcheap-gb", { name: "MeShopCheap", setup: setup("GB"), parent: "meshopcheap", market: { code: "GB", path: "/uk" } })).status, 200);
+  const list = (await call("mk", "GET", "/api/workspaces")).data.workspaces;
+  assert.equal(list.length, 3); assert.equal(list.filter((w) => w.parent === "meshopcheap").length, 2);
+  assert.equal((await call("mk", "GET", "/api/billing")).data.used.brands, 1, "markets are not counted as brands");
+  // Each market keeps its own schedule.
+  assert.equal((await call("mk", "PATCH", "/api/workspaces/meshopcheap-us", { schedule: "weekly" })).data.workspace.schedule, "weekly");
+  assert.equal((await call("mk", "GET", "/api/workspaces")).data.workspaces.find((w) => w.slug === "meshopcheap").schedule, "off");
+  // A downgrade below the markets the brand tracks is blocked until it trims.
+  const B = await import("../../server/billing.mjs");
+  assert.ok((await B.downgradeBlockers(org, "starter")).some((x) => /3 markets/.test(x)));
+  // Moving: a market alone can't move; the brand takes its markets along.
+  const home = (await call("mk", "GET", "/api/me")).data.org.slug;
+  process.env.ORG_CREATION = "open"; const client = (await call("mk", "POST", "/api/orgs", { name: "Market Client" })).data.created.slug; delete process.env.ORG_CREATION;
+  await call("mk", "POST", `/api/orgs/${home}/switch`);
+  assert.equal((await call("mk", "PATCH", "/api/workspaces/meshopcheap-us", { moveTo: client })).status, 400);
+  assert.equal((await call("mk", "PATCH", "/api/workspaces/meshopcheap", { moveTo: client })).status, 200);
+  assert.equal((await call("mk", "GET", "/api/workspaces")).data.workspaces.length, 0, "brand and both markets left");
+  await call("mk", "POST", `/api/orgs/${client}/switch`);
+  assert.deepEqual((await call("mk", "GET", "/api/workspaces")).data.workspaces.map((w) => w.slug).sort(), ["meshopcheap", "meshopcheap-gb", "meshopcheap-us"]);
+  // Deleting one market leaves the brand; deleting the brand removes its markets.
+  assert.equal((await call("mk", "DELETE", "/api/workspaces/meshopcheap-gb")).status, 200);
+  assert.equal((await call("mk", "GET", "/api/workspaces")).data.workspaces.length, 2);
+  assert.equal((await call("mk", "DELETE", "/api/workspaces/meshopcheap")).status, 200);
+  assert.equal((await call("mk", "GET", "/api/workspaces")).data.workspaces.length, 0);
+  delete process.env.BILLING_ENABLED;
+});
+
+test("fix rechecks: one fix at a time, kept on the recovery plan, re-run after scheduled checks; results recorded when due", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  const { setFetch } = await import("../../server/recheck.mjs");
+  let robots = "User-agent: GPTBot\nDisallow: /\n";
+  setFetch(async (url) => (url === "https://fixco.example/robots.txt" ? { ok: true, status: 200, url, body: robots } : { ok: false, status: 404, url, body: "" }));
+  assert.equal((await call("fx", "POST", "/api/auth/signup", { email: "fixes@x.co", password: "longenough1" }, { "x-forwarded-for": "10.9.0.2" })).status, 200);
+  const org = (await call("fx", "GET", "/api/me")).data.org.id;
+  await call("fx", "PUT", "/api/workspaces/fixco", { name: "Fixco", site: "https://fixco.example", setup: { ...WS.setup, profile: { ...WS.setup.profile, name: "Fixco", site: "https://fixco.example" } } });
+  const card = { slug: "fixco", sourceKey: "robots", kind: "technical", title: "Let AI crawlers read your site", problem: "GPTBot is blocked in robots.txt.", evidence: { blocked: ["GPTBot"] } };
+  let r = await call("fx", "POST", "/api/recheck", card);
+  assert.equal(r.status, 200); assert.equal(r.data.check.pass, false); assert.match(r.data.check.detail, /Still blocked.*GPTBot/); assert.equal(r.data.check.by, "person");
+  assert.equal(r.data.action.status, "suggested", "a recheck records what it saw; it doesn't move the lifecycle"); assert.equal(r.data.action.lastCheck.pass, false);
+  assert.equal((await call("fx", "POST", "/api/recheck", { ...card, sourceKey: "article:q1" })).status, 400, "needs AI: left to the next full check");
+  assert.equal((await sql(`select count(*)::int as n from runs r join workspaces w on w.id = r.workspace_id where w.org_id = $1`, [org]))[0].n, 0, "no check was used");
+  // The fix goes live; the scheduled check re-reads it without anyone pressing the button, and the report says so.
+  robots = "User-agent: *\nAllow: /\n";
+  // A published fix whose recheck date has come gets its result from this check.
+  const src = { id: "fx-src", slug: "fixco", startedAt: Date.now() - 864e5 * 3, finishedAt: Date.now() - 864e5 * 3, profile: { name: "Fixco", site: "https://fixco.example" }, questions: [{ id: "q1", text: "best ai partner for a bank" }],
+    answers: { "q1|chatgpt": { qid: "q1", engine: "chatgpt", status: "no", named: false, brands: ["Deloitte"] } } };
+  assert.equal((await call("fx", "PUT", "/api/runs/fx-src", { slug: "fixco", data: src })).status, 200);
+  const ws = (await sql(`select id from workspaces where org_id = $1`, [org]))[0].id;
+  await sql(`insert into recovery_actions (workspace_id, source_key, source_run_id, question_id, engine, kind, title, problem, status, published_url, published_at, recheck_at)
+             values ($1, 'article:q1', 'fx-src', 'q1', 'chatgpt', 'page', 'Win best ai partner', 'Not named', 'recheck_scheduled', 'https://fixco.example/p', now() - interval '2 days', now() - interval '1 minute')`, [ws]);
+  mails.length = 0;
+  await call("fx", "PATCH", "/api/workspaces/fixco", { schedule: "weekly", runNow: true });
+  const t = await call("x", "POST", "/api/cron/tick", null, { "x-cron-secret": "tick-secret" });
+  const mine = t.data.ran.find((x) => x.slug === "fixco"); assert.ok(mine); assert.equal(mine.fixesVerified, 1); assert.equal(mine.resultsObserved, 1);
+  const acts = (await call("fx", "GET", "/api/workspaces/fixco/recovery-actions")).data.actions;
+  const rb = acts.find((a) => a.sourceKey === "robots"); assert.equal(rb.lastCheck.pass, true); assert.equal(rb.lastCheck.by, "schedule");
+  const ob = acts.find((a) => a.sourceKey === "article:q1"); assert.equal(ob.status, "result_observed"); assert.equal(ob.result.direction, "improved");
+  assert.deepEqual([ob.result.before, ob.result.after], [{ named: 0, total: 1 }, { named: 1, total: 1 }]); // one answer per prompt on ChatGPT, before and after
+  // The scheduled check re-read the site and kept it as the brand's current reading.
+  assert.equal((await sql(`select setup->'audit'->>'avg' as avg from workspaces where id = $1`, [ws]))[0].avg, "55");
+  // The report: what was confirmed, the result, and a link to stop it (List-Unsubscribe too).
+  const m = mails.find((x) => /Fixco: your weekly AI visibility/.test(x.subject)); assert.ok(m, "report sent");
+  assert.match(m.text, /Confirmed: Let AI crawlers read your site/); assert.match(m.text, /Win best ai partner: improved/);
+  const link = m.text.match(/Stop these reports: (\S+)/)[1]; assert.ok(m.headers["List-Unsubscribe"].includes(link));
+  const u = new URL(link);
+  assert.equal((await call("anon", "GET", u.pathname + u.search.replace(/t=[^&]+/, "t=forged"))).status, 400);
+  r = await call("anon", "GET", u.pathname + u.search); assert.equal(r.status, 200); assert.match(r.data, /won't get these reports/);
+  assert.equal((await call("fx", "GET", "/api/me/email-prefs")).data.reports, false);
+  // Opted out: the next report isn't sent to them; turning it back on in Settings works.
+  const N = await import("../../server/notify.mjs");
+  assert.equal((await N.notify(org, "weekly_results", "fx-next", { brand: "Fixco", slug: "fixco", s: {} }, { admins: true })).sent, false);
+  assert.equal((await call("fx", "PUT", "/api/me/email-prefs", { reports: true })).data.reports, true);
+  assert.equal((await N.notify(org, "weekly_results", "fx-next2", { brand: "Fixco", slug: "fixco", s: {} }, { admins: true })).sent, true);
+  setFetch(async (url) => ({ ok: false, status: 404, url, body: "" }));
+});
+
+test("scheduled checks can run on a chosen weekday and hour in the brand's time zone", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  assert.equal((await call("tz", "POST", "/api/auth/signup", { email: "times@x.co", password: "longenough1" }, { "x-forwarded-for": "10.9.0.3" })).status, 200);
+  await call("tz", "PUT", "/api/workspaces/timed", { name: "Timed", setup: { profile: { name: "Timed" }, questions: [{ text: "q" }] } });
+  let r = await call("tz", "PATCH", "/api/workspaces/timed", { schedule: "weekly", runDow: 1, runHour: 9, runTz: "Asia/Kolkata" });
+  assert.equal(r.status, 200); assert.deepEqual([r.data.workspace.runDow, r.data.workspace.runHour, r.data.workspace.runTz], [1, 9, "Asia/Kolkata"]);
+  const at = new Date(r.data.workspace.nextRunAt);
+  assert.equal(at.getUTCDay(), 1); assert.equal(at.getUTCHours(), 3); assert.equal(at.getUTCMinutes(), 30, "09:00 in Kolkata is 03:30 UTC");
+  assert.equal((await call("tz", "PATCH", "/api/workspaces/timed", { runTz: "Mars/Olympus" })).status, 400);
+  assert.equal((await call("tz", "PATCH", "/api/workspaces/timed", { runHour: 24 })).status, 400);
+  r = await call("tz", "PATCH", "/api/workspaces/timed", { runDow: null, runHour: null });
+  assert.ok(Math.abs(new Date(r.data.workspace.nextRunAt) - (Date.now() + 7 * 864e5)) < 60000, "cleared: a week from now, as before");
 });
