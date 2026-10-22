@@ -66,7 +66,8 @@ export async function billingState(orgId, { c = null, usage = false, now = new D
 // fixes and AI spend come from the recorder's counters for the current billing period (server/usage.mjs).
 async function usageOf(orgId, since, c = null, only = null) {
   const live = {
-    brands: `(select count(*)::int from workspaces where org_id = $1)`,
+    // A brand's markets (its country versions) are not more brands: they count against `markets`, per brand.
+    brands: `(select count(*)::int from workspaces where org_id = $1 and parent_id is null)`,
     questions: `(select count(*)::int from workspaces w, ${ACTIVE_Q} e where w.org_id = $1 and e->>'on' is distinct from 'false')`,
     seats: `((select count(*)::int from memberships where org_id = $1) + (select count(*)::int from invitations where org_id = $1 and accepted_at is null and revoked_at is null and expires_at > now()))`,
     // A check counts once it finished or was stopped, or was left running (tab closed) for half an hour. The run in progress doesn't count,
@@ -99,17 +100,17 @@ export function usageReport(st, ai = null) {
   const period = o.billing_status === "trialing" ? { kind: "trial", start: o.trial_started_at, end: o.trial_ends_at }
     : ["active", "past_due", "canceled"].includes(o.billing_status) && o.current_period_start ? { kind: "plan", start: o.current_period_start, end: o.current_period_end } : { kind: "month", start: month, end: nextMonth };
   return { period, metrics, ai: ai ? { pct: ai.pct, state: ai.over ? "over" : ai.warn ? "warn" : ai.pct == null ? "unlimited" : "ok", source: ai.source } : null,
-    features: { engines: e.engines, schedules: e.schedule, integrations: e.integrations, competitors: e.competitors === Infinity ? null : e.competitors, samples: e.samples === Infinity ? null : e.samples },
+    features: { engines: e.engines, schedules: e.schedule, integrations: e.integrations, competitors: e.competitors === Infinity ? null : e.competitors, markets: e.markets === Infinity ? null : e.markets, samples: e.samples === Infinity ? null : e.samples },
     over: metrics.filter((m) => m.state === "over").map((m) => m.key) };
 }
 
 // ── errors ────────────────────────────────────────────────────────────────────
-const LABEL = { brands: "brand", questions: "prompt", competitors: "competitor", seats: "seat", drafts: "drafted fix", checks: "check", engines: "engine", schedule: "schedule", samples: "answer", integrations: "integration" };
+const LABEL = { markets: "market", brands: "brand", questions: "prompt", competitors: "competitor", seats: "seat", drafts: "drafted fix", checks: "check", engines: "engine", schedule: "schedule", samples: "answer", integrations: "integration" };
 export function limitError(st, capability, used, limit) {
   const trial = st.org.billing_status === "trialing", plan = trial ? "The free trial" : st.plan.name;
   const msg = limit === 0 || (Array.isArray(limit) && !limit.length) ? `${plan} doesn't include ${LABEL[capability]}s.`
     : Array.isArray(limit) ? `${plan} doesn't include that ${LABEL[capability]}.`
-    : `${plan} includes ${limit} ${LABEL[capability]}${limit === 1 ? "" : "s"}${{ competitors: " per brand", samples: " per prompt" }[capability] || ""} (you have ${used}).`;
+    : `${plan} includes ${limit} ${LABEL[capability]}${limit === 1 ? "" : "s"}${{ competitors: " per brand", markets: " per brand", samples: " per prompt" }[capability] || ""} (you have ${used}).`;
   if (trial && capability === "checks") fail(402, "Choose a plan to run your prompts again. Paying now starts your plan today; your reports stay readable.", { code: "plan_limit", capability, used, limit, plan: "trial", nextPlan: null, nextPlanName: null, trialDone: true });
   if (trial) fail(402, `${msg} The trial is the same for every plan; ${PLANS[st.org.plan_code]?.selfServe ? `${st.plan.name}'s limits start` : "your plan's limits start"} when the trial ends.`, { code: "plan_limit", capability, used, limit: Array.isArray(limit) ? null : limit, plan: "trial", nextPlan: null, nextPlanName: null });
   fail(402, `${msg} Upgrade to ${PLANS[nextPlan(st.org.plan_code)].name} for more.`, { code: "plan_limit", capability, used, limit: Array.isArray(limit) ? null : limit, plan: st.org.plan_code, nextPlan: nextPlan(st.org.plan_code), nextPlanName: PLANS[nextPlan(st.org.plan_code)].name });
@@ -144,6 +145,8 @@ export async function guarded(orgId, fn, usage = true) { // usage: true (all cou
 
 // ── limits ────────────────────────────────────────────────────────────────────
 export function assertBrandCreate(st) { if (st.used.brands >= st.ent.brands) limitError(st, "brands", st.used.brands, st.ent.brands); }
+// `have`: the markets this brand tracks now, its own included.
+export function assertMarketCreate(st, have) { if (have >= st.ent.markets) limitError(st, "markets", have, st.ent.markets); }
 const active = (setup) => (Array.isArray(setup?.questions) ? setup.questions : []).filter((x) => x && x.on !== false).length;
 const rivals = (setup) => (Array.isArray(setup?.profile?.competitors) ? setup.profile.competitors.length : 0);
 // A save may never push questions or competitors past the plan, but one that doesn't add any is always allowed, so an
@@ -276,7 +279,8 @@ export async function downgradeBlockers(orgId, code) {
   if (st.used.brands > e.brands) out.push(`${st.used.brands} brands (${PLANS[code].name} allows ${e.brands})`);
   if (st.used.questions > e.questions) out.push(`${st.used.questions} tracked questions (allows ${e.questions})`);
   if (st.used.seats > e.seats) out.push(`${st.used.seats} seats including invites (allows ${e.seats})`);
-  for (const w of await q(`select name, setup, schedule, samples from workspaces where org_id = $1`, [orgId])) {
+  for (const w of await q(`select name, setup, schedule, samples, (select count(*)::int + 1 from workspaces m where m.parent_id = w.id) as markets, parent_id from workspaces w where org_id = $1`, [orgId])) {
+    if (!w.parent_id && w.markets > e.markets) out.push(`${w.name} tracks ${w.markets} markets (${PLANS[code].name} allows ${e.markets} per brand)`);
     if (!e.schedule.includes(w.schedule)) out.push(`${w.name} runs ${w.schedule} checks (not in ${PLANS[code].name})`);
     if (w.samples > e.samples) out.push(`${w.name} uses ${w.samples} samples per question (allows ${e.samples})`);
     const r = Array.isArray(w.setup?.profile?.competitors) ? w.setup.profile.competitors.length : 0;

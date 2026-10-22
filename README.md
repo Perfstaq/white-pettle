@@ -25,7 +25,13 @@ Then **"your workspace is ready"** reveals the first results. The **results dash
 - **Search rankings**: the searches AI ran, and where you rank for them on Google (Search Console, or a live top-10 check) and Bing
 - **Actions**, worked through with ← and →; **Ranking**; **Insights**; **Perception**
 - **My website**: crawler access, page scores (now with JS-only content, author and credentials, alt text, internal links, H1), the most common page problems, an entity check (Wikidata, Knowledge Graph, sameAs), AI crawler visits (Cloudflare) and Bing index status
-- **Settings**: weekly or daily checks that run on the server, answers per prompt, and integrations
+- **Settings**: weekly or daily checks that run on the server (on a chosen weekday and hour, in your time zone), answers per prompt, the results email, and integrations
+
+**Markets.** A site with country versions (`meshopcheap.com/in`, `/us`, `/uk`) is tracked one market per country under one brand. Setup stays inside the country path it was given (a bare domain that redirects to `/in` is pinned to `/in`), reads the country from the path, `<html lang>` and prices, and finds the site's other country versions. Each market has its own prompts, competitors, schedule and report, and every engine is asked from that country: ChatGPT and Perplexity by their location setting, Google AI Overviews and AI Mode by SERP location and language, Gemini and Groq by a one-line note. A page under another country's path doesn't count as "your site" in this market. Plans limit markets per brand (`markets`); markets don't count as brands.
+
+**Recheck a fix.** On the Actions deck, fixes a file or a page can confirm (robots.txt, llms.txt, Organization schema, one page's AI-readiness score, being named on one third-party page) have a **Recheck** button. It reads only that file or page, asks no AI, and doesn't use a check. The result is kept on the brand's recovery plan. Every scheduled check re-reads the site and rechecks the fixes not yet confirmed. Published fixes whose recheck date has come get their before and after result from that check.
+
+**Results email.** After each scheduled check, owners and admins get what changed: prompts newly named or lost, each engine's visibility, a rival that passed you, crawler access and AI-readiness changes, fixes confirmed, and results after publishing. Each email has a one-click unsubscribe link; Settings turns it back on.
 
 There's also an **Agent** drawer you can ask anything. `docs/peec-onboarding-analysis.md` explains what we copied from Peec and why, and **How we measure** on the dashboard defines every metric.
 

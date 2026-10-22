@@ -12,8 +12,11 @@ import * as serp from "./integrations/serp.mjs";
 import * as entity from "./integrations/entity.mjs";
 import * as slack from "./integrations/slack.mjs";
 import { serpConfig, env, engines as availableEngines } from "../api/_lib.js";
-import { summarize, hostOf } from "./metrics.mjs";
+import { summarize, hostOf, changesBetween, norm, finished } from "./metrics.mjs";
+import { recheck, checkType } from "./recheck.mjs";
 import { runCheck } from "./runner.mjs";
+import { serpWhere } from "../api/ask.js";
+import { countryByCode, localePath } from "../api/_markets.js";
 import { slugify, emailOk, normEmail } from "./util.mjs";
 import * as O from "./orgs.mjs";
 import * as B from "./billing.mjs";
@@ -27,7 +30,26 @@ import * as mail from "./mail.mjs";
 const SESSION = "wp_session";
 const GSTATE = "wp_gstate";
 const DAY = 864e5;
-const nextRun = (schedule, from = Date.now()) => (schedule === "daily" ? new Date(from + DAY) : schedule === "weekly" ? new Date(from + 7 * DAY) : null);
+// When the next scheduled check is due. Without a chosen time: one period after `from`, as always. With one (`at`: { dow 0-6,
+// hour 0-23, tz }): the first such slot, on the hour in the brand's own time zone, at least a day (weekly) or an hour (daily)
+// after `from`, so a check that just ran isn't repeated straight away. Quarter-hour steps find :30 and :45 time zones.
+const TZ_FMT = new Map();
+const localParts = (d, tz) => {
+  let f = TZ_FMT.get(tz); if (!f) TZ_FMT.set(tz, (f = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short", hour: "numeric", minute: "numeric", hourCycle: "h23" })));
+  const p = Object.fromEntries(f.formatToParts(d).map((x) => [x.type, x.value]));
+  return { dow: ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].indexOf(p.weekday), hour: Number(p.hour) % 24, minute: Number(p.minute) };
+};
+export const validTz = (tz) => { try { new Intl.DateTimeFormat("en-US", { timeZone: String(tz) }); return true; } catch { return false; } };
+export function nextRun(schedule, from = Date.now(), at = {}) {
+  if (schedule !== "daily" && schedule !== "weekly") return null;
+  const from0 = new Date(from).getTime();
+  if (at.hour == null && at.dow == null) return new Date(from0 + (schedule === "daily" ? DAY : 7 * DAY));
+  const tz = at.tz && validTz(at.tz) ? at.tz : "UTC", hour = at.hour ?? 9, dow = schedule === "weekly" ? at.dow ?? null : null;
+  const Q = 15 * 60000; let t = Math.ceil((from0 + (schedule === "weekly" ? DAY : 3600e3)) / Q) * Q;
+  for (let i = 0; i < 9 * 96; i++, t += Q) { const p = localParts(new Date(t), tz); if (p.minute === 0 && p.hour === hour && (dow == null || p.dow === dow)) return new Date(t); }
+  return new Date(from0 + (schedule === "daily" ? DAY : 7 * DAY));
+}
+const runAt = (w) => ({ dow: w.run_dow, hour: w.run_hour, tz: w.run_tz });
 // Self-serve (BILLING_ENABLED=1): anyone may sign up; a new personal organisation chooses a plan first, which starts the trial.
 export const selfServe = () => billingConfig().enabled === "1";
 async function newPersonalOrg(u) {
@@ -74,7 +96,15 @@ async function meOut(u) {
   return { user: publicUser(u), operator: ctx.operator, org: O.orgOut(ctx), orgs: ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })),
     budget: cap ? { warn: cap.warn, over: cap.over, pct: cap.pct, source: cap.source } : null, billing: ctx.org ? await B.billingSummary(ctx.org.id) : null };
 }
-const wsOut = (w, extra = {}) => ({ slug: w.slug, name: w.name, site: w.site, schedule: w.schedule, samples: w.samples, nextRunAt: w.next_run_at, lastRunAt: w.last_run_at, running: !!w.running_at && Date.now() - new Date(w.running_at) < 40 * 60000, createdAt: w.created_at, updatedAt: w.updated_at, ...extra });
+const wsOut = (w, extra = {}) => ({ slug: w.slug, name: w.name, site: w.site, schedule: w.schedule, samples: w.samples, nextRunAt: w.next_run_at, lastRunAt: w.last_run_at, running: !!w.running_at && Date.now() - new Date(w.running_at) < 40 * 60000, createdAt: w.created_at, updatedAt: w.updated_at,
+  parent: w.parent_slug || null, market: w.market || null, runDow: w.run_dow ?? null, runHour: w.run_hour ?? null, runTz: w.run_tz || null, ...extra });
+const withParent = async (w) => (w.parent_id && !w.parent_slug ? { ...w, parent_slug: (await one(`select slug from workspaces where id = $1`, [w.parent_id]))?.slug || null } : w);
+// A market as the browser sends it: { code: "IN", path: "/in" }. The name comes from the code, so it is always a real country.
+function marketIn(m) {
+  if (m == null || m === "") return null;
+  const c = countryByCode(m?.code); if (!c) fail(400, "That market isn't a country we know (send its two-letter code, like IN).");
+  return { code: c.code, name: c.name, path: localePath(m.path || "") || null };
+}
 
 // Who may spend AI credits. With a database: a member with at least `min` (editor by default), inside the monthly
 // budget; the request then runs on the organisation's keys (see app.mjs). Without one: the access code, as before.
@@ -218,13 +248,18 @@ export async function tick({ budgetMs = 25 * 60000, log = console.log } = {}) {
       const s = summarize(M);
       await q(`insert into runs (id, workspace_id, source, status, started_at, finished_at, summary, data) values ($1, $2, 'scheduled', 'done', to_timestamp($3 / 1000.0), now(), $4, $5)`, [M.id, ws.id, M.startedAt, s, M]);
       await meterRun(ws, M);
+      // The site was read again for this check: keep that reading as the brand's current one (integrations use its pages).
+      if (M.audit && !M.audit.stale) await q(`update workspaces set setup = jsonb_set(setup, '{audit}', $2::jsonb) where id = $1`, [ws.id, JSON.stringify(M.audit)]).catch(() => {});
       for (const p of ["google", "bing", "cloudflare", "entity"]) { if (await one(`select 1 from integrations where workspace_id = $1 and provider = $2`, [ws.id, p])) await collectOne(ws, p).catch(() => {}); }
-      await notifySlack(ws, s, prevSummary).catch(() => {});
-      await N.notify(ws.org_id, "weekly_results", M.id, { brand: ws.name, slug: ws.slug, s, prev: prevSummary }, { admins: true });
-      done.push({ slug: ws.slug, visibility: s.visibility, score: s.score });
+      const fixes = await recheckOpenFixes(ws, M).catch((e) => { log(`[tick ${ws.slug}] rechecks: ${e.message}`); return []; });
+      const observed = await observeDueResults(ws, M).catch((e) => { log(`[tick ${ws.slug}] results: ${e.message}`); return []; });
+      const report = { brand: brandLabel(ws), slug: ws.slug, schedule: ws.schedule, s, prev: prevSummary, changes: changesBetween(prev?.data || null, M), fixes, observed };
+      await notifySlack(ws, report).catch(() => {});
+      await N.notify(ws.org_id, "weekly_results", M.id, report, { admins: true });
+      done.push({ slug: ws.slug, visibility: s.visibility, score: s.score, fixesVerified: fixes.filter((f) => f.pass).length, resultsObserved: observed.length });
     }
     await q(`update workspaces set running_at = null, last_run_at = case when $2 then now() else last_run_at end, next_run_at = $3, updated_at = now() where id = $1`,
-      [ws.id, !!M, nextRun(ws.schedule) || null]);
+      [ws.id, !!M, nextRun(ws.schedule, Date.now(), runAt(ws)) || null]);
     if (err) await q(`insert into runs (id, workspace_id, source, status, error, finished_at) values ($1, $2, 'scheduled', 'failed', $3, now())`, [randomId(9), ws.id, err]);
   }
   return done;
@@ -238,10 +273,58 @@ async function meterRun(ws, M) {
   await O.meter({ ...base, kind: "inspect", n: Object.keys(M.inspections || {}).length });
   await O.meter({ ...base, kind: "write", n: 3 });
 }
-async function notifySlack(ws, s, prev) {
+// "MeShopCheap" for a brand tracked once; "MeShopCheap (India)" for one of its markets, so reports for each country are told apart.
+const brandLabel = (ws) => (ws.market?.name ? `${ws.name} (${ws.market.name})` : ws.name);
+async function notifySlack(ws, r) {
   const got = await integrationCfg(ws, "slack"); if (!got) return;
+  const { s, prev, changes: c = {} } = r;
   const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)}%`), d = (a, b) => (b == null || a == null ? "" : ` (${a >= b ? "▲" : "▼"} ${Math.abs(Math.round((a - b) * 100))} pts)`);
-  await slack.notify(got.cfg, { title: `${ws.name}: weekly AI visibility`, lines: [`*Visibility* ${pct(s.visibility)}${d(s.visibility, prev?.visibility)}`, `*Score* ${s.score}/100 · *Share of voice* ${pct(s.sov)} · *Position* ${s.position ? "#" + s.position.toFixed(1) : "–"}`, s.leader ? `*Leader* ${s.leader.name} at ${pct(s.leader.vis)}` : ""].filter(Boolean), url: process.env.PUBLIC_ORIGIN || undefined });
+  const lines = [`*Visibility* ${pct(s.visibility)}${d(s.visibility, prev?.visibility)}`, `*Score* ${s.score}/100 · *Share of voice* ${pct(s.sov)} · *Position* ${s.position ? "#" + s.position.toFixed(1) : "–"}`, s.leader ? `*Leader* ${s.leader.name} at ${pct(s.leader.vis)}` : ""];
+  for (const o of c.overtook || []) lines.push(`:warning: *${o.name}* passed you: named in ${pct(o.vis)} of answers.`);
+  if (c.gained?.length) lines.push(`*Now named for:* ${c.gained.slice(0, 3).map((x) => `“${x.text}”`).join(", ")}`);
+  if (c.lost?.length) lines.push(`*No longer named for:* ${c.lost.slice(0, 3).map((x) => `“${x.text}”`).join(", ")}`);
+  const ok = (r.fixes || []).filter((f) => f.pass); if (ok.length) lines.push(`*Fixes confirmed live:* ${ok.map((f) => f.title).slice(0, 4).join("; ")}`);
+  await slack.notify(got.cfg, { title: `${brandLabel(ws)}: ${ws.schedule === "daily" ? "daily" : "weekly"} AI visibility`, lines: lines.filter(Boolean), url: process.env.PUBLIC_ORIGIN || undefined });
+}
+
+// ── fixes re-checked on their own ───────────────────────────────────────────
+// Free checks (server/recheck.mjs) of the fixes a brand hasn't confirmed yet, after each scheduled check. Archived ones and
+// those already confirmed are left alone. Returns what was checked, for the report.
+async function recheckOpenFixes(ws, M) {
+  const rows = await q(`select * from recovery_actions where workspace_id = $1 and status <> 'archived' and coalesce(last_check->>'pass', 'false') <> 'true'
+      and (source_key in ('robots', 'llms', 'org') or source_key like 'fix:%' or source_key like 'pitch:%') order by updated_at desc limit 25`, [ws.id]);
+  const out = [];
+  for (const a of rows) {
+    const check = await recheck(a.source_key, { site: ws.site || ws.setup?.profile?.site, brand: M.profile, evidence: a.evidence || {} });
+    await saveCheck(a.id, { ...check, by: "schedule" });
+    out.push({ title: a.title, sourceKey: a.source_key, pass: check.pass, detail: check.detail });
+  }
+  return out;
+}
+const saveCheck = (id, check) => q(`update recovery_actions set last_check = $2, checked_at = now(), updated_at = now() where id = $1`, [id, check]);
+// Published fixes whose recheck date has come: this finished check is the later, comparable run the lifecycle asks for, so
+// the result is recorded here (before and after for the fix's prompt and engine), instead of waiting for someone to do it.
+async function observeDueResults(ws, M) {
+  const due = await q(`select * from recovery_actions where workspace_id = $1 and status = 'recheck_scheduled' and recheck_at <= now() and published_at < to_timestamp($2 / 1000.0) limit 50`, [ws.id, M.startedAt]);
+  const out = [];
+  for (const a of due) {
+    const src = a.source_run_id ? await one(`select data from runs where id = $1 and workspace_id = $2`, [a.source_run_id, ws.id]) : null;
+    const text = src?.data?.questions?.find((x) => x.id === a.question_id)?.text;
+    const count = (R, qtext) => {
+      const qq = (R?.questions || []).find((x) => norm(x.text) === norm(qtext)); if (!qq) return null;
+      const A = Object.values(R.answers || {}).filter((x) => x.qid === qq.id && finished(x) && (!a.engine || x.engine === a.engine));
+      return { named: A.filter((x) => x.named).length, total: A.length };
+    };
+    const before = text ? count(src.data, text) : null, after = text ? count(M, text) : null;
+    const comparable = !!(before?.total && after?.total);
+    const rate = (x) => x.named / x.total;
+    const direction = !comparable ? "incomparable" : rate(after) > rate(before) ? "improved" : rate(after) < rate(before) ? "regressed" : "unchanged";
+    const result = { comparisonRunId: M.id, comparable, before: before || undefined, after: after || undefined, direction, note: RESULT_NOTE, observedAt: new Date().toISOString(), by: "schedule" };
+    await q(`update recovery_actions set status = 'result_observed', result = $2, updated_at = now() where id = $1 and status = 'recheck_scheduled'`, [a.id, result]);
+    await O.audit(ws.org_id, null, "recovery.status", `${ws.name}: ${a.title}`, { id: a.id, from: "recheck_scheduled", to: "result_observed", direction, by: "schedule" });
+    out.push({ title: a.title, direction, before, after, question: text || null, engine: a.engine });
+  }
+  return out;
 }
 
 // ── recovery plan ───────────────────────────────────────────────────────────
@@ -278,7 +361,7 @@ const clip = (v, max) => (v == null ? null : String(v).trim().slice(0, max) || n
 const actionOut = (r) => ({ id: r.id, sourceKey: r.source_key, sourceRunId: r.source_run_id, questionId: r.question_id, engine: r.engine, gapType: r.gap_type, kind: r.kind,
   title: r.title, problem: r.problem, rationale: r.rationale, evidence: r.evidence, output: r.output, status: r.status, ownerId: r.owner_id, dueAt: r.due_at,
   approvedAt: r.approved_at, publishedUrl: r.published_url, publishedAt: r.published_at, recheckAt: r.recheck_at, result: r.result, confidence: r.confidence,
-  createdAt: r.created_at, updatedAt: r.updated_at });
+  lastCheck: r.last_check && Object.keys(r.last_check).length ? r.last_check : null, checkedAt: r.checked_at || null, createdAt: r.created_at, updatedAt: r.updated_at });
 const listActions = async (wsId) => (await q(`select * from recovery_actions where workspace_id = $1 order by updated_at desc, created_at desc limit 1000`, [wsId])).map(actionOut);
 // One suggestion from the browser, checked. Only these fields are ever written by a sync.
 function suggestionIn(a, i) {
@@ -520,7 +603,7 @@ export const ROUTES = [
     const u = await needUser(req); if (!O.isOperator(u)) fail(404, "Not found");
     const orgs = await q(`select o.slug, o.name, o.allow_platform_keys, o.monthly_cap_usd, o.created_at, o.plan_code, o.billing_status, o.trial_ends_at, o.current_period_end,
         (select count(*)::int from memberships m where m.org_id = o.id) as members,
-        (select count(*)::int from workspaces w where w.org_id = o.id) as brands,
+        (select count(*)::int from workspaces w where w.org_id = o.id and w.parent_id is null) as brands,
         (select u.email from memberships m join users u on u.id = m.user_id where m.org_id = o.id and m.role = 'owner') as owner,
         (select round(coalesce(sum(cost_usd), 0)::numeric, 2)::float from usage x where x.org_id = o.id and x.at >= date_trunc('month', now())) as spent
       from organizations o order by o.created_at desc limit 500`);
@@ -640,38 +723,60 @@ export const ROUTES = [
   }],
 
   // ── brands ──
-  // Brands in the current organisation, with their recent trend, for the switcher and the brand list.
+  // Brands in the current organisation, with their recent trend, for the switcher and the brand list. A brand's markets (its
+  // country versions) come back as workspaces too, each naming its brand in `parent`.
   ["GET", "/api/workspaces", async (req, res) => {
     const ctx = await needCtx(req, "viewer");
-    const rows = await q(`select w.*, (select coalesce(json_agg(t order by t.started_at), '[]') from (select id, started_at, source, summary from runs r where r.workspace_id = w.id and r.status = 'done' order by r.started_at desc limit 12) t) as trend
+    const rows = await q(`select w.*, (select slug from workspaces p where p.id = w.parent_id) as parent_slug,
+                             (select coalesce(json_agg(t order by t.started_at), '[]') from (select id, started_at, source, summary from runs r where r.workspace_id = w.id and r.status = 'done' order by r.started_at desc limit 12) t) as trend
                            from workspaces w where org_id = $1 order by updated_at desc`, [ctx.org.id]);
     sendJson(res, 200, { workspaces: rows.map((w) => wsOut(w, { trend: w.trend, setup: w.setup })), org: O.orgOut(ctx) });
   }],
+  // Create or update a brand. With `parent` (a brand's slug) it is one of that brand's markets: another country version of
+  // its site, counted against the plan's markets per brand instead of its brands.
   ["PUT", "/api/workspaces/:slug", async (req, res, p) => {
     const ctx = await needCtx(req, "editor"); const b = await readJson(req);
     const slug = slugify(p.slug), name = String(b.name || b.setup?.profile?.name || slug).slice(0, 120);
-    const setup = b.setup || {};
-    // The brand limit counts only a genuinely new brand: this route is an upsert.
+    const setup = b.setup || {}, market = marketIn(b.market);
     const w = await B.guarded(ctx.org.id, async (c, st) => {
       B.assertWrite(st);
-      const prev = (await c.query(`select id, setup from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug])).rows[0];
-      if (!prev) B.assertBrandCreate(st);
+      const prev = (await c.query(`select id, setup, parent_id from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug])).rows[0];
+      let parent = null;
+      if (b.parent && !prev) {
+        parent = (await c.query(`select id, name from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slugify(b.parent)])).rows[0];
+        if (!parent) fail(404, "That brand doesn't exist in this organisation.");
+        const top = (await c.query(`select parent_id from workspaces where id = $1`, [parent.id])).rows[0];
+        if (top.parent_id) fail(400, "Add the market to the brand itself, not to one of its markets.");
+        if (!market) fail(400, "A market needs a country.");
+        const same = (await c.query(`select name from workspaces where (id = $1 or parent_id = $1) and market->>'code' = $2`, [parent.id, market.code])).rows[0];
+        if (same) fail(409, `${parent.name} already tracks ${market.name}.`);
+        B.assertMarketCreate(st, 1 + (await c.query(`select count(*)::int as n from workspaces where parent_id = $1`, [parent.id])).rows[0].n);
+      } else if (!prev) B.assertBrandCreate(st); // the brand limit counts only a genuinely new brand: this route is an upsert
       await B.assertSetup(st, c, setup, prev?.setup, prev?.id);
-      return (await c.query(`insert into workspaces (org_id, owner_id, slug, name, site, setup) values ($1, $2, $3, $4, $5, $6)
-        on conflict (org_id, slug) do update set name = excluded.name, site = excluded.site, setup = excluded.setup, updated_at = now() returning *`, [ctx.org.id, ctx.user.id, slug, name, b.site || setup.profile?.site || null, setup])).rows[0];
+      return (await c.query(`insert into workspaces (org_id, owner_id, slug, name, site, setup, parent_id, market) values ($1, $2, $3, $4, $5, $6, $7, $8)
+        on conflict (org_id, slug) do update set name = excluded.name, site = excluded.site, setup = excluded.setup, market = coalesce(excluded.market, workspaces.market), updated_at = now() returning *`,
+        [ctx.org.id, ctx.user.id, slug, name, b.site || setup.profile?.site || null, setup, parent?.id || null, market])).rows[0];
     });
-    sendJson(res, 200, { workspace: wsOut(w, { setup: w.setup }) });
+    if (w.parent_id && b.parent) await O.audit(ctx.org.id, ctx.user.id, "market.saved", `${w.name}: ${market?.name}`, { slug });
+    sendJson(res, 200, { workspace: wsOut(await withParent(w), { setup: w.setup }) });
   }],
   ["PATCH", "/api/workspaces/:slug", async (req, res, p) => {
     const ctx = await needCtx(req, "editor"); const w = await needWorkspace(ctx, p.slug); const b = await readJson(req, 200000);
-    // Move a brand to another organisation (for example from your own into a client's): admin on both sides.
+    // Move a brand (with its markets) to another organisation, for example from your own into a client's: admin on both sides.
     if (b.moveTo) {
       O.needRole(ctx, "admin");
+      if (w.parent_id) fail(400, "Move the brand itself. Its markets move with it.");
       const to = await one(`select id, slug, name from organizations where slug = $1`, [String(b.moveTo)]);
       const mine = to && (await one(`select role from memberships where org_id = $1 and user_id = $2`, [to.id, ctx.user.id]));
       if (!to || !((mine && O.can(mine.role, "admin")) || ctx.operator)) fail(403, "You need to be an admin in the organisation you're moving it to.");
-      if (await one(`select 1 from workspaces where org_id = $1 and slug = $2`, [to.id, w.slug])) fail(409, `${to.name} already has a brand called ${w.slug}.`);
-      await B.guarded(to.id, async (c, st) => { B.assertWrite(st); B.assertBrandCreate(st); await c.query(`update workspaces set org_id = $2, updated_at = now() where id = $1`, [w.id, to.id]); });
+      const clash = await one(`select t.slug from workspaces t where t.org_id = $1 and t.slug in (select slug from workspaces where id = $2 or parent_id = $2)`, [to.id, w.id]);
+      if (clash) fail(409, `${to.name} already has a brand called ${clash.slug}.`);
+      await B.guarded(to.id, async (c, st) => {
+        B.assertWrite(st); B.assertBrandCreate(st);
+        const n = (await c.query(`select count(*)::int as n from workspaces where parent_id = $1`, [w.id])).rows[0].n;
+        if (n) B.assertMarketCreate(st, n);
+        await c.query(`update workspaces set org_id = $2, updated_at = now() where id = $1 or parent_id = $1`, [w.id, to.id]);
+      });
       await O.audit(ctx.org.id, ctx.user.id, "brand.moved_out", w.name, { to: to.slug });
       await O.audit(to.id, ctx.user.id, "brand.moved_in", w.name, { from: ctx.org.slug });
       return sendJson(res, 200, { moved: { slug: w.slug, to: to.slug } });
@@ -679,20 +784,27 @@ export const ROUTES = [
     const schedule = ["off", "daily", "weekly"].includes(b.schedule) ? b.schedule : w.schedule;
     const samples = b.samples != null ? Math.max(1, Math.min(5, Number(b.samples) || 1)) : w.samples;
     const setup = b.setup ? { ...w.setup, ...b.setup } : w.setup;
-    // A new or changed schedule starts from now: the next run is one period away, or "soon" if asked (runNow).
-    const next = b.runNow ? new Date() : schedule === w.schedule && w.next_run_at ? w.next_run_at : nextRun(schedule);
+    // The time of day (and weekday) checks run, in the brand's time zone. null clears it: back to "a period after the last one".
+    const at = { dow: w.run_dow, hour: w.run_hour, tz: w.run_tz };
+    if ("runDow" in b) at.dow = b.runDow == null || b.runDow === "" ? null : Number.isInteger(+b.runDow) && +b.runDow >= 0 && +b.runDow <= 6 ? +b.runDow : fail(400, "runDow is a weekday, 0 (Sunday) to 6.");
+    if ("runHour" in b) at.hour = b.runHour == null || b.runHour === "" ? null : Number.isInteger(+b.runHour) && +b.runHour >= 0 && +b.runHour <= 23 ? +b.runHour : fail(400, "runHour is an hour, 0 to 23.");
+    if ("runTz" in b) at.tz = b.runTz == null || b.runTz === "" ? null : validTz(b.runTz) ? String(b.runTz).slice(0, 60) : fail(400, "runTz must be a time zone like Asia/Kolkata.");
+    const timing = "runDow" in b || "runHour" in b || "runTz" in b;
+    // A new or changed schedule (or time) starts from now: the next run is the next slot, or "soon" if asked (runNow).
+    const next = b.runNow ? new Date() : schedule === w.schedule && !timing && w.next_run_at ? w.next_run_at : nextRun(schedule, Date.now(), at);
     const out = await B.guarded(ctx.org.id, async (c, st) => {
       B.assertWrite(st); B.assertSchedule(st, schedule, samples, w); await B.assertSetup(st, c, setup, w.setup, w.id); if (b.runNow) B.assertCheck(st);
-      return (await c.query(`update workspaces set schedule = $2, samples = $3, setup = $4, next_run_at = $5, name = coalesce($6, name), updated_at = now() where id = $1 returning *`,
-        [w.id, schedule, samples, setup, schedule === "off" && !b.runNow ? null : next, b.name || null])).rows[0];
+      return (await c.query(`update workspaces set schedule = $2, samples = $3, setup = $4, next_run_at = $5, name = coalesce($6, name), run_dow = $7, run_hour = $8, run_tz = $9, updated_at = now() where id = $1 returning *`,
+        [w.id, schedule, samples, setup, schedule === "off" && !b.runNow ? null : next, b.name || null, at.dow, at.hour, at.tz])).rows[0];
     });
     if (b.runNow) await O.audit(ctx.org.id, ctx.user.id, "check.queued", w.name);
-    sendJson(res, 200, { workspace: wsOut(out, { setup: out.setup }) });
+    sendJson(res, 200, { workspace: wsOut(await withParent(out), { setup: out.setup }) });
   }],
+  // Deleting a brand deletes its markets too (they are its country versions); deleting a market deletes only that market.
   ["DELETE", "/api/workspaces/:slug", async (req, res, p) => {
     const ctx = await needCtx(req, "admin"); const w = await needWorkspace(ctx, p.slug, "admin");
     await q(`delete from workspaces where id = $1`, [w.id]);
-    await O.audit(ctx.org.id, ctx.user.id, "brand.deleted", w.name);
+    await O.audit(ctx.org.id, ctx.user.id, w.parent_id ? "market.deleted" : "brand.deleted", w.name, w.market ? { market: w.market.name } : null);
     sendJson(res, 200, { ok: true });
   }],
 
@@ -724,7 +836,7 @@ export const ROUTES = [
              on conflict (id) do update set status = excluded.status, finished_at = excluded.finished_at, summary = excluded.summary, data = excluded.data, updated_at = now()`,
       [p.id, w.id, status, data.startedAt || Date.now(), data.finishedAt ? new Date(data.finishedAt) : null, status === "done" ? summarize(data) : null, data, ctx.user.id]);
     if (status === "done" && (await B.trialUsedUp(ctx.org.id))) void N.notify(ctx.org.id, "trial_check_used", "trial", { plan: (await one(`select plan_code from organizations where id = $1`, [ctx.org.id]))?.plan_code });
-    if (status === "done") await q(`update workspaces set last_run_at = now(), updated_at = now(), next_run_at = case when schedule <> 'off' then now() + case schedule when 'daily' then interval '1 day' else interval '7 days' end else null end where id = $1`, [w.id]);
+    if (status === "done") await q(`update workspaces set last_run_at = now(), updated_at = now(), next_run_at = $2 where id = $1`, [w.id, nextRun(w.schedule, Date.now(), runAt(w))]);
     sendJson(res, 200, { ok: true, status });
   }],
 
@@ -895,7 +1007,7 @@ export const ROUTES = [
       const cfg = serpConfig(); if (!cfg) fail(400, "Google rank checks need a DataForSEO login or a SerpApi key (Team & keys).");
       const b = await readJson(req, 20000);
       const query = String(b.query || "").slice(0, 300); if (!query) fail(400, "No query.");
-      const r = await serp.organic({ ...cfg, locationName: b.market && !/global/i.test(b.market) ? b.market : undefined }, query);
+      const r = await serp.organic({ ...cfg, ...serpWhere({ market: b.market, country: b.country }) }, query);
       if (ctx) await O.meter({ orgId: ctx.org.id, workspaceId: ctx.workspaceId, userId: ctx.user.id, kind: "serp" });
       sendJson(res, 200, { query, results: r.results || [] });
     };
@@ -906,6 +1018,54 @@ export const ROUTES = [
     const b = await readJson(req, 100000);
     const run = async () => sendJson(res, 200, await entity.collect({ googleApiKey: env("GOOGLE_API_KEY") }, { brand: String(b.name || ""), host: hostOf(b.site || ""), site: b.site, orgSchema: b.orgSchema }));
     return ctx ? O.withOrgKeys(ctx.org.id, run) : run();
+  }],
+
+  // Re-check ONE fix (robots.txt, llms.txt, schema, a page, a listing) without re-running the analysis. No AI is asked, so it
+  // doesn't use a check or the AI budget; it still needs an editor and a writable plan. With a database the outcome is kept on
+  // the brand's recovery action (made from the deck card if it isn't one yet), so it shows next time and in the report.
+  ["POST", "/api/recheck", async (req, res) => {
+    const ctx = await aiAuth(req); const b = await readJson(req, 200000);
+    const sourceKey = clip(b.sourceKey, 2100);
+    if (!checkType(sourceKey)) fail(400, "This fix can't be re-checked on its own. The next full check measures it.");
+    if (!ctx) {
+      if (limited("recheck:" + clientIp(req), 60, 3600e3)) fail(429, "That's a lot of rechecks in an hour. Try again later.");
+      return sendJson(res, 200, { check: await recheck(sourceKey, { site: String(b.site || ""), brand: isObj(b.brand) ? b.brand : {}, evidence: isObj(b.evidence) ? b.evidence : {} }) });
+    }
+    O.needRole(ctx, "editor"); await B.needWrite(ctx.org.id);
+    const w = await needWorkspace(ctx, slugify(b.slug || ""), "editor");
+    if (limited("recheck:" + w.id, 120, 3600e3)) fail(429, "That's a lot of rechecks in an hour. Try again later.");
+    const a = suggestionIn({ sourceKey, kind: b.kind, title: b.title, problem: b.problem, evidence: b.evidence }, 0);
+    const profile = w.setup?.profile || {};
+    const check = { ...(await recheck(sourceKey, { site: w.site || profile.site, brand: profile, evidence: a.evidence })), by: "person" };
+    const row = await one(`insert into recovery_actions (workspace_id, source_key, kind, title, problem, evidence, last_check, checked_at) values ($1, $2, $3, $4, $5, $6, $7, now())
+        on conflict (workspace_id, source_key) do update set title = excluded.title, problem = excluded.problem, evidence = excluded.evidence, last_check = excluded.last_check, checked_at = now(), updated_at = now() returning *`,
+      [w.id, a.sourceKey, a.kind, a.title, a.problem, a.evidence, check]);
+    await O.audit(ctx.org.id, ctx.user.id, "recovery.rechecked", `${w.name}: ${a.title}`, { id: row.id, pass: check.pass });
+    sendJson(res, 200, { check, action: actionOut(row) });
+  }],
+
+  // The scheduled report's unsubscribe link (signed per person and kind, so it works without signing in), and one-click
+  // unsubscribe for mail apps (RFC 8058 POST). Turning it back on is in Settings.
+  ...["GET", "POST"].map((m) => [m, "/api/email/unsubscribe", async (req, res, p, url) => {
+    needDb();
+    const u = String(url.searchParams.get("u") || ""), k = String(url.searchParams.get("k") || "");
+    if (!N.OPT_OUT_KINDS.includes(k) || !safeEqual(url.searchParams.get("t"), N.unsubToken(u, k))) fail(400, "This unsubscribe link isn't valid. Turn the report off in Settings instead.");
+    await q(`insert into email_optouts (user_id, kind) select id, $2 from users where id::text = $1 on conflict do nothing`, [u, k]);
+    if (m === "POST") return sendJson(res, 200, { ok: true });
+    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribed</title><body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;max-width:480px;margin:64px auto;padding:0 16px;color:#1D1A17"><h1 style="font-size:20px">You won't get these reports any more</h1><p>Perfstaq still runs your scheduled checks, and the results stay in the app. To get the email again, open a brand's Settings and turn on the results email.</p><p><a href="/">Open Perfstaq</a></p></body>`);
+  }]),
+  ["GET", "/api/me/email-prefs", async (req, res) => {
+    const u = await needUser(req);
+    const off = new Set((await q(`select kind from email_optouts where user_id = $1`, [u.id])).map((r) => r.kind));
+    sendJson(res, 200, { reports: !off.has("weekly_results") });
+  }],
+  ["PUT", "/api/me/email-prefs", async (req, res) => {
+    const u = await needUser(req); const b = await readJson(req, 2000);
+    if (typeof b.reports !== "boolean") fail(400, "Send { reports: true } or { reports: false }.");
+    if (b.reports) await q(`delete from email_optouts where user_id = $1 and kind = 'weekly_results'`, [u.id]);
+    else await q(`insert into email_optouts (user_id, kind) values ($1, 'weekly_results') on conflict do nothing`, [u.id]);
+    sendJson(res, 200, { reports: b.reports });
   }],
 
   // Cloud Scheduler → here, every 10 minutes, with the shared secret. Runs due brands before answering (see tick()).

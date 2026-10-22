@@ -13,7 +13,8 @@ export const ALL_ENGINES = Object.freeze(["chatgpt", "perplexity", "gemini", "ai
 export const KNOWN_INTEGRATIONS = Object.freeze(["bing", "indexnow", "entity", "google", "cloudflare", "slack"]);
 export const SCHEDULES = Object.freeze(["off", "weekly", "daily"]);
 // checks: completed runs of the prompts per period (null = no limit). The free trial is one check.
-export const LIMIT_METRICS = Object.freeze(["brands", "questions", "competitors", "seats", "drafts", "samples", "checks", "pages"]);
+// markets: countries tracked per brand, the brand itself included (meshopcheap.com/in and /us are 2).
+export const LIMIT_METRICS = Object.freeze(["brands", "questions", "competitors", "seats", "drafts", "samples", "checks", "pages", "markets"]);
 // Writes that count as a "drafted fix" (api/write.js kinds). Chat, topics, insights and the like are not drafts.
 export const DRAFT_KINDS = Object.freeze(["pitch", "article", "fixpack"]);
 // GST: catalogue prices are before tax ("₹4,999 + GST") and the Razorpay plan charges the price with 18% GST added, because Razorpay
@@ -39,15 +40,15 @@ export const DEFAULT_PLANS = [
     { brands: null, questions: null, competitors: null, seats: null, drafts: null, samples: 5 }, [...ALL_ENGINES], ["off", "weekly", "daily"], ["*"]),
   // The free trial is the same for every plan: these limits for 7 days, then the plan they picked starts.
   flat("trial", "Free trial", "Seven days to try Perfstaq, no card", 1, { public: false, selfServe: false }, 3, {},
-    { brands: 1, questions: 20, competitors: 3, seats: 1, drafts: 10, samples: 1, checks: 1 }, [...CORE], ["off"], []),
+    { brands: 1, questions: 20, competitors: 3, seats: 1, drafts: 10, samples: 1, checks: 1, markets: 1 }, [...CORE], ["off"], []),
   flat("starter", "Starter", "Founders and small businesses proving AI visibility", 2, { public: true, selfServe: true }, 5, { INR: 499900, USD: 4900 },
-    { brands: 1, questions: 15, competitors: 3, seats: 1, drafts: 10, samples: 1 }, [...CORE], ["off", "weekly"], [...BASIC]),
+    { brands: 1, questions: 15, competitors: 3, seats: 1, drafts: 10, samples: 1, markets: 2 }, [...CORE], ["off", "weekly"], [...BASIC]),
   flat("growth", "Growth", "Growing brands running a weekly visibility loop", 3, { public: true, selfServe: true, featured: true }, 14, { INR: 999900, USD: 9900 },
-    { brands: 1, questions: 30, competitors: 5, seats: 5, drafts: 30, samples: 1 }, [...ALL_ENGINES], ["off", "weekly"], [...BASIC, "google", "cloudflare", "slack"]),
+    { brands: 1, questions: 30, competitors: 5, seats: 5, drafts: 30, samples: 1, markets: 3 }, [...ALL_ENGINES], ["off", "weekly"], [...BASIC, "google", "cloudflare", "slack"]),
   flat("agency", "Agency", "Agencies running several client brands", 4, { public: true, selfServe: true }, 38, { INR: 2499900, USD: 24900 },
-    { brands: 5, questions: 100, competitors: 5, seats: 20, drafts: 100, samples: 1 }, [...ALL_ENGINES], ["off", "weekly"], ["*"]),
+    { brands: 5, questions: 100, competitors: 5, seats: 20, drafts: 100, samples: 1, markets: 5 }, [...ALL_ENGINES], ["off", "weekly"], ["*"]),
   flat("enterprise", "Enterprise", "Large brands and groups with negotiated limits", 5, { public: true, selfServe: false }, null, { INR: 9999900, USD: 99900 },
-    { brands: 20, questions: 300, competitors: 20, seats: 100, drafts: 500, samples: 3 }, [...ALL_ENGINES], ["off", "weekly", "daily"], ["*"]),
+    { brands: 20, questions: 300, competitors: 20, seats: 100, drafts: 500, samples: 3, markets: 10 }, [...ALL_ENGINES], ["off", "weekly", "daily"], ["*"]),
 ];
 
 // ── the live view ────────────────────────────────────────────────────────────

@@ -7,35 +7,38 @@ const FROM = () => process.env.EMAIL_FROM || "Perfstaq <no-reply@perfstaq.com>";
 let sender = null; // tests swap in a fake (setSender)
 export function setSender(fn) { sender = fn; }
 
-export async function send({ to, subject, text, html }) {
-  if (sender) return sender({ to, subject, text, html });
+export async function send({ to, subject, text, html, headers }) {
+  if (sender) return sender({ to, subject, text, html, headers });
   const key = process.env.RESEND_API_KEY;
   if (!key) { console.log(`[mail] RESEND_API_KEY not set; not sending "${subject}" to ${to}\n${text}`); return { sent: false, reason: "not configured" }; }
   try {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-      body: JSON.stringify({ from: FROM(), to: [to], subject, text, html }),
+      body: JSON.stringify({ from: FROM(), to: [to], subject, text, html, ...(headers ? { headers } : {}) }),
     });
     if (!r.ok) { const d = await r.json().catch(() => ({})); console.warn(`[mail] Resend ${r.status}: ${d.message || d.name || ""}`); return { sent: false, reason: d.message || `Resend error ${r.status}` }; }
     return { sent: true };
   } catch (e) { console.warn("[mail] send failed:", e.message); return { sent: false, reason: e.message }; }
 }
 
-const shell = (title, body, cta, link) => `<!doctype html><html><body style="margin:0;background:#FBF6F1;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1D1A17">
+const shell = (title, body, cta, link, foot = "") => `<!doctype html><html><body style="margin:0;background:#FBF6F1;font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1D1A17">
 <div style="max-width:520px;margin:32px auto;background:#fff;border:1px solid #EFE6DC;border-radius:16px;padding:28px">
 <p style="margin:0 0 20px;font-weight:700;font-size:16px;letter-spacing:-.2px"><span style="display:inline-block;width:5px;height:14px;border-radius:3px;background:#8E8E93;margin-right:2px"></span><span style="display:inline-block;width:5px;height:14px;border-radius:3px;background:#E8742A;margin-right:2px"></span><span style="display:inline-block;width:5px;height:14px;border-radius:3px;background:#8E8E93;margin-right:8px"></span>Perfstaq</p>
 <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3">${esc(title)}</h1>
 <div style="font-size:15px;line-height:1.55;color:#4A443E">${body}</div>
 <p style="margin:24px 0"><a href="${esc(link)}" style="background:#E8742A;color:#fff;text-decoration:none;padding:12px 20px;border-radius:999px;font-weight:600;display:inline-block">${esc(cta)}</a></p>
 <p style="font-size:12px;color:#9A9088;word-break:break-all">Or paste this link into your browser: ${esc(link)}</p>
-</div><p style="text-align:center;font-size:12px;color:#9A9088;margin:0 0 32px">Perfstaq AI Visibility</p></body></html>`;
+</div><p style="text-align:center;font-size:12px;color:#9A9088;margin:0 0 32px">Perfstaq AI Visibility${foot}</p></body></html>`;
 
 // Account and billing notices: a title, a few short paragraphs (plain text, escaped here) and one button into the app.
-export function noticeEmail({ to, subject, title, paras, cta, link }) {
-  const text = `${title}\n\n${paras.join("\n\n")}\n\n${cta}: ${link}\n`;
-  const html = shell(title, paras.map((x) => `<p>${esc(x)}</p>`).join(""), cta, link);
-  return send({ to, subject, text, html });
+// Reports add `sections` (a heading and a short list each) and an `unsubscribe` link, sent as List-Unsubscribe too.
+export function noticeEmail({ to, subject, title, paras, cta, link, sections = [], unsubscribe = null }) {
+  const secs = sections.filter((x) => x?.items?.length);
+  const text = `${title}\n\n${paras.join("\n\n")}${secs.map((x) => `\n\n${x.title}\n${x.items.map((i) => "- " + i).join("\n")}`).join("")}\n\n${cta}: ${link}\n${unsubscribe ? `\nStop these reports: ${unsubscribe}\n` : ""}`;
+  const html = shell(title, paras.map((x) => `<p>${esc(x)}</p>`).join("") + secs.map((x) => `<p style="margin:18px 0 6px;font-weight:600;color:#1D1A17">${esc(x.title)}</p><ul style="margin:0;padding-left:18px">${x.items.map((i) => `<li style="margin:3px 0">${esc(i)}</li>`).join("")}</ul>`).join(""), cta, link,
+    unsubscribe ? ` · <a href="${esc(unsubscribe)}" style="color:#9A9088">Stop these reports</a>` : "");
+  return send({ to, subject, text, html, headers: unsubscribe ? { "List-Unsubscribe": `<${unsubscribe}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } : undefined });
 }
 
 const ROLE_WORDS = { owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" };

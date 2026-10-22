@@ -4,6 +4,7 @@
 import { q, one } from "./db.mjs";
 import { noticeEmail } from "./mail.mjs";
 import { PLANS, withTax } from "./plans.mjs";
+import crypto from "node:crypto";
 
 const day = (d) => (d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "");
 // Buttons in these emails open the live app: APP_URL if set, else PUBLIC_ORIGIN when it is a real address, else production.
@@ -59,19 +60,48 @@ const T = {
     paras: [`Razorpay couldn't charge your payment method for ${planName(d.plan)}. It will try again.`,
       `Update your payment method by ${day(d.graceEnds)} to keep scheduled checks running. After that the account becomes read-only.`],
     cta: "Fix payment", link: appUrl("#plans") }),
-  weekly_results: (d) => ({ subject: `${d.brand}: your weekly AI visibility`, title: `${d.brand}: this week in AI answers`,
-    paras: [`Visibility ${pct(d.s.visibility)}${d.prev?.visibility != null ? ` (${d.s.visibility >= d.prev.visibility ? "up" : "down"} ${Math.abs(Math.round((d.s.visibility - d.prev.visibility) * 100))} points)` : ""}. Score ${d.s.score}/100. Share of voice ${pct(d.s.sov)}.`,
-      d.s.leader ? `The most named brand was ${d.s.leader.name} at ${pct(d.s.leader.vis)}.` : "No other brand was named more often than you."],
-    cta: "Open the report", link: appUrl(`#brand/${encodeURIComponent(d.slug)}`) }),
+  weekly_results: (d) => resultsEmail(d),
 };
 export const KINDS = Object.keys(T);
+// Kinds a person can turn off (the link at the bottom of each one). Account and billing notices can't be.
+export const OPT_OUT_KINDS = ["weekly_results"];
+export const unsubToken = (userId, kind) => crypto.createHmac("sha256", process.env.APP_SECRET || "dev-secret").update(`unsub:${userId}:${kind}`).digest("base64url");
+const unsubUrl = (userId, kind) => `${appBase().replace(/\/$/, "")}/api/email/unsubscribe?u=${encodeURIComponent(userId)}&k=${kind}&t=${unsubToken(userId, kind)}`;
+
+// The scheduled report: the headline numbers, then what changed since the last check, and the fixes checked on their own.
+const ENGINE = { chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", groq: "Groq", aio: "AI Overviews", aimode: "AI Mode", claude: "Claude" };
+const pts = (a, b) => (a == null || b == null ? "" : ` (${a >= b ? "up" : "down"} ${Math.abs(Math.round((a - b) * 100))} points)`);
+function resultsEmail(d) {
+  const s = d.s || {}, c = d.changes || {}, period = d.schedule === "daily" ? "daily" : "weekly", since = d.schedule === "daily" ? "since yesterday" : "since last week";
+  const paras = [`Visibility ${pct(s.visibility)}${pts(s.visibility, d.prev?.visibility)}. Score ${s.score ?? "–"}/100. Share of voice ${pct(s.sov)}.`,
+    s.leader ? `The most named brand was ${s.leader.name} at ${pct(s.leader.vis)}.` : "No other brand was named more often than you."];
+  for (const o of c.overtook || []) paras.push(`${o.name} passed you this time: it was named in ${pct(o.vis)} of answers.`);
+  const site = c.site || {}, siteItems = [];
+  if (site.unblocked?.length) siteItems.push(`${site.unblocked.join(", ")} can read your site now.`);
+  if (site.newlyBlocked?.length) siteItems.push(`${site.newlyBlocked.join(", ")} ${site.newlyBlocked.length > 1 ? "are" : "is"} now blocked in robots.txt.`);
+  if (site.llms != null) siteItems.push(site.llms ? "llms.txt is live." : "llms.txt is gone.");
+  if (site.avg != null && site.avgBefore != null && site.avg !== site.avgBefore) siteItems.push(`AI-readiness ${site.avg}/100 (was ${site.avgBefore}).`);
+  const fixes = d.fixes || [];
+  const sections = [
+    { title: `Now named for (${(c.gained || []).length})`, items: (c.gained || []).map((x) => `“${x.text}” on ${x.engines.map((e) => ENGINE[e] || e).join(", ")}`) },
+    { title: `No longer named for (${(c.lost || []).length})`, items: (c.lost || []).map((x) => `“${x.text}”`) },
+    { title: "By engine", items: (c.engines || []).filter((e) => e.now != null).map((e) => `${ENGINE[e.engine] || e.engine}: ${pct(e.now)}${pts(e.now, e.before)}`) },
+    { title: "Your site", items: siteItems },
+    { title: "Fixes checked", items: fixes.map((f) => `${f.pass ? "Confirmed" : "Not yet"}: ${f.title}. ${f.detail}`) },
+    { title: "Results after publishing", items: (d.observed || []).map((o) => `${o.title}: ${o.direction}${o.before && o.after ? ` (named in ${o.before.named} of ${o.before.total}, now ${o.after.named} of ${o.after.total})` : ""}`) },
+  ];
+  if (!c.gained?.length && !c.lost?.length && d.prev) paras.push(`No prompt changed between named and not named ${since}.`);
+  return { subject: `${d.brand}: your ${period} AI visibility`, title: `${d.brand}: ${d.schedule === "daily" ? "today" : "this week"} in AI answers`, paras, sections,
+    cta: "Open the report", link: appUrl(`#brand/${encodeURIComponent(d.slug || "")}`) };
+}
 // The rendered subject, title, paragraphs and link for one kind (previews and test sends).
 export const preview = (kind, data = {}) => T[kind](data);
 
-// Who gets it: the owner, or owners and admins (weekly results).
-async function recipients(orgId, admins) {
-  const rows = await q(`select u.email from memberships m join users u on u.id = m.user_id where m.org_id = $1 and m.role = any($2) order by m.role`, [orgId, admins ? ["owner", "admin"] : ["owner"]]);
-  return [...new Set(rows.map((r) => r.email).filter(Boolean))];
+// Who gets it: the owner, or owners and admins (weekly results), minus anyone who turned this kind off.
+async function recipients(orgId, admins, kind) {
+  const rows = await q(`select u.id, u.email from memberships m join users u on u.id = m.user_id where m.org_id = $1 and m.role = any($2)
+      and not exists (select 1 from email_optouts x where x.user_id = u.id and x.kind = $3) order by m.role`, [orgId, admins ? ["owner", "admin"] : ["owner"], kind]);
+  const seen = new Set(); return rows.filter((r) => r.email && !seen.has(r.email) && seen.add(r.email));
 }
 
 export async function notify(orgId, kind, ref, data = {}, { admins = false } = {}) {
@@ -79,8 +109,8 @@ export async function notify(orgId, kind, ref, data = {}, { admins = false } = {
     if (!T[kind] || !orgId) return { sent: false, reason: "unknown" };
     const claimed = await one(`insert into email_log (org_id, kind, ref) values ($1, $2, $3) on conflict do nothing returning org_id`, [orgId, kind, String(ref).slice(0, 200)]);
     if (!claimed) return { sent: false, reason: "already sent" };
-    const to = await recipients(orgId, admins), m = T[kind](data);
-    const results = await Promise.all(to.map((t) => noticeEmail({ to: t, ...m })));
+    const people = await recipients(orgId, admins, kind), to = people.map((r) => r.email), m = T[kind](data);
+    const results = await Promise.all(people.map((r) => noticeEmail({ to: r.email, ...m, unsubscribe: OPT_OUT_KINDS.includes(kind) ? unsubUrl(r.id, kind) : null })));
     const sent = results.some((r) => r?.sent), error = results.find((r) => !r?.sent)?.reason || null;
     // Not delivered to anyone (Resend refused or isn't configured): release the claim, so the hourly sweep can try a trial email again.
     if (!sent) await q(`delete from email_log where org_id = $1 and kind = $2 and ref = $3`, [orgId, kind, String(ref).slice(0, 200)]);
