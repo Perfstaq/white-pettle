@@ -31,7 +31,7 @@ export const answerKey = (qid, e, s) => (s ? `${qid}|${e}|${s}` : `${qid}|${e}`)
 
 // The "why" digest the insights writer reads. Mirrors app.js digest().
 export function digest(M) {
-  const ENG = { chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", groq: "Groq", aio: "AI Overviews", aimode: "AI Mode" };
+  const ENG = { chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", claude: "Claude", groq: "Groq", aio: "AI Overviews", aimode: "AI Mode" };
   const ans = Object.values(M.answers).filter(finished), L = [];
   for (const e of M.engines) { const x = ans.filter((a) => a.engine === e); if (x.length) L.push(`${ENG[e] || e}: named in ${x.filter((a) => a.named).length}/${x.length}`); }
   for (const q of M.questions) { const x = ans.filter((a) => a.qid === q.id); L.push(`- "${q.text}" [${q.intent}]: ${x.map((a) => `${ENG[a.engine] || a.engine} ${a.named ? "NAMED" + (a.rank ? " #" + a.rank : "") : "missing"} (named: ${(a.brands || []).slice(0, 5).join(", ")})`).join("; ")}`); }

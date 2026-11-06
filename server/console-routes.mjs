@@ -478,11 +478,11 @@ export function makeConsoleRoutes({ needUser }) {
         needGrant(opRole, m.role); // lowering an admin or the owner is a founder's call too
         if (role === "owner") { // hand over ownership: the current owner stays on as an admin
           await c.query(`update memberships set role = 'admin' where org_id = $1 and role = 'owner'`, [org.id]);
-          await c.query(`update memberships set role = 'owner' where org_id = $1 and user_id::text = $2`, [org.id, p.id]);
+          await c.query(`update memberships set role = 'owner', all_brands = true where org_id = $1 and user_id::text = $2`, [org.id, p.id]);
           await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'owner.transferred', $3, $4)`, [org.id, user.id, m.email, { by: "console" }]);
         } else {
           if (m.role === "owner") fail(409, "Make someone else the owner first; the owner's role can't be lowered on its own.");
-          await c.query(`update memberships set role = $3 where org_id = $1 and user_id::text = $2`, [org.id, p.id, role]);
+          await c.query(`update memberships set role = $3, all_brands = all_brands or $3 in ('admin', 'owner') where org_id = $1 and user_id::text = $2`, [org.id, p.id, role]);
           await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'role.changed', $3, $4)`, [org.id, user.id, m.email, { from: m.role, to: role, by: "console" }]);
         }
       });

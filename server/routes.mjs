@@ -81,19 +81,24 @@ export async function needCtx(req, min = "viewer") {
   const ctx = await O.context(await needUser(req));
   if (!ctx.org) fail(403, "You're not in an organisation yet. Ask an admin to invite you.", { code: "no_org" });
   O.needRole(ctx, min);
+  // Brand access: null = every brand; otherwise the workspace ids this member may see. An operator visiting sees everything.
+  ctx.brands = ctx.operatorVisit ? null : await O.brandScope(ctx.org.id, ctx.user.id);
   return ctx;
 }
+const inScope = (ctx, id) => !ctx.brands || ctx.brands.includes(id);
 async function needWorkspace(ctx, slug, min = "viewer") {
   O.needRole(ctx, min);
   const w = await one(`select * from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug]);
-  if (!w) fail(404, "That brand doesn't exist in this organisation.");
+  // A brand outside this member's access looks exactly like a brand that doesn't exist.
+  if (!w || !inScope(ctx, w.id)) fail(404, "That brand doesn't exist in this organisation.");
   return w;
 }
 const setSessionOrg = (u, orgId) => q(`update sessions set org_id = $2 where id = $1`, [u.sid, orgId]);
 async function meOut(u) {
   const ctx = await O.context(u);
   const cap = ctx.org ? await O.capState(ctx.org.id) : null;
-  return { user: publicUser(u), operator: ctx.operator, org: O.orgOut(ctx), orgs: ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })),
+  const scope = ctx.org && !ctx.operatorVisit ? await O.brandScope(ctx.org.id, u.id) : null;
+  return { user: publicUser(u), operator: ctx.operator, org: ctx.org ? { ...O.orgOut(ctx), access: scope ? "some" : "all" } : null, orgs: ctx.orgs.map((o) => ({ slug: o.slug, name: o.name, role: o.role })),
     budget: cap ? { warn: cap.warn, over: cap.over, pct: cap.pct, source: cap.source } : null, billing: ctx.org ? await B.billingSummary(ctx.org.id) : null };
 }
 const wsOut = (w, extra = {}) => ({ slug: w.slug, name: w.name, site: w.site, schedule: w.schedule, samples: w.samples, nextRunAt: w.next_run_at, lastRunAt: w.last_run_at, running: !!w.running_at && Date.now() - new Date(w.running_at) < 40 * 60000, createdAt: w.created_at, updatedAt: w.updated_at,
@@ -128,7 +133,8 @@ export async function aiAllow(ctx, req, min = "editor") {
   await B.needWrite(ctx.org.id);
   await O.needBudget(ctx.org.id);
   const slug = String(req.headers["x-wp-brand"] || "").slice(0, 60);
-  ctx.workspaceId = slug ? (await one(`select id from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug]))?.id || null : null;
+  const wid = slug ? (await one(`select id from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug]))?.id || null : null;
+  ctx.workspaceId = wid && inScope(ctx, wid) ? wid : null;
   return ctx;
 }
 export async function aiContext(req, min = "editor") { return aiAllow(await aiAuth(req), req, min); }
@@ -148,11 +154,11 @@ async function useToken(token, purpose) {
 }
 
 // ── invitations ─────────────────────────────────────────────────────────────
-async function sendInvite(req, by, org, email, role) {
-  const { invite, token } = await O.createInvite({ orgId: org.id, email, role, by: by.id });
+async function sendInvite(req, by, org, email, role, brandIds = null) {
+  const { invite, token } = await O.createInvite({ orgId: org.id, email, role, by: by.id, brandIds });
   const link = `${origin(req)}/#invite=${token}`;
   const r = await mail.inviteEmail({ to: email, orgName: org.name, role, inviter: by.name || by.email, link });
-  await O.audit(org.id, by.id, "invite.sent", email, { role, emailed: r.sent });
+  await O.audit(org.id, by.id, "invite.sent", email, { role, emailed: r.sent, brands: brandIds ? brandIds.length : "all" });
   // The link goes back to the admin too, so an invite still works before email is set up (or lands in spam).
   return { ...invite, link, emailed: r.sent };
 }
@@ -617,7 +623,9 @@ export const ROUTES = [
     sendJson(res, 200, {
       org: { slug: o.slug, name: o.name, role: ctx.role, operatorVisit: ctx.operatorVisit, monthlyCapUsd: o.monthly_cap_usd == null ? null : Number(o.monthly_cap_usd), allowPlatformKeys: o.allow_platform_keys, createdAt: o.created_at },
       me: ctx.user.id, operator: ctx.operator,
-      members: await O.members(id),
+      // A member limited to some brands (a client) sees only themselves, never the agency's other clients.
+      members: ctx.brands ? (await O.members(id)).filter((m) => m.id === ctx.user.id) : await O.members(id),
+      access: ctx.brands ? "some" : "all",
       invites: admin ? await O.pendingInvites(id) : [],
       keys: admin ? O.keyStatus(await O.orgKeys(id)) : null,
       usage: admin ? await O.usageSummary(id) : { cap: await O.capState(id) },
@@ -646,6 +654,9 @@ export const ROUTES = [
     const email = normEmail(b.email), role = String(b.role || "viewer");
     if (!emailOk(email)) fail(400, "Enter a valid email address.");
     if (!roleOk(role)) fail(400, "Pick a role: admin, editor or viewer.");
+    // brands: null or absent = every brand; a list of brand slugs = only those (editors and viewers only).
+    const brandIds = Array.isArray(b.brands) ? await O.brandIdsFor(ctx.org.id, b.brands) : null;
+    if (brandIds && !["editor", "viewer"].includes(role)) fail(400, "Admins and owners always see every brand. Limit an editor or a viewer instead.");
     if (role === "owner") {
       const hasOwner = await one(`select 1 from memberships where org_id = $1 and role = 'owner'`, [ctx.org.id]);
       if (hasOwner || !ctx.operator) fail(403, "An organisation has one owner. The owner can hand over ownership from the member list.");
@@ -653,7 +664,7 @@ export const ROUTES = [
     if (await one(`select 1 from memberships m join users u on u.id = m.user_id where m.org_id = $1 and u.email = $2`, [ctx.org.id, email])) fail(409, `${email} is already in this organisation.`);
     if (limited("invite:" + ctx.org.id, 30, 3600e3)) fail(429, "That's a lot of invites in an hour. Try again later.");
     await B.assertSeat(ctx.org.id);
-    sendJson(res, 200, { invite: await sendInvite(req, ctx.user, ctx.org, email, role), invites: await O.pendingInvites(ctx.org.id) });
+    sendJson(res, 200, { invite: await sendInvite(req, ctx.user, ctx.org, email, role, brandIds), invites: await O.pendingInvites(ctx.org.id) });
   }],
   ["DELETE", "/api/org/invitations/:id", async (req, res, p) => {
     const ctx = await needCtx(req, "admin");
@@ -663,6 +674,20 @@ export const ROUTES = [
   }],
   ["PATCH", "/api/org/members/:id", async (req, res, p) => {
     const ctx = await needCtx(req, "admin"); const b = await readJson(req, 5000); const role = String(b.role || "");
+    // Brand access: { brands: null } gives every brand, { brands: ["slug", ...] } limits an editor or viewer to those.
+    if ("brands" in b && !b.role) {
+      const ids = b.brands === null ? null : await O.brandIdsFor(ctx.org.id, b.brands);
+      await tx(async (c) => {
+        const m = (await c.query(`select m.role, u.email from memberships m join users u on u.id = m.user_id where m.org_id = $1 and m.user_id::text = $2 for update of m`, [ctx.org.id, p.id])).rows[0];
+        if (!m) fail(404, "That person isn't in this organisation.");
+        if (ids && !["editor", "viewer"].includes(m.role)) fail(400, "Admins and owners always see every brand. Make them an editor or a viewer first.");
+        await c.query(`delete from member_brands where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id]);
+        await c.query(`update memberships set all_brands = $3 where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id, !ids]);
+        if (ids) await c.query(`insert into member_brands (org_id, user_id, workspace_id) select $1, m.user_id, w from memberships m, unnest($3::uuid[]) w where m.org_id = $1 and m.user_id::text = $2`, [ctx.org.id, p.id, ids]);
+        await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'access.changed', $3, $4)`, [ctx.org.id, ctx.user.id, m.email, { brands: ids ? ids.length : "all" }]);
+      });
+      return sendJson(res, 200, { members: await O.members(ctx.org.id) });
+    }
     if (!roleOk(role)) fail(400, "Unknown role.");
     // In one transaction with both memberships locked, so a removal racing a hand-over can't leave no owner.
     await tx(async (c) => {
@@ -675,11 +700,13 @@ export const ROUTES = [
         const me = (await c.query(`select role from memberships where org_id = $1 and user_id = $2 for update`, [ctx.org.id, ctx.user.id])).rows[0];
         if (me?.role !== "owner") fail(403, "Only the owner can hand over ownership.");
         await c.query(`update memberships set role = 'admin' where org_id = $1 and user_id = $2`, [ctx.org.id, ctx.user.id]);
-        await c.query(`update memberships set role = 'owner' where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id]);
+        await c.query(`update memberships set role = 'owner', all_brands = true where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id]);
         await c.query(`insert into audit_log (org_id, user_id, action, target) values ($1, $2, 'owner.transferred', $3)`, [ctx.org.id, ctx.user.id, m.email]);
       } else {
         if (m.role === "owner") fail(403, "The owner's role can't be changed. The owner can hand over ownership first.");
         if (p.id === ctx.user.id) fail(403, "Ask another admin to change your role.");
+        const lim = (await c.query(`select all_brands from memberships where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id])).rows[0];
+        if (role === "admin" && lim && !lim.all_brands) fail(400, "This person only sees some brands. Give them every brand before making them an admin.");
         await c.query(`update memberships set role = $3 where org_id = $1 and user_id::text = $2`, [ctx.org.id, p.id, role]);
         await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'role.changed', $3, $4)`, [ctx.org.id, ctx.user.id, m.email, { from: m.role, to: role }]);
       }
@@ -730,7 +757,7 @@ export const ROUTES = [
     const rows = await q(`select w.*, (select slug from workspaces p where p.id = w.parent_id) as parent_slug,
                              (select coalesce(json_agg(t order by t.started_at), '[]') from (select id, started_at, source, summary from runs r where r.workspace_id = w.id and r.status = 'done' order by r.started_at desc limit 12) t) as trend
                            from workspaces w where org_id = $1 order by updated_at desc`, [ctx.org.id]);
-    sendJson(res, 200, { workspaces: rows.map((w) => wsOut(w, { trend: w.trend, setup: w.setup })), org: O.orgOut(ctx) });
+    sendJson(res, 200, { workspaces: rows.filter((w) => inScope(ctx, w.id)).map((w) => wsOut(w, { trend: w.trend, setup: w.setup })), org: O.orgOut(ctx) });
   }],
   // Create or update a brand. With `parent` (a brand's slug) it is one of that brand's markets: another country version of
   // its site, counted against the plan's markets per brand instead of its brands.
@@ -741,10 +768,15 @@ export const ROUTES = [
     const w = await B.guarded(ctx.org.id, async (c, st) => {
       B.assertWrite(st);
       const prev = (await c.query(`select id, setup, parent_id from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slug])).rows[0];
+      // Limited to some brands: work on those (and add markets to them), never create or reach another brand.
+      if (ctx.brands) {
+        if (prev && !inScope(ctx, prev.id)) fail(404, "That brand doesn't exist in this organisation.");
+        if (!prev && !b.parent) fail(403, "Your access is limited to some brands, so you can't add new ones. Ask an admin.", { code: "brand_scope" });
+      }
       let parent = null;
       if (b.parent && !prev) {
         parent = (await c.query(`select id, name from workspaces where org_id = $1 and slug = $2`, [ctx.org.id, slugify(b.parent)])).rows[0];
-        if (!parent) fail(404, "That brand doesn't exist in this organisation.");
+        if (!parent || !inScope(ctx, parent.id)) fail(404, "That brand doesn't exist in this organisation.");
         const top = (await c.query(`select parent_id from workspaces where id = $1`, [parent.id])).rows[0];
         if (top.parent_id) fail(400, "Add the market to the brand itself, not to one of its markets.");
         if (!market) fail(400, "A market needs a country.");
@@ -776,6 +808,7 @@ export const ROUTES = [
         const n = (await c.query(`select count(*)::int as n from workspaces where parent_id = $1`, [w.id])).rows[0].n;
         if (n) B.assertMarketCreate(st, n);
         await c.query(`update workspaces set org_id = $2, updated_at = now() where id = $1 or parent_id = $1`, [w.id, to.id]);
+        await c.query(`delete from member_brands where workspace_id in (select id from workspaces where id = $1 or parent_id = $1)`, [w.id]);
       });
       await O.audit(ctx.org.id, ctx.user.id, "brand.moved_out", w.name, { to: to.slug });
       await O.audit(to.id, ctx.user.id, "brand.moved_in", w.name, { from: ctx.org.slug });
@@ -822,8 +855,8 @@ export const ROUTES = [
   }],
   ["GET", "/api/runs/:id", async (req, res, p) => {
     const ctx = await needCtx(req, "viewer");
-    const r = await one(`select r.data, r.status from runs r join workspaces w on w.id = r.workspace_id where r.id = $1 and w.org_id = $2`, [p.id, ctx.org.id]);
-    if (!r) fail(404, "Run not found."); sendJson(res, 200, { run: r.data, status: r.status });
+    const r = await one(`select r.data, r.status, w.id as wid from runs r join workspaces w on w.id = r.workspace_id where r.id = $1 and w.org_id = $2`, [p.id, ctx.org.id]);
+    if (!r || !inScope(ctx, r.wid)) fail(404, "Run not found."); sendJson(res, 200, { run: r.data, status: r.status });
   }],
   ["PUT", "/api/runs/:id", async (req, res, p) => {
     const ctx = await needCtx(req, "editor"); const b = await readJson(req, 12 * 1024 * 1024);

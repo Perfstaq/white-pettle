@@ -309,7 +309,7 @@ export async function integrationsHealth(scope) {
 
 // The services White Petal itself is connected to (its own keys in the environment): is each one set up, is it being used, is it
 // failing. Only "set or not" is read from the environment, never a value.
-const ENGINE_KEYS = [["chatgpt", "ChatGPT", "OPENAI_API_KEY"], ["perplexity", "Perplexity", "PERPLEXITY_API_KEY"], ["gemini", "Gemini", "GEMINI_API_KEY"], ["groq", "Groq", "GROQ_API_KEY"]];
+const ENGINE_KEYS = [["chatgpt", "ChatGPT", "OPENAI_API_KEY"], ["perplexity", "Perplexity", "PERPLEXITY_API_KEY"], ["gemini", "Gemini", "GEMINI_API_KEY"], ["claude", "Claude", "ANTHROPIC_API_KEY"], ["groq", "Groq", "GROQ_API_KEY"]];
 async function platformConnections() {
   const has = (k) => !!String(process.env[k] || "").trim(), serp = serpConfig(), rz = billingConfig();
   const [calls, serpUse, writes, hooks, mails, google] = await Promise.all([

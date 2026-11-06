@@ -2277,3 +2277,84 @@ test("scheduled checks can run on a chosen weekday and hour in the brand's time 
   r = await call("tz", "PATCH", "/api/workspaces/timed", { runDow: null, runHour: null });
   assert.ok(Math.abs(new Date(r.data.workspace.nextRunAt) - (Date.now() + 7 * 864e5)) < 60000, "cleared: a week from now, as before");
 });
+
+test("brand access: a client invited to one brand never sees, reaches or learns about the agency's other brands", { skip: !DB && "set TEST_DATABASE_URL" }, async () => {
+  // An operator makes an agency organisation and is its admin there; the agency tracks two client brands, one with a market.
+  const made = await call("op", "POST", "/api/orgs", { name: "Scope Agency", ownerEmail: "boss@scope.co" });
+  assert.equal(made.status, 200, JSON.stringify(made.data));
+  for (const slug of ["acme", "beta"]) assert.equal((await call("op", "PUT", "/api/workspaces/" + slug, { name: slug, site: `https://${slug}.co`, setup: WS.setup })).status, 200);
+  const mk = await call("op", "PUT", "/api/workspaces/acme-in", { name: "acme", site: "https://acme.co/in", setup: WS.setup, parent: "acme", market: { code: "IN" } });
+  assert.equal(mk.status, 200, JSON.stringify(mk.data));
+  const run = (id, slug) => call("op", "PUT", "/api/runs/" + id, { slug, data: { slug, startedAt: Date.now(), finishedAt: Date.now(), profile: { name: slug }, answers: {}, questions: [], engines: [] } });
+  assert.equal((await run("scope-run-acme", "acme")).status, 200); assert.equal((await run("scope-run-beta", "beta")).status, 200);
+
+  // Limits are for editors and viewers, and only for brands of this organisation.
+  assert.equal((await call("op", "POST", "/api/org/invitations", { email: "x@scope.co", role: "admin", brands: ["acme"] })).status, 400);
+  assert.equal((await call("op", "POST", "/api/org/invitations", { email: "x@scope.co", role: "viewer", brands: ["nope"] })).status, 400);
+  assert.equal((await call("op", "POST", "/api/org/invitations", { email: "x@scope.co", role: "viewer", brands: [] })).status, 400);
+  assert.equal((await call("op", "POST", "/api/org/invitations", { email: "x@scope.co", role: "viewer", brands: ["acme-in"] })).status, 400, "a market is given through its brand");
+
+  // The client's viewer and the client's editor are invited to acme only.
+  const join = async (who, role) => {
+    const inv = await call("op", "POST", "/api/org/invitations", { email: `${who}@acme.co`, role, brands: ["acme"] });
+    assert.equal(inv.status, 200, JSON.stringify(inv.data)); assert.deepEqual(inv.data.invites.find((i) => i.email === `${who}@acme.co`).brands.map((b) => b.slug), ["acme"]);
+    assert.equal((await call(who, "POST", "/api/auth/signup", { email: `${who}@acme.co`, password: "client-pass-1", invite: tokenFrom(inv.data.invite.link) })).status, 200);
+  };
+  await join("cv", "viewer"); await join("ce", "editor");
+
+  for (const who of ["cv", "ce"]) {
+    assert.equal((await call(who, "GET", "/api/me")).data.org.access, "some");
+    assert.deepEqual((await call(who, "GET", "/api/workspaces")).data.workspaces.map((w) => w.slug).sort(), ["acme", "acme-in"], "their brand and its market, nothing else");
+    assert.equal((await call(who, "GET", "/api/workspaces/acme/runs/latest")).status, 200);
+    assert.equal((await call(who, "GET", "/api/workspaces/acme-in/runs/latest")).status, 200);
+    for (const path of ["/api/workspaces/beta/runs/latest", "/api/workspaces/beta/runs", "/api/workspaces/beta/recovery-actions", "/api/workspaces/beta/integrations", "/api/runs/scope-run-beta"]) {
+      const r = await call(who, "GET", path); assert.equal(r.status, 404, `${who} ${path}`);
+    }
+    assert.equal((await call(who, "GET", "/api/runs/scope-run-acme")).status, 200);
+    const org = (await call(who, "GET", "/api/org")).data;
+    assert.equal(org.access, "some"); assert.deepEqual(org.members.map((m) => m.email), [`${who}@acme.co`], "a client sees no one else's people");
+  }
+  // The editor works on acme, can add a market to it, but cannot touch beta or create a brand.
+  assert.equal((await call("ce", "PUT", "/api/workspaces/acme", { name: "acme", site: "https://acme.co", setup: WS.setup })).status, 200);
+  assert.equal((await call("ce", "PATCH", "/api/workspaces/acme", { schedule: "weekly" })).status, 200);
+  assert.equal((await call("ce", "PUT", "/api/workspaces/beta", { name: "beta", site: "https://beta.co", setup: WS.setup })).status, 404);
+  assert.equal((await call("ce", "PATCH", "/api/workspaces/beta", { schedule: "weekly" })).status, 404);
+  const own = await call("ce", "PUT", "/api/workspaces/gamma", { name: "gamma", site: "https://gamma.co", setup: WS.setup });
+  assert.equal(own.status, 403); assert.equal(own.data.code, "brand_scope");
+  assert.equal((await call("ce", "PUT", "/api/workspaces/beta-uk", { name: "beta", site: "https://beta.co/uk", setup: WS.setup, parent: "beta", market: { code: "GB" } })).status, 404);
+  assert.equal((await call("ce", "PUT", "/api/workspaces/acme-gb", { name: "acme", site: "https://acme.co/uk", setup: WS.setup, parent: "acme", market: { code: "GB" } })).status, 200);
+  assert.equal((await call("ce", "PUT", "/api/runs/ce-run", { slug: "beta", data: { slug: "beta", startedAt: Date.now() } })).status, 404);
+  assert.equal((await call("ce", "PUT", "/api/runs/scope-run-beta", { slug: "acme", data: { slug: "acme", startedAt: Date.now() } })).status, 409, "a run id of another brand stays put");
+  assert.equal((await call("ce", "POST", "/api/recheck", { slug: "beta", sourceKey: "robots" })).status, 404);
+
+  // The agency sees everyone and every brand, with what each person can see.
+  const team = (await call("op", "GET", "/api/org")).data;
+  assert.equal(team.access, "all");
+  const cv = team.members.find((m) => m.email === "cv@acme.co");
+  assert.equal(cv.allBrands, false); assert.deepEqual(cv.brands.map((b) => b.slug), ["acme"]);
+  assert.equal(team.members.find((m) => m.email === "op@x.co").brands, null);
+
+  // An admin moves the viewer to beta, then to every brand, then back; a limited person can't be made admin.
+  const set = (brands) => call("op", "PATCH", "/api/org/members/" + cv.id, { brands });
+  assert.equal((await set(["beta"])).status, 200);
+  assert.deepEqual((await call("cv", "GET", "/api/workspaces")).data.workspaces.map((w) => w.slug), ["beta"]);
+  assert.equal((await call("cv", "GET", "/api/workspaces/acme/runs/latest")).status, 404);
+  assert.equal((await call("op", "PATCH", "/api/org/members/" + cv.id, { role: "admin" })).status, 400);
+  assert.equal((await set(null)).status, 200);
+  assert.equal((await call("cv", "GET", "/api/workspaces")).data.workspaces.length, 4, "acme, its two markets and beta");
+  assert.equal((await call("cv", "GET", "/api/me")).data.org.access, "all");
+  assert.equal((await set(["beta"])).status, 200);
+
+  // Deleting the only brand someone had leaves them with nothing, never with everything.
+  assert.equal((await call("op", "DELETE", "/api/workspaces/beta")).status, 200);
+  assert.deepEqual((await call("cv", "GET", "/api/workspaces")).data.workspaces, []);
+  assert.equal((await call("cv", "GET", "/api/workspaces/acme/runs/latest")).status, 404);
+  assert.equal((await call("cv", "GET", "/api/me")).data.org.access, "some");
+
+  // An existing limited member who gets an invite for every brand gains everything; access is never taken away by an invite.
+  const all = await call("op", "POST", "/api/org/invitations", { email: "ce@acme.co", role: "viewer" });
+  assert.equal(all.status, 409, "already a member: change their access instead");
+  const log = (await call("op", "GET", "/api/org/audit")).data.log;
+  assert.ok(log.some((e) => e.action === "access.changed"), "access changes are in the activity log");
+  assert.equal((await call("cv", "GET", "/api/org/audit")).status, 403, "a client never reads the agency's activity log");
+});

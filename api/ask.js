@@ -119,6 +119,51 @@ async function groq(q, brand, send) {
   return { text, sources: sources.slice(0, 20), model };
 }
 
+// Claude, with Anthropic's server-side web search, streamed. Plain fetch like the other engines (this app ships no SDK).
+// The model is set by PETTLE_CLAUDE_MODEL. Refusals and a paused turn surface as errors; a decline never counts as "not named".
+export const CLAUDE_MODEL = () => env("PETTLE_CLAUDE_MODEL", "claude-opus-5-5");
+async function claude(q, brand, send) {
+  const model = CLAUDE_MODEL(), country = marketOf(brand)?.code;
+  const tool = { type: "web_search_20260209", name: "web_search", max_uses: 5 };
+  if (country) tool.user_location = { type: "approximate", country };
+  const headers = { "x-api-key": env("ANTHROPIC_API_KEY"), "anthropic-version": "2023-06-01", "content-type": "application/json" };
+  const body = { model, max_tokens: 8000, stream: true, tools: [tool], messages: [{ role: "user", content: q }] };
+  // On the current models a safety decline can be re-run server-side on a fallback model, inside the same call.
+  if (/^claude-(fable-5|opus-5|sonnet-5-5)/.test(model)) { headers["anthropic-beta"] = "server-side-fallback-2026-07-01"; body.fallbacks = "default"; }
+  const res = await fetchRetry("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok) {
+    const e = await res.json().catch(() => ({})); const msg = e?.error?.message || "";
+    if (res.status === 401) throw new Error("Anthropic rejected the API key.");
+    if (res.status === 429 || /credit balance|billing/i.test(msg)) throw new Error(/credit|billing/i.test(msg) ? "Anthropic credits are used up. Remove ANTHROPIC_API_KEY or add credits." : "Anthropic rate limit reached: " + msg);
+    throw new Error(msg || `Anthropic error ${res.status}`);
+  }
+  send("status", { text: `Asking Claude (${model}) with web search on` });
+  let text = "", stop = "", used = model; const sources = new Map(), blocks = {};
+  const addSrc = (url, title, cited) => { if (!url) return; const k = url.replace(/[#?].*$/, "").replace(/\/$/, ""); const prev = sources.get(k); if (!prev) { sources.set(k, { url, title: title || "", cited }); send("source", sources.get(k)); } else { if (cited && !prev.cited) prev.cited = true; if (!prev.title && title) prev.title = title; } };
+  for await (const { data } of readSSE(res)) {
+    const i = data.index;
+    if (data.type === "message_start") used = data.message?.model || used;
+    else if (data.type === "content_block_start") {
+      const b = data.content_block || {};
+      if (b.type === "server_tool_use" && b.name === "web_search") { blocks[i] = { json: "" }; send("status", { text: "Searching the web" }); }
+      else if (b.type === "web_search_tool_result" && Array.isArray(b.content)) b.content.forEach((r) => addSrc(r.url, r.title, false));
+      else if (b.type === "web_search_tool_result" && b.content?.error_code) send("status", { text: `Web search failed (${b.content.error_code})` });
+    } else if (data.type === "content_block_delta") {
+      const d = data.delta || {};
+      if (d.type === "text_delta" && d.text) { text += d.text; send("delta", { text: d.text }); }
+      else if (d.type === "input_json_delta" && blocks[i]) blocks[i].json += d.partial_json || "";
+      else if (d.type === "citations_delta") addSrc(d.citation?.url, d.citation?.title, true);
+    } else if (data.type === "content_block_stop" && blocks[i]) {
+      try { const q2 = JSON.parse(blocks[i].json || "{}").query; if (q2) send("search", { query: q2 }); } catch { /* a partial query is not worth failing the answer for */ }
+      delete blocks[i];
+    } else if (data.type === "message_delta") stop = data.delta?.stop_reason || stop;
+    else if (data.type === "error") throw new Error(data.error?.message || "Claude failed");
+  }
+  if (stop === "refusal") throw new Error("Claude declined to answer this prompt.");
+  if (!text.trim()) throw new Error(stop === "pause_turn" ? "Claude paused before answering. Try again." : "Claude returned no answer.");
+  return { text, sources: [...sources.values()].slice(0, 25), model: used };
+}
+
 // Google AI Overviews and AI Mode, through a paid SERP API (DataForSEO or SerpApi). Not a chat model: Google either
 // shows an AI answer for the query or it doesn't, so "absent" is a real result, recorded as an answer that names nobody.
 // One AI Overview call also returns the organic top 10, which is how White Petal ties AI visibility to classic rankings.
@@ -142,11 +187,11 @@ function serpAnswer(r, send, model) {
   return { text, sources, model, present: !!r.present };
 }
 
-const RUN = { chatgpt, perplexity, gemini, groq, aio, aimode };
-const KEY = { chatgpt: "OPENAI_API_KEY", perplexity: "PERPLEXITY_API_KEY", gemini: "GEMINI_API_KEY", groq: "GROQ_API_KEY", aio: "SERP", aimode: "SERP" };
+const RUN = { chatgpt, perplexity, gemini, claude, groq, aio, aimode };
+const KEY = { chatgpt: "OPENAI_API_KEY", perplexity: "PERPLEXITY_API_KEY", gemini: "GEMINI_API_KEY", claude: "ANTHROPIC_API_KEY", groq: "GROQ_API_KEY", aio: "SERP", aimode: "SERP" };
 const ready = (e) => (KEY[e] === "SERP" ? !!serpConfig() : !!env(KEY[e]));
 
-export { marketOf, serpWhere };
+export { marketOf, serpWhere, claude };
 export default async function handler(req) {
   const denied = guard(req); if (denied) return denied;
   const { engine, question, brand = {} } = await body(req);

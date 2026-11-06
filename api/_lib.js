@@ -13,6 +13,21 @@ export const LLM_MODEL = () => env("PETTLE_LLM_MODEL", "gpt-4.1");
 export const FAST_MODEL = () => env("PETTLE_FAST_MODEL", "gpt-4.1-mini");
 export const UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36 WhitePettle/1.0";
 
+// Who the brand sells to. Steers competitor suggestions, buyer prompts and drafts, so a small-business tool is compared
+// with small-business tools, not with enterprise suites. "" = not set: no segment wording anywhere.
+export const SEGMENTS = Object.freeze({
+  smb: { label: "Solo founders and small businesses", who: "solo founders, freelancers and small businesses (about 1-50 people): they sign up themselves, pay monthly by card and have little or no IT team", not: "vendors that mainly sell to large enterprises through sales teams, even if they are bigger names" },
+  mid: { label: "Mid-market companies", who: "mid-market companies (about 50-1,000 people): a team lead or manager buys, with some procurement, and integrations matter", not: "tools built mainly for individuals, and heavyweight enterprise suites sold only through long contracts" },
+  enterprise: { label: "Large enterprises", who: "large companies (1,000+ people): security reviews, SSO, procurement, annual contracts and account managers", not: "tools built mainly for individuals or very small teams" },
+});
+export const segmentOf = (p) => SEGMENTS[String(p?.segment || "")] || null;
+// The competitor rules, in priority order. Tested on real sites: without "same job first" an enterprise focus drifts to
+// big CRM suites; without "only real products" small-business lists pick up invented names.
+export function competitorRules(profile) {
+  const s = segmentOf(profile);
+  return `RULES, in order: (1) Same job first: each competitor's product must do the same job as this company's product, for the same kind of buyer, not just sell to the same companies. A product whose main job is different (a CRM, a sales tool or a general suite when this company is not one) is not a competitor, even if it has a similar AI feature. Prefer direct, category-specific rivals over big generic platforms or tools from adjacent categories (e.g. for an engineering-metrics tool list LinearB, Jellyfish, Swarmia, not Jira or Asana). (2) Only real products you are sure exist, named the way AI answers and buyers say them: the plain company or product name, without feature suffixes ("Notion", not "Notion AI"; "ClickUp", not "ClickUp AI"). If unsure, leave it out rather than guess.${s ? ` (3) Segment: this company is tracked for ${s.who}. Of the products that do the same job, keep the ones this segment shortlists and can afford, and leave out ${s.not}.` : ""}`;
+}
+
 export const GEMINI_MODELS = () => [...new Set([env("PETTLE_GEMINI_MODEL", "gemini-flash-latest"), "gemini-2.5-flash", "gemini-2.0-flash"])];
 // Which model writes (questions, insights, pitches...). Free options first.
 export function llmProviders() {
@@ -90,6 +105,7 @@ export function engines() {
   if (env("OPENAI_API_KEY")) e.push("chatgpt");
   if (env("PERPLEXITY_API_KEY")) e.push("perplexity");
   if (env("GEMINI_API_KEY")) e.push("gemini");
+  if (env("ANTHROPIC_API_KEY")) e.push("claude");
   if (env("GROQ_API_KEY")) e.push("groq");
   if (serpConfig()) e.push("aio", "aimode");
   return e;

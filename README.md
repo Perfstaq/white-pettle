@@ -87,6 +87,7 @@ After that, every push to `main` runs the tests and deploys (`.github/workflows/
 | `GEMINI_API_KEY` | **free**, recommended | Gemini as a live engine with Google Search grounding, plus all AI writing (aistudio.google.com/apikey) |
 | `GROQ_API_KEY` | **free** | Groq Compound as a live engine with web search, plus a fast writer |
 | `OPENAI_API_KEY`, `PERPLEXITY_API_KEY` | paid, optional | ChatGPT and Perplexity as live engines |
+| `ANTHROPIC_API_KEY` | paid, optional | Claude as a live engine with Anthropic's web search (opt-in per brand, so it never adds cost to existing checks), and a fallback writer. Model: `PETTLE_CLAUDE_MODEL` (default `claude-opus-5-5`) |
 | `DATAFORSEO_LOGIN` + `DATAFORSEO_PASSWORD`, or `SERPAPI_KEY` | optional | Google AI Overviews and AI Mode as engines, and live Google rankings |
 | `GOOGLE_OAUTH_CLIENT_ID` + `_SECRET` | free, optional | Search Console + GA4, and Sign in with Google. Redirect URIs `https://<your host>/api/oauth/google/callback` and `https://<your host>/api/auth/google/callback` |
 | `GOOGLE_API_KEY` | free, optional | Knowledge Graph lookups for the entity check |
