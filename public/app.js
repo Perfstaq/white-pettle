@@ -21,8 +21,8 @@ function ownUrl(u, site) {
 const slugify = (s) => norm(s).replace(/ /g, "-").slice(0, 48) || "brand";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const safeUrl = (u) => { try { const x = new URL(u); return /^https?:$/.test(x.protocol) ? x.href : null; } catch { return null; } };
-const ENG = { chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", groq: "Groq web", aio: "AI Overviews", aimode: "AI Mode" };
-const ENGC = { chatgpt: "var(--e-chatgpt)", perplexity: "var(--e-perplexity)", gemini: "var(--e-gemini)", groq: "var(--e-groq)", aio: "var(--e-aio)", aimode: "var(--e-aimode)" };
+const ENG = { chatgpt: "ChatGPT", perplexity: "Perplexity", gemini: "Gemini", claude: "Claude", groq: "Groq web", aio: "AI Overviews", aimode: "AI Mode" };
+const ENGC = { chatgpt: "var(--e-chatgpt)", perplexity: "var(--e-perplexity)", gemini: "var(--e-gemini)", claude: "var(--e-claude)", groq: "var(--e-groq)", aio: "var(--e-aio)", aimode: "var(--e-aimode)" };
 // Answers are keyed question|engine for the first sample and question|engine|n for repeats (sampling).
 const akey = (qid, e, s) => (s ? `${qid}|${e}|${s}` : `${qid}|${e}`);
 const answersOf = (M, qid, e) => Object.values(M.answers || {}).filter((a) => a.qid === qid && a.engine === e);
@@ -94,12 +94,21 @@ function upgradeModal(d) {
   if ($(".modal.upsell")) return;
   const next = d.nextPlanName, ro = d.code === "billing_read_only";
   LIMIT_MSG = esc(d.error || "");
+  // Payments hidden, or the next plan isn't sold online (Enterprise): "Talk to us" by email, or no button at all.
+  const plan = BILL.cat?.plans?.find((x) => x.name === next || x.code === d.nextPlan), contact = BILL.cat?.contact || "";
+  const viaTeam = PAY_HIDDEN || (plan && plan.selfServe === false);
   const m = document.createElement("div"); m.className = "modal light upsell";
-  m.innerHTML = `<div class="box" role="dialog" aria-modal="true"><h3>${ro ? "Choose a plan to continue" : d.trialDone ? "Your free trial check is done" : "You've reached your plan's limit"}</h3><p>${esc(d.error || "")}</p><div class="row" style="gap:8px"><button class="btn" type="button" data-up>${ro || d.trialDone ? "Choose a plan" : next ? `Upgrade to ${esc(next)}` : "See plans"}</button><button class="btn ghost" type="button" data-x>Not now</button></div></div>`;
+  m.innerHTML = `<div class="box" role="dialog" aria-modal="true"><h3>${ro ? "Choose a plan to continue" : d.trialDone ? "Your free trial check is done" : "You've reached your plan's limit"}</h3><p>${esc(d.error || "")}</p><div class="row" style="gap:8px">${viaTeam ? (contact ? `<a class="btn" href="mailto:${esc(contact)}?subject=${encodeURIComponent("Perfstaq " + (next || "plan"))}">Talk to us</a>` : "") : `<button class="btn" type="button" data-up>${ro || d.trialDone ? "Choose a plan" : next ? `Upgrade to ${esc(next)}` : "See plans"}</button>`}<button class="btn ghost" type="button" data-x>Not now</button></div></div>`;
   const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
   const close = () => { document.removeEventListener("keydown", key, true); m.remove(); };
   m.addEventListener("click", (e) => { if (e.target === m || e.target.closest("[data-x]")) close(); else if (e.target.closest("[data-up]")) { close(); openBilling(); } });
-  document.addEventListener("keydown", key, true); document.body.append(m); m.querySelector("[data-up]").focus();
+  document.addEventListener("keydown", key, true); document.body.append(m); (m.querySelector("[data-up], a.btn, button") || m).focus();
+  // The plan list (who sells what, and the contact address) may not be loaded yet: add "Talk to us" once it is.
+  if (!BILL.cat) fetch("/api/billing/plans").then((r) => r.json()).then((c) => {
+    BILL.cat = c; if (!m.isConnected || m.querySelector("[data-up], a.btn")) return;
+    const pl = c.plans?.find((x) => x.name === next || x.code === d.nextPlan);
+    if ((PAY_HIDDEN || (pl && pl.selfServe === false)) && c.contact) m.querySelector("[data-x]")?.insertAdjacentHTML("beforebegin", `<a class="btn" href="mailto:${esc(c.contact)}?subject=${encodeURIComponent("Perfstaq " + (next || "plan"))}">Talk to us</a>`);
+  }).catch(() => {});
 }
 const DATA = {
   list: [],
@@ -850,7 +859,7 @@ async function runPipeline(M, sig) {
       await Promise.all([0, 1, 2, 3].map(async () => {
         while (q2.length && !sig.aborted) {
           const t = q2.shift();
-          let r; try { r = await post("/api/inspect", { url: t.url, brand: profile }, sig); } catch (e) { r = { ok: false, url: t.url, reason: e.message }; }
+          let r; try { r = await post("/api/inspect", { url: t.url, brand: profile, names: [...new Set(Object.values(M.answers).flatMap((a) => a.brands || []))].slice(0, 80) }, sig); } catch (e) { r = { ok: false, url: t.url, reason: e.message }; }
           r.n = t.n; r.qs = [...t.qs]; M.inspections[t.url] = r; k++; bump("p");
           ic.querySelector(".ipn").textContent = `${k} / ${targets.length}`; phase("sources", (100 * k) / targets.length);
           const sid = sidOf(t.url);
@@ -872,6 +881,11 @@ async function runPipeline(M, sig) {
       thought(`<b>Found the pattern.</b> You're on ${onYou} of the ${opened.length} pages AI trusts.${tr ? ` ${esc(tr[0])} is on ${tr[1]}.` : ""} ${opened.length - onYou} pages are open targets.`, "Getting listed on these pages is the fastest way to start appearing in answers.");
     } else finishPhase("sources");
     if (sig.aborted) throw new DOMException("stopped", "AbortError");
+    // Competitors' own websites, read like any page (no AI call), so they can be compared even if AI never names them.
+    for (const [name, site] of Object.entries(profile.competitorSites || {})) {
+      if (sig.aborted || M.inspections[site]) continue;
+      try { const r = await post("/api/inspect", { url: site, brand: profile, names: [...new Set(Object.values(M.answers).flatMap((a) => a.brands || []))].slice(0, 80) }, sig); M.inspections[site] = { ...r, n: 0, qs: [], rivalSite: name }; } catch {}
+    }
     M.done.sources = true; save(true);
     if (!M.entity && !sig.aborted) {
       const st = stepEl("Checking whether AI's knowledge sources know who you are (Wikidata, Google Knowledge Graph)", "Models lean on knowledge graphs to decide what a brand is. If you're missing or inconsistent there, AI guesses.");
@@ -958,10 +972,14 @@ function parseLoose(t) {
 }
 function liveScore(M) { const done = Object.values(M.answers).filter((a) => a.status === "yes" || a.status === "no"); return done.length ? Math.round((100 * done.filter((a) => a.named).length) / done.length) : null; }
 function estimateMinutes(M) { return Object.keys(M.answers).length * 4 + Object.keys(M.inspections).length * 3 + Object.keys(M.pitches).length * 20 + (M.assets ? 30 : 0) + (M.insights ? 60 : 0) + (M.perception ? 20 : 0) + (M.audit?.pages?.length || 0) * 8; }
+// Forum threads (Reddit, Quora…) can't be pitched by email, and a PDF has no editor: they get their own action instead.
+const FORUM_RE = /(^|\.)(reddit|quora|ycombinator|stackexchange|stackoverflow|indiehackers)\.|^(community|forum|forums|discuss)\./i;
+const isForum = (p) => FORUM_RE.test(p.domain || host(p.url || "")), isFile = (p) => /\.(pdf|docx?|pptx?|xlsx?)(\?|$)/i.test(p.final || p.url || "");
 function pitchTargets(M) {
-  return Object.values(M.inspections).filter((p) => p.ok && !p.you && !namesFor(M).rivals.some((r) => norm(p.domain).includes(norm(r).split(" ")[0])))
-    .map((p) => ({ ...p, prio: p.n * 2 + (p.rivals || []).length * 3 + (p.listy ? 2 : 0) })).sort((a, b) => b.prio - a.prio);
+  return Object.values(M.inspections).filter((p) => p.ok && !p.you && !p.rivalSite && !isForum(p) && !isFile(p) && !namesFor(M).rivals.some((r) => norm(p.domain).includes(norm(r).split(" ")[0])))
+    .map((p) => ({ ...p, n: p.n || 1, qs: p.qs || [], prio: (p.n || 1) * 2 + (p.rivals || []).length * 3 + (p.listy ? 2 : 0) })).sort((a, b) => b.prio - a.prio);
 }
+const forumThreads = (M) => Object.values(M.inspections || {}).filter((p) => isForum(p) && (p.n || 0) > 0).sort((a, b) => (b.n || 0) - (a.n || 0));
 function digest(M) {
   const ans = Object.values(M.answers).filter((a) => a.status === "yes" || a.status === "no");
   const L = [];
@@ -1016,7 +1034,9 @@ function buildDeck() {
   if (!a.llms && as.llms_txt) out.push({ id: "llms", kind: "5-minute fix", title: "Publish llms.txt", why: "A plain-language briefing AI tools read to understand your company. You don't have one yet.", code: as.llms_txt, label: "Save as /llms.txt at your site root" });
   if (!a.orgSchema && as.org_schema) out.push({ id: "org", kind: "5-minute fix", title: "Tell AI exactly who you are", why: "Your homepage has no Organization schema, so AI has to guess your name, URL and description.", code: '<script type="application/ld+json">\n' + JSON.stringify(as.org_schema, null, 2) + "\n</" + "script>", label: "Paste into your homepage <head>" });
   (M.perception?.claims || []).filter((c) => ["wrong", "outdated"].includes(c.verdict)).forEach((c, i) => out.push({ id: "claim" + i, kind: "Correct AI", title: `AI says: “${c.claim}”`, why: c.fix || "Publish a clear correction on your site." }));
-  pitchTargets(M).slice(0, 8).forEach((t) => out.push({ id: "pitch:" + t.url, kind: "Get listed", title: `Get named on ${t.domain}`, why: `AI cited this page ${t.n}×${(t.rivals || []).length ? `. ${t.rivals.slice(0, 3).join(", ")} ${t.rivals.length > 1 ? "are" : "is"} already on it` : ""}.`, t }));
+  const threads = forumThreads(M).slice(0, 5);
+  if (threads.length) out.push({ id: "threads", kind: "Join the conversation", title: `Reply in the ${threads.length} thread${threads.length === 1 ? "" : "s"} AI read`, why: "AI quotes real replies from forums. Answer the question asked, say you're the founder, and don't pitch.", threads });
+  pitchTargets(M).slice(0, 8).forEach((t) => out.push({ id: "pitch:" + t.url, kind: "Get listed", title: `Get named on ${t.title ? `“${String(t.title).slice(0, 60)}”` : t.domain}`, why: `AI cited this page ${t.n}×${(t.rivals || []).length ? `. ${t.rivals.slice(0, 3).join(", ")} ${t.rivals.length > 1 ? "are" : "is"} already on it` : ""}.`, t }));
   const missing = RM.questionGaps(M, { engines: M.engines, isYou: (b) => isYou(b, M), requireCompetitor: false }).map((g) => M.questions.find((q) => q.id === g.questionId));
   missing.slice(0, 2).forEach((q) => out.push({ id: "article:" + q.id, kind: "Publish a page", title: `Win “${q.text}”`, why: "No engine named you for this. A page built to answer it gives AI something to cite.", q }));
   const weak = (a.pages || [])[0]; if (weak && weak.score < 60) out.push({ id: "fix:" + weak.url, evidence: { score: weak.score }, kind: "Improve a page", title: `Make “${weak.title || host(weak.url)}” quotable`, why: `Scores ${weak.score}/100. Missing: ${(weak.fails || []).slice(0, 3).join(", ")}.`, page: weak });
@@ -1057,6 +1077,7 @@ function drawDeck() {
     acts = txt ? (to ? `<a class="btn" target="_blank" rel="noopener" href="${esc(gmail(to, txt))}" data-act="sent">Send in Gmail</a>` : `<button class="btn" type="button" data-act="copy">Copy pitch</button>`) : `<button class="btn" type="button" data-act="write">Write the pitch</button>`;
     acts += `<a class="btn ghost sm" href="${esc(safeUrl(c.t.final || c.t.url) || "#")}" target="_blank" rel="noopener">Open page</a>`;
   } else if (c.q) { const txt = M.articles[c.q.id]; body = `<div class="pre" id="dkText">${txt ? esc(txt) : "I'll write a 1,000–1,400 word page built to be cited for this question. Proof points I can't verify are marked [TODO]."}</div>`; acts = txt ? `<button class="btn" type="button" data-act="copy">Copy article</button>` : `<button class="btn" type="button" data-act="write">Write the page</button>`; }
+  else if (c.threads) { body = `<ul class="dk-threads">${c.threads.map((p) => `<li><a href="${esc(safeUrl(p.final || p.url) || "#")}" target="_blank" rel="noopener">${esc(p.title || p.final || p.url)}</a> <span class="muted sm">${esc(p.domain || host(p.url))} · used in ${p.n || 1} answer${(p.n || 1) === 1 ? "" : "s"}</span></li>`).join("")}</ul>`; acts = ""; }
   else if (c.page) { const txt = M.fixpack; body = `<div class="pre md" id="dkText">${txt ? md(txt) : "I'll rewrite the opening, add question headings and an FAQ for this page."}</div>`; acts = txt ? `<button class="btn" type="button" data-act="copy">Copy fixes</button>` : `<button class="btn" type="button" data-act="write">Write the fixes</button>`; }
   if (recheckable(c.id) && canEdit()) acts += `<button class="btn ghost sm" type="button" data-act="recheck" title="Reads ${esc(RECHECK[c.id.split(":")[0]])} again now. No AI is asked, so it's free.">${icon("check", 14)}Recheck</button>`;
   el.innerHTML = `<div class="dcard" id="dk"><span class="kind">${esc(c.kind)} · ${Object.keys(M.deck).length + 1} of ${Object.keys(M.deck).length + DECK.length}</span><h4>${esc(c.title)}</h4><p class="why">${esc(c.why)}</p>${body}${checkLine(lastCheck(M.slug, c.id))}<div class="acts">${acts}<span style="flex:1"></span><button class="btn ghost sm" type="button" data-act="skip">Skip <span class="kbd">←</span></button><button class="btn ghost sm" type="button" data-act="done">Done <span class="kbd">→</span></button></div></div><div class="stack-under"></div>`;
@@ -1186,8 +1207,8 @@ document.addEventListener("error", (e) => { const t = e.target; if (t?.matches?.
    scan → brand profile → market → competitors → topics → focus → prompts → review → run. */
 const INTENTS = { informational: ["Informational", "var(--i-info)"], commercial: ["Commercial", "var(--i-comm)"], transactional: ["Transactional", "var(--i-trans)"] };
 const FOCUS = { research: ["Research", "More emphasis on exploring problems and solutions.", [50, 30, 20]], compare: ["Compare options", "More emphasis on comparisons and recommendations.", [25, 50, 25]], action: ["Take action", "More emphasis on buying, booking, or signing up.", [25, 25, 50]] };
-const ENG_KEY = { chatgpt: "OPENAI_API_KEY", perplexity: "PERPLEXITY_API_KEY", gemini: "GEMINI_API_KEY", groq: "GROQ_API_KEY", aio: "DATAFORSEO_LOGIN", aimode: "DATAFORSEO_LOGIN" };
-const ENG_ALL = ["chatgpt", "perplexity", "gemini", "groq", "aio", "aimode"];
+const ENG_KEY = { chatgpt: "OPENAI_API_KEY", perplexity: "PERPLEXITY_API_KEY", gemini: "GEMINI_API_KEY", claude: "ANTHROPIC_API_KEY", groq: "GROQ_API_KEY", aio: "DATAFORSEO_LOGIN", aimode: "DATAFORSEO_LOGIN" };
+const ENG_ALL = ["chatgpt", "perplexity", "gemini", "claude", "groq", "aio", "aimode"];
 const MARKETS = ["Global", "United States", "United Kingdom", "India", "Europe", "Australia"];
 // A market's country code from what was picked or typed ("India", "IN"), using the server's country list. null = Global/region.
 const countryCode = (t) => { const n = norm(t); return (APP.cfg.countries || []).find(([c, name]) => norm(name) === n || c.toLowerCase() === n)?.[0] || null; };
@@ -1223,7 +1244,7 @@ const effPer = () => { const o = perOpts(); return o.includes(OB.perTopic) ? OB.
 // opts.parent: the brand this is a new market of (another country version of its site).
 async function startOnboarding(url, saved, opts = {}) {
   APP.ctl?.abort(); APP.ctl = new AbortController(); const sig = APP.ctl.signal; APP.running = false; await refreshBilling();
-  OB = { url, saved, parent: opts.parent || saved?.parent || null, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(PLANL.samples(), saved?.samples || 1)), questions: [], selTopic: null, engines: PLANL.engines(APP.cfg.engines.filter((e) => e !== "aimode")), gen: false, err: "" };
+  OB = { url, saved, parent: opts.parent || saved?.parent || null, step: "scan", scan: null, checks: [], pages: [], profile: null, rivals: [], topics: [], focus: "action", perTopic: 3, samples: Math.max(1, Math.min(PLANL.samples(), saved?.samples || 1)), questions: [], selTopic: null, engines: PLANL.engines(APP.cfg.engines.filter((e) => e !== "aimode" && e !== "claude")), gen: false, err: "" };
   screen("onboard"); $("#obSite").textContent = host(url); obRender();
   try {
     let result = null;
@@ -1241,6 +1262,8 @@ async function startOnboarding(url, saved, opts = {}) {
     p.personas = p.personas?.length ? p.personas : result.profile.personas?.length ? result.profile.personas : splitList(p.audience);
     OB.profile = p;
     OB.rivals = (p.competitors || []).slice(0, PLANL.rivals()).map((name) => ({ name }));
+    // The scan guesses the segment in the same call, so its list could not be filtered by it yet: ask once more with it.
+    OB.refineSegment = !saved;
     if (saved?.questions?.length) {
       OB.questions = saved.questions.map((q) => ({ topic: q.topic || "General", intent: q.intent, persona: q.persona || "", text: q.text, on: q.on !== false }));
       OB.topics = (saved.topics?.length ? saved.topics : [...new Set(OB.questions.map((q) => q.topic))]).map((t) => (typeof t === "string" ? { name: t } : t));
@@ -1251,14 +1274,82 @@ async function startOnboarding(url, saved, opts = {}) {
     obRender();
   } catch (err) { if (sig.aborted) return; OB.err = err.message; obRender(); }
 }
+// The AI engines appear as "options" in answers; they aren't your competitors unless you say so.
+const isAssistant = (n) => /^(chatgpt|chat gpt|openai|claude|anthropic|gemini|google gemini|perplexity|copilot|microsoft copilot|bard|grok|meta ai)\b/i.test(norm(n));
+// A competitor can be added by website as well as by name. The site gives the company's real name (no guessing which
+// "Meridian"), lets the analysis recognise its own pages, and is read during the check even if AI never names it.
+const looksLikeSite = (v) => /^(https?:\/\/)?(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+(\/\S*)?$/i.test(String(v).trim()) && !/\s/.test(String(v).trim());
+async function rivalFromSite(v) {
+  const url = /^https?:\/\//i.test(v) ? v.trim() : "https://" + v.trim(), d = host(url);
+  let r = null; try { r = await post("/api/inspect", { url, brand: { name: "" } }); } catch {}
+  const fromTitle = String(r?.title || "").split(/\s[|–—:·-]\s|\s[|–—]\s?/)[0].trim();
+  const label = d.split(".").slice(-2)[0], fallback = label.charAt(0).toUpperCase() + label.slice(1);
+  const name = fromTitle && fromTitle.length <= 40 && norm(fromTitle).includes(norm(label).slice(0, 4)) ? fromTitle : fallback;
+  return { name: name.slice(0, 80), site: "https://" + d, read: r?.ok ? r : null };
+}
+// Provider and network errors, in words a person can act on; the original stays as a detail line.
+function friendlyErr(msg) {
+  const m = String(msg || "");
+  const say = /api key|rejected the api key|401|unauthor|invalid x-api-key/i.test(m) ? "An AI key isn't working. An admin can check it in Team & keys."
+    : /credit|quota|billing|insufficient/i.test(m) ? "The AI account has run out of credit. Add credit with the AI provider, then try again."
+    : /rate limit|429|overloaded|529/i.test(m) ? "The AI service is busy right now. Wait a minute and try again."
+    : /timed? ?out|timeout|aborted/i.test(m) ? "The site took too long to answer. Try again, or check it opens in your browser."
+    : /http 40[34]|forbidden|not found|couldn't open|enotfound|getaddrinfo|fetch failed/i.test(m) ? "We couldn't open this site. Check the address, or whether it blocks automated readers."
+    : "";
+  return say ? { text: say, detail: m } : { text: m, detail: "" };
+}
 function obProfile() {
   const p = OB.profile;
-  return { ...p, name: (p.name || "").trim() || host(p.site), competitors: OB.rivals.map((r) => r.name), audience: (p.personas || []).join(", ") || p.audience || "" };
+  const sites = {}; for (const r of OB.rivals) { const s0 = r.site || p.competitorSites?.[r.name]; if (s0) sites[r.name] = s0; }
+  return { ...p, name: (p.name || "").trim() || host(p.site), competitors: OB.rivals.map((r) => r.name), competitorSites: sites, audience: (p.personas || []).join(", ") || p.audience || "" };
+}
+// Who the brand sells to. Changing it on the competitor step asks for competitors that segment actually buys; the ones
+// the person added themselves stay. The same segment then shapes the prompts and every draft (api/write.js brandBlock).
+const SEGS = [["smb", "Solo founders & small businesses"], ["mid", "Mid-market"], ["enterprise", "Enterprise"], ["", "All sizes"]];
+const SEG_LABEL = Object.fromEntries(SEGS.filter(([k]) => k));
+// Competitor suggestions for every company size, from one AI call. "Who do you sell to?" only pre-ticks a size group
+// (instant, no AI call); people can tick anything in any group. The ones they added by hand are always kept.
+const SIZES = [["smb", "Small businesses"], ["mid", "Mid-market"], ["enterprise", "Enterprise"], ["all", "Every size"]];
+async function obResuggest() {
+  OB.rivalsBusy = true; obRender();
+  let raw = "";
+  try {
+    await stream("/api/write", { kind: "competitors", data: { profile: obProfile(), siteText: OB.scan?.siteText || "", keep: OB.rivals.filter((r) => r.added).map((r) => r.name) } }, { delta: (d) => { raw += d.text; } }, APP.ctl?.signal);
+    const seen = new Set(OB.rivals.filter((r) => r.added).map((r) => norm(r.name)));
+    // Sizes come back as "smb", "SMB", "small business", "Mid-market", "enterprise"...: read them loosely.
+    const sizeOf = (v) => { const t = String(v || "").toLowerCase(); return /smb|small|solo|startup/.test(t) ? "smb" : /mid/.test(t) ? "mid" : /enterprise|large/.test(t) ? "enterprise" : "all"; };
+    const pool = (parseLoose(raw)?.competitors || []).map((c) => (typeof c === "string" ? { name: c, size: "all" } : { name: String(c.name || "").trim(), size: sizeOf(c.size || c.segment || c.tier) }))
+      .filter((c) => c.name && !seen.has(norm(c.name)) && seen.add(norm(c.name)));
+    // "ClickUp Brain" next to "ClickUp" is one company twice: keep the company name only.
+    const words = (n) => norm(n).split(" "), within = (a, b) => { const x = words(a), y = words(b); return x.length > y.length && y.every((w, k) => x[k] === w); };
+    OB.pool = pool.filter((c) => !pool.some((d) => d !== c && within(c.name, d.name)));
+    if (!OB.pool.length) throw new Error("No competitors came back. Try again.");
+    obApplySize(OB.profile.segment || "");
+  } catch (e) { toast(esc(e.message || "Couldn't suggest competitors.")); }
+  OB.rivalsBusy = false; obRender();
+}
+// Tick the suggestions for one size (plus products sold at every size); "" ticks all of them. Hand-added ones stay.
+function obApplySize(seg) {
+  const yours = OB.rivals.filter((r) => r.added), lim = PLANL.rivals();
+  const picks = (OB.pool || []).filter((c) => !seg || c.size === seg || c.size === "all");
+  OB.rivals = [...yours, ...picks.map((c) => ({ name: c.name, size: c.size }))].slice(0, lim);
+  if (yours.length + picks.length > lim) toast(`Your ${esc(PLANL.name())} plan tracks ${lim} competitors per brand, so the first ${lim} are ticked.`);
+}
+function obTogglePool(i) {
+  const c = OB.pool[i], at = OB.rivals.findIndex((r) => norm(r.name) === norm(c.name));
+  if (at >= 0) OB.rivals.splice(at, 1);
+  else if (OB.rivals.length >= PLANL.rivals()) return toast(`Your ${esc(PLANL.name())} plan tracks up to ${PLANL.rivals()} competitors per brand. Untick one to add another.`);
+  else OB.rivals.push({ name: c.name, size: c.size });
+  obRender();
 }
 function obGo(step) {
   if (!OB) return;
+  if (step !== OB.step) document.querySelector(".toast")?.remove();
+  if (step === "rivals" && OB.refineSegment) { OB.refineSegment = false; setTimeout(obResuggest, 0); }
   if (step === "home") { APP.ctl?.abort(); return goHome(); }
   if (step === "market" && !(OB.profile?.name || "").trim()) { toast("Add your company name first."); return $('[data-f="name"]')?.focus(); }
+  // Steps show the live preview by default; the full panel opens when the person chooses to edit (Edit competitors,
+  // Edit topics, Review prompts). Only the brand profile opens on its own, as before.
   OB.step = step; OB.sheet = step === "profile" ? "profile" : null; obRender();
   if (step === "topicsGen") obTopics(false);
   if (step === "promptsGen") obPrompts(false);
@@ -1320,7 +1411,7 @@ function pill(form, value, ph, ic, extra = "") {
 function obAsk() {
   const s = OB.step, p = OB.profile;
   if (s === "scan") {
-    if (OB.err) return `<h1>We couldn't read ${esc(host(OB.url))}</h1><p>${esc(OB.err)}</p><div class="ob-btns"><button class="btn ghost" type="button" data-act="home">Use another site</button><button class="btn" type="button" data-act="retry">Try again</button></div>`;
+    if (OB.err) { const f = friendlyErr(OB.err); return `<h1>We couldn't read ${esc(host(OB.url))}</h1><p>${esc(f.text)}</p>${f.detail ? `<p class="muted sm">Details: ${esc(f.detail)}</p>` : ""}<div class="ob-btns"><button class="btn ghost" type="button" data-act="home">Use another site</button><button class="btn" type="button" data-act="retry">Try again</button></div>`; }
     const done = OB.checks.filter((c) => c.state !== "run").length, cur = [...OB.checks].reverse().find((c) => c.state === "run") || OB.checks[OB.checks.length - 1];
     return `<h1>Reading ${esc(host(OB.url))}<span class="dots"></span></h1><p>${esc(cur?.text || "Connecting to your site")}</p><div class="ob-prog"><i style="width:${Math.min(96, 6 + done * 15)}%"></i></div>`;
   }
@@ -1328,9 +1419,10 @@ function obAsk() {
   if (s === "market") { const lc = OB.scan?.audit?.locale, tracked = new Set(OB.parent ? marketsOf(OB.parent).map((w) => w.market?.code) : []), sib = (OB.scan?.audit?.markets || []).filter((x) => !tracked.has(x.code));
     const note = lc?.country ? `<p class="muted sm">We read the ${esc(lc.country.name)} version of ${esc(host(p.site))}${OB.scan.audit.scope ? ` (${esc(OB.scan.audit.scope)})` : ""}${lc.redirectedTo ? ", where the site sent us" : ""}, so we've picked ${esc(lc.country.name)}.${sib.length ? ` It also has ${esc(sib.slice(0, 4).map((x) => x.name).join(", "))}${sib.length > 4 ? ` and ${sib.length - 4} more` : ""}: add ${sib.length > 1 ? "them" : "it"} as markets once this one is set up.` : ""}</p>` : "";
     return `<h1>Where do you sell?</h1><p>The market AI should answer for. We write prompts the way buyers there ask them, and ask each AI from there.</p>${note}${pill("market", p.market, "Search countries or regions", "globe")}<div class="ob-sugs">${[...new Set([p.market, ...MARKETS].filter(Boolean))].slice(0, 6).map((m) => `<button type="button" data-market="${esc(m)}"${norm(m) === norm(p.market) ? ' class="on"' : ""}>${esc(m)}</button>`).join("")}</div>`; }
-  if (s === "rivals") return `<h1>Review your competitors</h1><p>Remove any that aren't real rivals, or add your own. Suggested from your brand profile. <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Add competitor</button><button class="btn" type="button" data-go="topicsGen">Continue</button></div>`;
+  if (s === "rivals") return `<h1>Review your competitors</h1><p>Remove any that aren't real rivals, or add your own. ${OB.rivalsBusy ? `Finding competitors for ${esc(SEG_LABEL[OB.profile.segment] || "all company sizes").toLowerCase()}…` : `Suggested for ${esc(SEG_LABEL[OB.profile.segment] || "all company sizes").toLowerCase()}.`} <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p>
+    <div class="seg-pick" role="radiogroup" aria-label="Who do you sell to?"><span class="muted sm">Who do you sell to?</span>${SEGS.map(([k, l]) => `<button type="button" role="radio" data-seg="${k}" aria-checked="${(OB.profile.segment || "") === k}" ${OB.rivalsBusy ? "disabled" : ""}>${l}</button>`).join("")}</div><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Edit competitors</button><button class="btn" type="button" data-go="topicsGen">Continue</button></div>`;
   if (s === "topicsGen") return `<h1>Generating topics<span class="dots"></span></h1><p>The themes your buyers research, from your products and services.</p>`;
-  if (s === "topics") return `<h1>Review your topics</h1><p>Remove any that do not fit your brand, or add your own. Generated from your brand profile. <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Add topics</button><button class="btn" type="button" data-go="focus" ${OB.topics.length ? "" : 'aria-disabled="true"'}>Continue</button></div>`;
+  if (s === "topics") return `<h1>Review your topics</h1><p>Remove any that do not fit your brand, or add your own. Generated from your brand profile. <button type="button" class="lnk" data-act="openProfile">Edit profile</button></p><div class="ob-btns"><button class="btn ghost" type="button" data-act="focusAdd">Edit topics</button><button class="btn" type="button" data-go="focus" ${OB.topics.length ? "" : 'aria-disabled="true"'}>Continue</button></div>`;
   if (s === "focus") return `<h1>What should your prompts focus on?</h1><p>Choose where your buyers are in their journey.</p><div class="ob-btns"><button class="btn" type="button" data-act="openFocus">Choose focus</button></div>`;
   if (s === "promptsGen") return `<h1>Writing your prompts<span class="dots"></span></h1><p>${OB.questions.length} of about ${OB.topics.length * OB.perTopic} written, as your buyers would ask them.</p><div class="ob-prog"><i style="width:${Math.min(96, (100 * OB.questions.length) / Math.max(1, OB.topics.length * OB.perTopic))}%"></i></div>`;
   if (s === "promptsReady" || s === "review") {
@@ -1345,6 +1437,43 @@ function chipEditor(key, items, ph) {
   return `<div class="chipin" data-chips="${key}">${(items || []).map((x, i) => `<span class="tag">${esc(x)}<button type="button" data-rm="${key}:${i}" aria-label="Remove ${esc(x)}">${icon("x", 11)}</button></span>`).join("")}<input data-add="${key}" id="chip-${key}" placeholder="${esc(ph)}" aria-label="${esc(ph)}"></div>`;
 }
 const fld = (label, hint, el, id) => `<div class="field"><label${id ? ` for="${id}"` : ""}>${label} <span class="q" title="${esc(hint)}">${icon("info", 13)}</span></label><span class="hint">${hint}</span>${el}</div>`;
+// Full panels for the review steps. Same look as the brand profile: the whole list, readable, with add and remove.
+const sheetBack = () => `<button type="button" class="sheet-back" data-go="${OB_BACK[OB.step] || "home"}">${icon("arrow", 14)}Back</button>`;
+function sheetMarket() {
+  const p = OB.profile, lc = OB.scan?.audit?.locale;
+  return {
+    body: `${sheetBack()}<div class="sheet-narrow"><h2 id="obSheetTitle">Where do you sell?</h2><p class="sub">The market AI should answer for. We write prompts the way buyers there ask them, and ask each AI from there.</p>
+      ${lc?.country ? `<p class="muted sm">We read the ${esc(lc.country.name)} version of ${esc(host(p.site))}, so we've picked ${esc(lc.country.name)}.</p>` : ""}
+      ${pill("market", p.market, "Search countries or regions", "globe")}
+      <div class="ob-sugs">${[...new Set([p.market, ...MARKETS].filter(Boolean))].slice(0, 10).map((m) => `<button type="button" data-market="${esc(m)}"${norm(m) === norm(p.market) ? ' class="on"' : ""}>${esc(m)}</button>`).join("")}</div></div>`,
+    foot: `<span class="sp"></span>${p.market ? `<button class="btn" type="button" data-market="${esc(p.market)}">Continue with ${esc(p.market)}</button>` : ""}`,
+  };
+}
+function sheetRivals() {
+  const lim = PLANL.rivals(), on = (n) => OB.rivals.some((r) => norm(r.name) === norm(n)), pool = OB.pool || [];
+  const yours = OB.rivals.filter((r) => r.added || !pool.some((c) => norm(c.name) === norm(r.name)));
+  const row = (c, i) => `<li><label class="obl-tick"><input type="checkbox" data-pool="${i}" ${on(c.name) ? "checked" : ""}>${letterAv(c.name)}<b>${esc(c.name)}</b></label></li>`;
+  const groups = SIZES.map(([k, l]) => [k, l, pool.map((c, i) => [c, i]).filter(([c]) => c.size === k)]).filter(([, , g]) => g.length);
+  return {
+    body: `${sheetBack()}<div class="sheet-narrow"><h2 id="obSheetTitle">Review your competitors</h2>
+      <p class="sub">${OB.rivalsBusy ? "Finding competitors for every company size…" : "Tick the ones you want to track, from any size. Add your own too."} <span class="muted">${OB.rivals.length}${lim === Infinity ? " ticked" : ` of ${lim} on your plan`}</span></p>
+      <div class="seg-pick" role="radiogroup" aria-label="Who do you sell to?"><span class="muted sm">Who do you sell to?</span>${SEGS.map(([k, l]) => `<button type="button" role="radio" data-seg="${k}" aria-checked="${(OB.profile.segment || "") === k}" ${OB.rivalsBusy ? "disabled" : ""}>${l}</button>`).join("")}</div>
+      <form class="obl-add" data-form="rival"><input id="obSheetAdd-rival" placeholder="Add a competitor by name" aria-label="Add a competitor" autocomplete="off"><button class="btn ghost sm" type="submit">${icon("plus", 13)}Add</button></form>
+      ${OB.rivalsBusy ? '<ul class="obl-list"><li class="muted">Finding competitors…</li></ul>' : ""}
+      ${yours.length ? `<h3 class="obl-h">Yours</h3><ul class="obl-list">${yours.map((r) => `<li>${letterAv(r.name)}<b>${esc(r.name)}</b><span class="muted sm">${r.added ? "added by you" : "suggested"}</span><button type="button" class="obl-x" data-rvx="${OB.rivals.indexOf(r)}" aria-label="Remove ${esc(r.name)}">${icon("x", 14)}</button></li>`).join("")}</ul>` : ""}
+      ${OB.rivalsBusy ? "" : groups.map(([k, l, g]) => `<h3 class="obl-h">${l} <span class="muted sm">${g.filter(([c]) => on(c.name)).length} of ${g.length} ticked</span><button type="button" class="lnk sm" data-poolall="${k}">Select all</button></h3><ul class="obl-list">${g.map(([c, i]) => row(c, i)).join("")}</ul>`).join("")}
+      ${!OB.rivalsBusy && !pool.length ? `<p class="muted sm">Want suggestions by company size? <button type="button" class="lnk" data-seg="${esc(OB.profile.segment || "")}">Suggest competitors</button></p>` : ""}</div>`,
+    foot: `<span class="sp"></span><button class="btn" type="button" data-go="topicsGen" ${OB.rivalsBusy ? 'aria-disabled="true"' : ""}>Continue</button>`,
+  };
+}
+function sheetTopics() {
+  return {
+    body: `${sheetBack()}<div class="sheet-narrow"><h2 id="obSheetTitle">Review your topics</h2><p class="sub">The themes your buyers research. Remove any that don't fit your brand, or add your own. Prompts are written for each topic next.</p>
+      <form class="obl-add" data-form="topic"><input id="obSheetAdd-topic" placeholder="Add a topic, e.g. meeting notes without a bot" aria-label="Add a topic" autocomplete="off"><button class="btn ghost sm" type="submit">${icon("plus", 13)}Add</button></form>
+      <ul class="obl-list">${OB.topics.map((t, i) => `<li><b>${esc(t.name)}</b><button type="button" class="obl-x" data-tpx="${i}" aria-label="Remove ${esc(t.name)}">${icon("x", 14)}</button></li>`).join("") || '<li class="muted">No topics yet.</li>'}</ul></div>`,
+    foot: `<span class="sp"></span><button class="btn" type="button" data-go="focus">Continue</button>`,
+  };
+}
 function sheetProfile() {
   const p = OB.profile, a = OB.scan.audit || {};
   return {
@@ -1420,7 +1549,7 @@ function obRender() {
   const keep = document.activeElement?.id, caret = document.activeElement?.selectionStart;
   $("#obFrame").innerHTML = obFrame();
   $("#obAsk").innerHTML = obAsk();
-  const sheet = OB.sheet === "profile" ? sheetProfile() : OB.sheet === "focus" ? sheetFocus() : OB.sheet === "review" ? sheetReview() : null;
+  const sheet = { profile: sheetProfile, focus: sheetFocus, review: sheetReview, market: sheetMarket, rivals: sheetRivals, topics: sheetTopics }[OB.sheet]?.() || null;
   const wasOpen = !$("#obSheet").hidden;
   $("#obSheet").hidden = !sheet;
   document.body.classList.toggle("sheet-open", !!sheet);
@@ -1438,6 +1567,7 @@ async function obTopics(more) {
   catch (e) { if (APP.ctl.signal.aborted) return; toast(esc(e.message)); }
   OB.gen = false;
   if (!OB.topics.length) { const p = OB.profile; (p.products?.length ? p.products.slice(0, 5) : [p.category || "Your category"]).forEach((name) => OB.topics.push({ name })); }
+  // Fresh topics open their review panel; "add more" on the topics step leaves the panel as the person had it.
   if (OB.step === "topicsGen" || OB.step === "topics") { OB.step = "topics"; obRender(); }
 }
 async function obPrompts(more) {
@@ -1467,8 +1597,9 @@ async function obPrompts(more) {
 
 /* ---- events (delegated; all state lives in OB, so re-rendering never loses typing) */
 $("#onboard").addEventListener("input", (e) => { const f = e.target.dataset.f; if (f && OB?.profile) OB.profile[f] = e.target.value; });
+// Esc closes a review panel from anywhere: after a click redraws the panel, focus is no longer inside #onboard.
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && OB?.sheet && OB.sheet !== "profile" && !$("#onboard").hidden && !document.querySelector(".modal")) { OB.sheet = null; obRender(); } });
 $("#onboard").addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && OB?.sheet && OB.sheet !== "profile") { OB.sheet = null; return obRender(); }
   const k = e.target.dataset.add; if (!k) return;
   if (e.key === "Backspace" && !e.target.value && OB.profile[k]?.length) { OB.profile[k].pop(); return obRender(); }
   if (e.key !== "Enter" && e.key !== ",") return;
@@ -1486,13 +1617,19 @@ $("#onboard").addEventListener("submit", (e) => {
   e.preventDefault(); const f = e.target.dataset.form, inp = e.target.querySelector("input"), v = inp.value.trim();
   if (f === "market") { if (!v) return inp.focus(); OB.profile.market = v; OB.profile.country = countryCode(v); return obGo("rivals"); }
   if (!v) return inp.focus();
+  if (f === "rival" && looksLikeSite(v)) {
+    if (OB.rivals.length >= PLANL.rivals()) return toast(`Your ${esc(PLANL.name())} plan tracks up to ${PLANL.rivals()} competitors per brand. Remove one to add another.`);
+    inp.value = ""; toast(`Reading ${esc(host(/^https?:/i.test(v) ? v : "https://" + v))}…`);
+    rivalFromSite(v).then((c) => { if (OB.rivals.some((r) => norm(r.name) === norm(c.name))) { const r = OB.rivals.find((x) => norm(x.name) === norm(c.name)); r.site = c.site; } else OB.rivals.push({ name: c.name, site: c.site, added: true }); toast(`Added ${esc(c.name)} (${esc(host(c.site))}).`); obRender(); });
+    return;
+  }
   if (f === "rival" && !OB.rivals.some((r) => norm(r.name) === norm(v))) { if (OB.rivals.length >= PLANL.rivals()) return toast(`Your ${esc(PLANL.name())} plan tracks up to ${PLANL.rivals()} competitors per brand. Remove one to add another, or upgrade in Plans &amp; payment.`); OB.rivals.push({ name: v, added: true }); }
   if (f === "topic" && !OB.topics.some((t) => norm(t.name) === norm(v))) OB.topics.push({ name: v });
   if (f === "prompt" && !OB.questions.some((q) => norm(q.text) === norm(v))) { if (OB.questions.filter((q) => q.on).length >= promptCap()) return toast(esc(promptMsg())); OB.questions.push({ topic: OB.reviewTopic || OB.topics[0]?.name || "General", intent: "commercial", persona: "", text: v, on: true }); }
   inp.value = ""; obRender(); setTimeout(() => (document.getElementById(inp.id) || e.target.querySelector("input"))?.focus(), 0);
 });
 $("#onboard").addEventListener("click", (e) => {
-  const b = e.target.closest("[data-go],[data-act],[data-rm],[data-rvx],[data-tpx],[data-market],[data-focus],[data-per],[data-samples],[data-seltopic],[data-rvtopic]");
+  const b = e.target.closest("[data-go],[data-act],[data-rm],[data-rvx],[data-tpx],[data-market],[data-focus],[data-per],[data-samples],[data-seltopic],[data-rvtopic],[data-seg],[data-pool],[data-poolall]");
   if (!b || b.getAttribute("aria-disabled") === "true") return;
   const d = b.dataset;
   if (d.rm) { const [k, i] = d.rm.split(":"); OB.profile[k].splice(+i, 1); return obRender(); }
@@ -1510,6 +1647,10 @@ $("#onboard").addEventListener("click", (e) => {
   if (a === "home") return obGo("home");
   if (a === "openProfile") return obSheet("profile");
   if (a === "profileOk") { if (!(OB.profile.name || "").trim()) { toast("Add your company name first."); return $("#ob-name")?.focus(); } OB.sheet = null; return obGo(OB.step === "profile" ? "market" : OB.step); }
+  if (d.seg != null) { if (OB.rivalsBusy) return; OB.profile.segment = d.seg; if (OB.pool?.length) { obApplySize(d.seg); return obRender(); } return obResuggest(); }
+  if (d.pool != null) return obTogglePool(+d.pool);
+  if (d.poolall != null) { const lim = PLANL.rivals(); for (const [i, c] of (OB.pool || []).entries()) if ((c.size === d.poolall) && !OB.rivals.some((r) => norm(r.name) === norm(c.name)) && OB.rivals.length < lim) OB.rivals.push({ name: c.name, size: c.size }); return obRender(); }
+  if (a === "focusAdd" && (OB.step === "rivals" || OB.step === "topics")) { obSheet(OB.step); return setTimeout(() => $(`#obSheetAdd-${OB.step === "rivals" ? "rival" : "topic"}`)?.focus(), 0); }
   if (a === "focusAdd") { const i = $("#obFrame input"); i?.focus(); i?.scrollIntoView({ block: "nearest" }); return; }
   if (a === "openFocus") return obSheet("focus");
   if (a === "genPrompts") { OB.sheet = null; return obGo("promptsGen"); }
@@ -1551,7 +1692,7 @@ async function obLaunch() {
    Sidebar workspace, filter chips, KPI strip, visibility chart, brand ranking, sources by domain and type,
    chats with a details panel, gap analysis, and the action deck. All numbers come from this run's answers. */
 const DASH = { page: "overview", eng: "all", chatFilter: "all", domFilter: "all" };
-const PAGES = { overview: ["Home", "Overview"], site: ["Home", "My website"], insights: ["Brand", "Insights"], perception: ["Brand", "Perception"], prompts: ["Prompts", "All prompts"], domains: ["Sources", "Domains"], gap: ["Sources", "Gap analysis"], actions: ["Optimize", "Actions"], ranking: ["Results", "Ranking"], chats: ["Results", "Chats"], fanouts: ["Results", "Fanouts"] };
+const PAGES = { overview: ["Home", "Overview"], site: ["Home", "My website"], rivals: ["Brand", "Competitors"], rival: ["Brand", "Competitors"], insights: ["Brand", "Insights"], perception: ["Brand", "Perception"], prompts: ["Prompts", "All prompts"], domains: ["Sources", "Domains"], gap: ["Sources", "Gap analysis"], actions: ["Optimize", "Actions"], ranking: ["Results", "Ranking"], chats: ["Results", "Chats"], fanouts: ["Results", "Fanouts"] };
 const BAR = ["#7AC231", "#9A1AF0", "#1F5FF5", "#1B35B0", "#14B8A6", "#E11D74", "#64748B", "#A16207"];
 const TYPEC = { You: "var(--petal)", Competitor: "#E2483D", UGC: "#3B82F6", Reviews: "#8B5CF6", Reference: "#14B8A6", Other: "#9A9AA0" };
 const pct = (v, d = 1) => (v == null ? "–" : (100 * v).toFixed(d).replace(/\.0$/, "") + "%");
@@ -1673,7 +1814,7 @@ function brandsTableHtml(M, m, limit = 5, title = "Top 5 brands") {
   const rows = m.brands.slice(0, limit); if (m.you && !rows.includes(m.you)) rows.push(m.you);
   return `<div class="card"><div class="card-h"><b>${title}</b><span title="Ranked by visibility across this view's answers.">${icon("info", 13)}</span>${limit < m.brands.length ? `<span class="sp"></span><button class="lnk" type="button" data-page="ranking">Show all</button>` : ""}</div>
     <table class="tbl"><thead><tr><th>#</th><th>Brand</th><th class="r">Visibility</th><th class="r">SoV</th><th class="r">Sentiment</th><th class="r">Position</th></tr></thead><tbody>
-    ${rows.map((b) => `<tr class="${b.you ? "you" : ""}"><td class="muted">${m.brands.indexOf(b) + 1}</td><td><span class="bcell">${brandAv(b, M)}<b>${esc(b.name)}</b>${b.you ? '<span class="youtag">You</span>' : ""}</span></td><td class="r">${pct(b.vis)}</td><td class="r">${pct(b.sov)}</td><td class="r">${sentHtml(b.sentiment)}</td><td class="r">${b.position ? b.position.toFixed(1) : '<span class="sk" style="width:28px"></span>'}</td></tr>`).join("")}
+    ${rows.map((b) => `<tr class="${b.you ? "you" : ""}"><td class="muted">${b.you ? (!b.mentions ? "–" : m.brands.filter((x) => x.you || x.tracked || x.mentions >= 2).indexOf(b) + 1) : m.brands.indexOf(b) + 1}</td><td><span class="bcell">${brandAv(b, M)}<b>${esc(b.name)}</b>${b.you ? '<span class="youtag">You</span>' : ""}</span></td><td class="r">${pct(b.vis)}</td><td class="r">${pct(b.sov)}</td><td class="r">${sentHtml(b.sentiment)}</td><td class="r">${b.position ? b.position.toFixed(1) : '<span class="sk" style="width:28px"></span>'}</td></tr>`).join("")}
     </tbody></table></div>`;
 }
 function topDomainsHtml(M, m, limit = 6) {
@@ -1776,12 +1917,12 @@ function filtersHtml(M) {
 function dashRender() {
   const M = APP.M; if (!M || $("#reportWrap").hidden) return;
   const [g, t] = PAGES[DASH.page] || PAGES.overview;
-  $$("#side [data-page]").forEach((b) => b.classList.toggle("on", b.dataset.page === DASH.page));
+  $$("#side [data-page]").forEach((b) => b.classList.toggle("on", b.dataset.page === (DASH.page === "rival" ? "rivals" : DASH.page)));
   const gapsN = RM.questionGaps(M, { engines: M.engines, isYou: (b) => isYou(b, M) }).length;
   if ($("#navGaps")) $("#navGaps").textContent = gapsN || "";
   $("#crumb").innerHTML = `<span class="muted">${g}</span>${icon("chev", 13)}<b>${t}</b>`;
   $("#filters").innerHTML = filtersHtml(M);
-  $("#filters").hidden = ["actions", "site", "perception", "settings"].includes(DASH.page);
+  $("#filters").hidden = ["actions", "site", "perception", "settings", "rivals"].includes(DASH.page);
   $("#rerun").hidden = !canEdit();
   // Hide what this person's role can't do (the server refuses it anyway): viewers change nothing, editors don't connect tools or delete brands.
   $("#reportWrap").classList.toggle("ro", !canEdit()); $("#reportWrap").classList.toggle("not-admin", !canAdmin());
@@ -1949,10 +2090,19 @@ async function pitchModal(url) {
 
 /* ---- dashboard events */
 $("#nav").addEventListener("click", (e) => { const b = e.target.closest("[data-page]"); if (b) { DASH.page = b.dataset.page; dashRender(); } });
+$("#reportWrap").addEventListener("submit", async (e) => { const f = e.target.closest("[data-rvform]"); if (!f) return; e.preventDefault(); const i = $("#rvAdd"), v = i.value.trim(); if (!v) return;
+  if (!looksLikeSite(v)) return rvChange("track", v);
+  toast(`Reading ${esc(host(/^https?:/i.test(v) ? v : "https://" + v))}…`); const c = await rivalFromSite(v);
+  if (c.read && APP.M) { APP.M.inspections ||= {}; APP.M.inspections[c.site] = { ...c.read, n: 0, qs: [], rivalSite: c.name }; }
+  await rvChange("track", c.name, c.site); toast(`Tracking ${esc(c.name)} (${esc(host(c.site))}).`, "ok"); });
 $("#reportWrap").addEventListener("click", (e) => {
   const t = e.target;
   const pg = t.closest(".main [data-page]"); if (pg) { const id = pg.dataset.card; DASH.page = pg.dataset.page; if (id) focusCard(id); dashRender(); return; }
   const card = t.closest("[data-card]"); if (card && DASH.page === "actions") { focusCard(card.dataset.card); return dashRender(); }
+  if (t.closest("[data-gomanage]")) { $("#ciManage")?.scrollIntoView({ behavior: "smooth", block: "start" }); $("#rvAdd")?.focus({ preventScroll: true }); return; }
+  const stc = t.closest("[data-story]"); if (stc) { DASH.story = stc.dataset.story; $("#ciStories").innerHTML = ciStories(ciData(APP.M)); return; }
+  const rvN = t.closest("[data-rival]"); if (rvN) { DASH.rival = rvN.dataset.rival; DASH.page = "rival"; return dashRender(); }
+  const rvA = t.closest("[data-rvact]"); if (rvA) return rvChange(rvA.dataset.rvact, rvA.dataset.name);
   const ch = t.closest("[data-chat]"); if (ch && !t.closest("a")) return openChat(ch.dataset.chat);
   const en = t.closest("[data-eng]"); if (en) { DASH.eng = en.dataset.eng; return dashRender(); }
   const cf = t.closest("[data-chatf]"); if (cf) { DASH.chatFilter = cf.dataset.chatf; return dashRender(); }
@@ -2037,6 +2187,216 @@ function trendPoints(M) {
   if (!pts.some((t) => Math.abs(t.at - M.startedAt) < 120000)) pts.push({ at: M.startedAt, visibility: cur.you?.vis, score: cur.score, leader: { name: cur.brands.find((b) => !b.you)?.name, vis: cur.brands.find((b) => !b.you)?.vis } });
   return pts.sort((a, b) => a.at - b.at).slice(-12);
 }
+/* ---------- competitors: who AI names instead of you, and what each rival is strong and weak at ----------
+   The maths lives in rival-model.js (tested). Here: the two pages, and the controls that let a person choose
+   their rivals (track, hide, star one as the main rival). Choices never change the headline score. */
+const RV = window.WP_RIVAL_MODEL;
+const rvPrefs = (M) => RV.normalizePrefs(DATA.company(M.slug)?.rivalPrefs);
+const rvProfiles = (M, run = M) => RV.profiles(run, { isYou: (b) => isYou(b, run), prefs: rvPrefs(M), engine: DASH.eng });
+const rvPrevRun = (M) => { const p = APP.prev?.slug === M.slug && APP.prev.id !== M.id ? APP.prev : store.get("prev:" + M.slug, null); return p && p.answers ? p : null; };
+async function rvChange(act, name, site = null) {
+  const M = APP.M, c = M && DATA.company(M.slug); if (!c || !canEdit() || !RV.canon(name)) return;
+  const same = (n) => RV.canon(n) === RV.canon(name), clean = String(name).trim().slice(0, 80);
+  let comps = [...(c.profile.competitors || [])], pr = rvPrefs(M);
+  const sites = { ...(c.profile.competitorSites || {}) }; if (site) sites[comps.find(same) || clean] = site;
+  if (act === "track" || act === "main") { if (!comps.some(same)) comps.push(clean); pr.ignored = pr.ignored.filter((n) => !same(n)); if (act === "main") pr.main = comps.find(same); }
+  else if (act === "untrack" || act === "ignore") { comps = comps.filter((n) => !same(n)); if (pr.main && same(pr.main)) pr.main = null; if (act === "ignore" && !pr.ignored.some(same)) pr.ignored.push(clean); }
+  else if (act === "restore") pr.ignored = pr.ignored.filter((n) => !same(n));
+  else if (act === "unmain") pr.main = null;
+  try {
+    for (const k of Object.keys(sites)) if (!comps.includes(k)) delete sites[k];
+    await DATA.saveCompany({ ...c, profile: { ...c.profile, competitors: comps, competitorSites: sites }, rivalPrefs: RV.normalizePrefs(pr) });
+    M.profile.competitors = comps; M.profile.competitorSites = sites; save(true);
+  } catch (e) { return toast(esc(e.message || "Couldn't save that change.")); }
+  dashRender();
+}
+const rvDelta = (now, was) => (was == null ? "" : now === was ? '<span class="dl">±0</span>' : `<span class="dl ${now > was ? "up" : "down"}">${now > was ? "+" : ""}${now - was}</span>`);
+const rvBtn = (act, name, ic, label, on = false) => `<button type="button" class="rv-b${on ? " on" : ""}" data-rvact="${act}" data-name="${esc(name)}" title="${esc(label)}" aria-label="${esc(label)}: ${esc(name)}" ${on ? 'aria-pressed="true"' : ""}>${icon(ic, 13)}</button>`;
+function rvActions(r, isMain) {
+  if (!canEdit() || r.you) return "";
+  return `<span class="rv-acts">${rvBtn(isMain ? "unmain" : "main", r.name, "bolt", isMain ? "Main rival. Click to unset" : "Make this your main rival", isMain)}${r.tracked ? rvBtn("untrack", r.name, "check", "Tracked. Click to stop tracking", true) : rvBtn("track", r.name, "plus", "Track this competitor")}${rvBtn("ignore", r.name, "x", "Hide this brand from your lists")}</span>`;
+}
+function rvLimitNote(P) {
+  const lim = PLANL.rivals(), n = P.all.filter((r) => r.tracked).length;
+  return `<span class="muted">${n}${lim === Infinity ? "" : ` of ${lim}`} tracked</span>`;
+}
+function rvManage(M) {
+  const prefs = rvPrefs(M), P = rvProfiles(M), main = RV.mainRival(P, prefs), prevRun = rvPrevRun(M), PP = prevRun ? rvProfiles(M, prevRun) : null;
+  const was = (r) => (PP ? PP.all.find((x) => x.key === r.key)?.score : null);
+  if (!P.n) return head("Competitors", "Who AI names instead of you.") + `<div class="card note"><div class="pad">${icon("rank", 16)} <b>No answers yet.</b> <span class="muted">Run a check and your rivals appear here.</span></div></div>`;
+  const shown = P.rivals.filter((r) => r.tracked || r.mentions >= 2).slice(0, 15), sugg = P.rivals.filter((r) => !r.tracked && r.mentions >= 1 && !shown.includes(r) && !isAssistant(r.name)).concat(P.rivals.filter((r) => !r.tracked && shown.includes(r))).slice(0, 8);
+  const row = (r) => { const isMain = main.rival?.key === r.key, w = was(r);
+    return `<tr class="${r.you ? "you" : ""}"><td><span class="bcell">${r.you ? brandAv({ you: true, name: r.name }, M) : letterAv(r.name)}${r.you ? `<b>${esc(r.name)}</b><span class="youtag">You</span>` : `<button type="button" class="rv-name" data-rival="${esc(r.key)}"><b>${esc(r.name)}</b></button>${isMain ? '<span class="tagx">Main rival</span>' : ""}${r.tracked ? "" : '<span class="tagx dim">Discovered</span>'}`}</span></td>
+      <td class="r"><b>${r.score}</b> ${rvDelta(r.score, w)}</td><td class="r"><span class="minibar"><i style="width:${(100 * r.vis).toFixed(0)}%"></i></span>${pct(r.vis, 0)}</td><td class="r">${r.position ? "#" + r.position.toFixed(1) : "–"}</td><td class="r">${pct(r.win, 0)}</td><td class="r">${rvActions(r, isMain)}</td></tr>`; };
+  const rows = [P.you, ...shown].filter(Boolean).sort((a, b) => b.score - a.score);
+  return `<section class="ci-sec" id="ciManage"><div class="ci-sh"><span class="n">06</span><h2>Manage competitors</h2><p>Track, hide or star a rival. Choices change what you see, never your own score.</p></div>` + (P.n < RV.MIN_ANSWERS ? `<div class="card note"><div class="pad muted">${icon("info", 14)} Based on ${P.n} answer${P.n === 1 ? "" : "s"}. Scores settle once a check has ${RV.MIN_ANSWERS}+ answers.</div></div>` : "")
+    + `<div class="card"><div class="card-h"><b>Leaderboard</b><span title="Scored the same way as your visibility score, against every brand AI named. Tracking or hiding a brand never changes your score.">${icon("info", 13)}</span><span class="sp"></span>${rvLimitNote(P)}</div>
+      <table class="tbl"><thead><tr><th>Brand</th><th class="r">Score</th><th class="r">Visibility</th><th class="r">Position</th><th class="r">Win rate</th><th class="r"></th></tr></thead><tbody>${rows.map(row).join("")}</tbody></table>
+      ${canEdit() ? `<form class="rv-add" data-rvform><input id="rvAdd" placeholder="Add a competitor by name" aria-label="Add a competitor" autocomplete="off"><button type="submit" class="btn ghost sm">${icon("plus", 13)}Track</button></form>` : ""}</div>`
+    + (sugg.length && canEdit() ? `<div class="card"><div class="card-h"><b>Suggested</b><span class="muted">Brands AI named that you don't track</span></div>${sugg.map((r) => `<div class="rv-sg"><span class="bcell">${letterAv(r.name)}<button type="button" class="rv-name" data-rival="${esc(r.key)}"><b>${esc(r.name)}</b></button></span><span class="muted">named in ${r.mentions} answer${r.mentions === 1 ? "" : "s"}</span><span class="sp"></span>${rvActions(r, false)}</div>`).join("")}</div>` : "")
+    + (P.ignored.length && canEdit() ? `<div class="card"><div class="card-h"><b>Hidden</b><span class="muted">Not shown in your lists. Your score still counts them.</span></div>${P.ignored.map((r) => `<div class="rv-sg"><span class="bcell">${letterAv(r.name)}<b>${esc(r.name)}</b></span><span class="sp"></span><button type="button" class="btn ghost sm" data-rvact="restore" data-name="${esc(r.name)}">Show again</button></div>`).join("")}</div>` : "")
+    + `</section>`;
+}
+PAGE.rivals = function (M) {
+  DASH.eng = "all"; // the page compares every engine side by side, so no single-engine filter applies here
+  if (!Object.values(M.answers || {}).some(finished)) return rvManage(M);
+  return ciDashboard(M) + rvManage(M);
+};
+/* ---------- competitive intelligence: one page that shows who wins, where, why, and what to copy ----------
+   The analysis is intel-model.js (tested). This draws it: share of recommendations per engine, the landscape, the buyer
+   journey, the pages behind the answers, and the playbook. Colour follows the brand: you are the petal, the five strongest
+   rivals keep fixed colours, everyone else is grey. Every mark has a hover note and a text label. */
+const CI = window.WP_INTEL, CI_SLOTS = ["#2a78d6", "#1baf7a", "#eda100", "#e87ba4", "#6250d6"], CI_YOU = "#e8742a", CI_OTHER = "#b8b6ae";
+const ciEng = (e) => ENG[e] || engLabel(e);
+function ciData(M) {
+  const prefs = rvPrefs(M), isY = (b) => isYou(b, M);
+  const mx = CI.engineMatrix(M, { isYou: isY, prefs }), P = mx.profiles, top5 = P.rivals.slice(0, 5);
+  const colorOf = (key) => (key === "you" ? CI_YOU : CI_SLOTS[top5.findIndex((r) => r.key === key)] || CI_OTHER);
+  return { M, prefs, mx, P, top5, colorOf, bg: CI.battleground(M, { isYou: isY, prefs }), src: CI.sourceMap(M, { isYou: isY, prefs }), pb: CI.playbook(M, { isYou: isY, prefs }) };
+}
+function ciShare(d) {
+  const rows = ["all", ...d.mx.engines].map((e) => { const p = e === "all" ? d.P : RV.profiles(d.M, { isYou: (b) => isYou(b, d.M), prefs: d.prefs, engine: e }); const total = p.all.filter((r) => !r.ignored).reduce((t, r) => t + r.mentions, 0) || 1;
+    const segs = [...d.top5.map((r) => ({ key: r.key, name: r.name, v: (p.all.find((b) => b.key === r.key)?.mentions || 0) / total })), { key: "you", name: d.M.profile.name, v: (p.you?.mentions || 0) / total }];
+    segs.push({ key: "other", name: "Other brands", v: Math.max(0, 1 - segs.reduce((t, s) => t + s.v, 0)) }); return { e, n: p.n, segs }; });
+  const W = 720, rowH = 48, L = 112, bw = W - L - 10;
+  const svg = `<svg viewBox="0 0 ${W} ${rows.length * rowH + 8}" class="ci-chart" role="img" aria-label="Share of AI recommendations by engine">${rows.map((r, i) => { let x = L; const y = i * rowH + 8;
+    return `<text x="0" y="${y + 19}" class="lab">${r.e === "all" ? "All engines" : ciEng(r.e)}</text><text x="0" y="${y + 34}" class="mut">${r.n} answers</text>` + r.segs.filter((s) => s.v > 0).map((s) => { const w = Math.max(0, s.v * bw - 2), c = s.key === "other" ? CI_OTHER : d.colorOf(s.key);
+      const g = `<rect x="${x.toFixed(1)}" y="${y + 6}" width="${w.toFixed(1)}" height="24" rx="4" fill="${c}" data-tip="${esc(s.name)} · ${pct(s.v, 0)} of brand mentions${r.e === "all" ? "" : " on " + ciEng(r.e)}"/>${w > 44 ? `<text x="${(x + w / 2).toFixed(1)}" y="${y + 22}" class="in" text-anchor="middle"${c === "#eda100" ? ' fill="#0b0b0b"' : ""}>${pct(s.v, 0)}</text>` : ""}`; x += s.v * bw; return g; }).join("")
+      + `<text x="${W - 10}" y="${y + 45}" class="mut you-t" text-anchor="end">you: ${pct(r.segs.find((s) => s.key === "you").v, 0)}</text>`; }).join("")}</svg>`;
+  const legend = `<div class="ci-legend">${[...d.top5.map((r) => [r.name, d.colorOf(r.key)]), [d.M.profile.name + " (you)", CI_YOU], ["Other brands", CI_OTHER]].map(([n, c]) => `<span><i style="background:${c}"></i>${esc(n)}</span>`).join("")}</div>`;
+  const all = rows[0], lead = all.segs[0];
+  return { svg: svg + legend, line: d.top5.length ? `${esc(lead.name)} takes ${pct(lead.v, 0)} of all brand mentions. ${esc(d.M.profile.name)} takes ${pct(all.segs.find((s) => s.key === "you").v, 0)}.` : "" };
+}
+function ciLandscape(d) {
+  const W = 720, H = 360, L = 50, R = 20, T = 20, B = 44, pts = d.P.all.filter((r) => !r.ignored && (r.you || r.mentions >= 2)), shown = (r) => r.you || d.top5.some((b) => b.key === r.key);
+  const maxV = Math.max(0.2, ...pts.map((r) => r.vis)), maxPos = Math.max(4, ...pts.filter((r) => r.position).map((r) => r.position));
+  const X = (v) => L + (v / maxV) * (W - L - R), Y = (p) => T + ((p - 1) / (maxPos - 1)) * (H - T - B - 40), rr = (s) => 6 + Math.sqrt(s) * 40, midX = X(maxV / 2), midY = Y(1 + (maxPos - 1) / 2);
+  const dot = (r) => { const c = d.colorOf(r.key), cx = X(r.vis), cy = r.position ? Y(r.position) : H - B + 4, rad = rr(r.sov), left = cx > W - 140;
+    return `<g ${r.you ? "" : `data-rival="${esc(r.key)}" class="ci-click"`} data-tip="${esc(r.name)} · named in ${pct(r.vis, 0)} of answers · ${r.position ? "average place #" + r.position.toFixed(1) : "never named"} · ${pct(r.sov, 0)} share of voice"><circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rad.toFixed(1)}" fill="${c}" fill-opacity="${shown(r) ? 0.9 : 0.45}" stroke="#fcfcfb" stroke-width="2"/>${shown(r) ? `<text x="${(left ? cx - rad - 6 : cx + rad + 5).toFixed(1)}" y="${(cy + 4).toFixed(1)}" class="lab${r.you ? " you-t" : ""}" ${left ? 'text-anchor="end"' : ""}>${esc(r.name)}</text>` : ""}</g>`; };
+  return `<svg viewBox="0 0 ${W} ${H}" class="ci-chart" role="img" aria-label="Competitive landscape: how often each brand is named against how early">
+    <rect x="${midX}" y="${T}" width="${W - R - midX}" height="${midY - T}" class="quad"/><text x="${W - R - 6}" y="${T + 16}" class="ql" text-anchor="end">LEADERS · named often, named early</text>
+    <text x="${L + 6}" y="${H - B - 40}" class="ql">NICHE · named early, rarely</text><text x="${W - R - 6}" y="${H - B - 40}" class="ql" text-anchor="end">CROWD · named often, late</text>
+    <line x1="${L}" y1="${H - B - 30}" x2="${W - R}" y2="${H - B - 30}" class="ax"/><line x1="${L}" y1="${T}" x2="${L}" y2="${H - B - 30}" class="ax"/><line x1="${midX}" y1="${T}" x2="${midX}" y2="${H - B - 30}" class="grid"/><line x1="${L}" y1="${midY}" x2="${W - R}" y2="${midY}" class="grid"/>
+    <text x="${L - 8}" y="${T + 4}" class="mut" text-anchor="end">#1</text><text x="${L - 8}" y="${H - B - 30}" class="mut" text-anchor="end">#${Math.round(maxPos)}</text>
+    ${[0, maxV / 2, maxV].map((v) => `<text x="${X(v)}" y="${H - B - 14}" class="mut" text-anchor="middle">${pct(v, 0)}</text>`).join("")}<text x="${W - R}" y="${H - B + 2}" class="mut" text-anchor="end">visibility →</text>
+    <line x1="${L}" y1="${H - B + 4}" x2="${W - R}" y2="${H - B + 4}" class="grid dash"/><text x="${L + 6}" y="${H - 8}" class="mut">not named by AI · hover any dot for its name</text>
+    ${[...pts].sort((a, b) => b.sov - a.sov).map(dot).join("")}</svg>`;
+}
+function ciMatrix(d) {
+  return `<table class="tbl ci-heat"><thead><tr><th>Brand</th><th class="r">Score</th>${d.mx.engines.map((e) => `<th class="c">${ciEng(e)}</th>`).join("")}</tr></thead><tbody>${d.mx.rows.slice(0, 10).map((r) => `<tr class="${r.you ? "you" : ""}"><td>${r.you ? `<b>${esc(r.name)}</b>` : `<button type="button" class="rv-name" data-rival="${esc(r.key)}"><b>${esc(r.name)}</b></button>`}</td><td class="r">${r.score}</td>${d.mx.engines.map((e) => { const v = r.engines[e].vis; return `<td class="c"><span class="${v >= 0.55 ? "d" : ""}" style="--v:${(v * 0.85).toFixed(2)}">${pct(v, 0)}</span></td>`; }).join("")}</tr>`).join("")}</tbody></table>
+    <p class="ci-insight">${d.mx.disagree.length ? esc(d.mx.disagree[0].text) : `At ${d.mx.rows[0]?.engines[d.mx.engines[0]]?.n || 0} answers per engine, no difference between engines is bigger than run-to-run noise yet.`}</p>`;
+}
+const CI_STATE = { led: ["#d03b3b", "▲", (p) => `Led by ${esc(p.owner)}`], contested: ["#fab219", "◆", () => "Contested"], open: ["#0ca30c", "●", () => "Open"], you: [CI_YOU, "★", (p) => `You're in · ${pct(p.youShare, 0)}`] };
+function ciJourney(d) {
+  const first = (p) => Object.values(d.M.answers || {}).find((a) => a.qid === p.id && finished(a));
+  return `<div class="ci-lanes">${["discovery", "consideration", "decision"].map((s, i) => `<div class="ci-lane"><div class="lh"><b>${["Learning", "Comparing", "Choosing"][i]}</b><span class="muted">${s} prompts</span></div>${d.bg.filter((p) => p.stage === s).map((p) => { const [c, ic, lab] = CI_STATE[p.status], a = first(p);
+    return `<button type="button" class="ci-node" style="--c:${c}" ${a ? `data-chat="${esc(a.qid + "|" + a.engine)}"` : ""} data-tip="${esc(p.brands.slice(0, 4).map((b) => b.name + " " + pct(b.share, 0)).join(" · ") || "No brand named")}"><span class="nt">${esc(p.text)}</span><span class="ns"><span class="st"><i>${ic}</i>${lab(p)}</span>${p.brands.slice(0, 3).map((b) => `<span class="bdot" style="--b:${d.colorOf(RV.canon(b.name))}"></span>`).join("")}</span></button>`; }).join("") || '<p class="muted sm">No prompts at this stage.</p>'}</div>`).join("")}</div>
+    <div class="ci-legend">${Object.entries(CI_STATE).map(([k, [c]]) => `<span><i style="background:${c}"></i>${{ led: "Led by a rival", contested: "Contested", open: "Open", you: "You're named" }[k]}</span>`).join("")}<span>Dots: the top 3 brands named. Click a prompt to read the answer.</span></div>`;
+}
+function ciWires(d) {
+  const doms = d.src.filter((s) => s.answers >= 2).slice(0, 9), brands = [...d.top5, d.P.you].filter(Boolean);
+  if (!doms.length) return '<p class="muted pad">No page was used in more than one answer yet. Run more prompts or engines to see the pages that decide.</p>';
+  const W = 720, H = Math.max(doms.length, brands.length) * 40 + 20, xl = 190, xr = 530, yd = (i) => 20 + i * ((H - 40) / Math.max(1, doms.length - 1)), yb = (i) => 20 + i * ((H - 40) / Math.max(1, brands.length - 1));
+  let paths = ""; doms.forEach((s, i) => brands.forEach((b, j) => { const n = b.you ? s.youIn : (s.brands.find((x) => RV.canon(x.name) === b.key)?.n || 0); if (!n) return;
+    paths += `<path d="M${xl},${yd(i)} C${(xl + xr) / 2},${yd(i)} ${(xl + xr) / 2},${yb(j)} ${xr},${yb(j)}" stroke="${d.colorOf(b.key)}" stroke-width="${1 + n * 1.6}" fill="none" stroke-opacity=".55" data-tip="${esc(s.domain)} and ${esc(b.name)}: together in ${n} answer${n === 1 ? "" : "s"}"/>`; }));
+  return `<svg viewBox="0 0 ${W} ${H}" class="ci-chart" role="img" aria-label="Pages behind the answers and the brands they appear with">${paths}
+    ${doms.map((s, i) => `<g data-tip="${esc(s.domain)} · ${esc(s.type)} · used in ${s.answers} answers"><text x="${xl - 12}" y="${yd(i) + 4}" class="lab" text-anchor="end">${esc(s.domain)}</text><text x="${xl - 12}" y="${yd(i) + 17}" class="mut sm" text-anchor="end">${esc(s.type)} · ${s.answers}</text><circle cx="${xl}" cy="${yd(i)}" r="5" fill="#52514e"/></g>`).join("")}
+    ${brands.map((b, j) => `<g ${b.you ? "" : `data-rival="${esc(b.key)}" class="ci-click"`}><circle cx="${xr}" cy="${yb(j)}" r="${b.you ? 9 : 7}" fill="${b.you ? "#fcfcfb" : d.colorOf(b.key)}" stroke="${d.colorOf(b.key)}" stroke-width="2" ${b.you ? 'stroke-dasharray="3 3"' : ""}/><text x="${xr + 16}" y="${yb(j) + 4}" class="lab${b.you ? " you-t" : ""}">${esc(b.name)}${b.you && !doms.some((s) => s.youIn) ? " · no pages yet" : ""}</text></g>`).join("")}</svg>`;
+}
+const CI_GO = { "own-content": ["gaps", "Draft these pages"], prompts: ["gaps", "Draft these pages"], "white-space": ["gaps", "Draft these pages"], listings: ["gap", "Draft pitches"], hubs: ["gap", "Draft pitches"], positioning: ["site", "Check your site"], "engine-gap": ["prompts", "See the prompts"] };
+function ciPlaybook(d) {
+  if (!d.pb.length) return '<p class="muted pad">Nothing stands out yet. Run more prompts or engines and the playbook fills in.</p>';
+  const W = 720, H = 300, L = 50, R = 20, T = 20, B = 40, EFF = { low: 0, medium: 1, high: 2 }, maxI = Math.max(...d.pb.map((s) => s.impact)), X = (e) => L + 60 + EFF[e] * ((W - L - R - 120) / 2), Y = (v) => T + (1 - v / maxI) * (H - T - B), placed = {};
+  const svg = `<svg viewBox="0 0 ${W} ${H}" class="ci-chart" role="img" aria-label="Playbook moves by effort and by how many answers back them">
+    <rect x="${L}" y="${T}" width="${(W - L - R) / 2}" height="${(H - T - B) / 2}" class="quad"/><text x="${L + 8}" y="${T + 16}" class="ql">DO FIRST · well backed, less effort</text>
+    <line x1="${L}" y1="${H - B}" x2="${W - R}" y2="${H - B}" class="ax"/><line x1="${L}" y1="${T}" x2="${L}" y2="${H - B}" class="ax"/>${["low", "medium", "high"].map((e) => `<text x="${X(e)}" y="${H - B + 18}" class="mut" text-anchor="middle">${e} effort</text>`).join("")}
+    <text x="${L - 8}" y="${T + 4}" class="mut" text-anchor="end">${maxI}</text><text x="${L - 8}" y="${H - B}" class="mut" text-anchor="end">0</text><text x="${L + 4}" y="${H - 6}" class="mut">answers backing the move ↑</text>
+    ${d.pb.map((s, i) => { const cy = Y(s.impact), col = (placed[s.effort] ||= []); const off = col.filter((y) => Math.abs(y - cy) < 26).length; col.push(cy); const cx = X(s.effort) + off * 30;
+      return `<g data-tip="${esc(s.title)} · backed by ${s.impact} answers · ${s.effort} effort"><circle cx="${cx}" cy="${cy}" r="12" fill="${CI_YOU}"/><text x="${cx}" y="${cy + 4}" class="in" text-anchor="middle">${i + 1}</text></g>`; }).join("")}</svg>`;
+  return `<div class="card ci-pad">${svg}</div><div class="ci-moves">${d.pb.map((s, i) => { const go = CI_GO[s.kind];
+    return `<article class="ci-move"><div class="h"><span class="k">${i + 1}</span><h3>${esc(s.title)}</h3></div><div class="ci-tags"><span>backed by ${s.impact} answer${s.impact === 1 ? "" : "s"}</span><span>${s.effort} effort</span><span>${s.rival ? "learned from " + esc(s.rival) : "category-wide"}</span></div>
+      <ul>${s.evidence.slice(0, 3).map((e) => `<li>${esc(e)}</li>`).join("")}</ul>${(s.urls || []).length ? `<div class="ci-links">${s.urls.map((u) => `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u.replace(/^https?:\/\/(www\.)?/, "").slice(0, 60))}</a>`).join("")}</div>` : ""}
+      <div class="ci-do"><div><b>Your move.</b> ${esc(s.move)}</div>${go ? `<button type="button" class="btn ghost sm" data-page="${go[0]}">${go[1]} ${icon("chev", 12)}</button>` : ""}</div></article>`; }).join("")}</div>`;
+}
+/* Rival playbooks: how one rival wins, in words, with the evidence, and what to change. story-model.js does the analysis. */
+const STORY = window.WP_STORY;
+const stTag = (p) => (p.own ? '<span class="st-tag own">their own site</span>' : p.unreadable ? '<span class="st-tag">couldn\'t read: blocks readers</span>' : p.namesRival ? `<span class="st-tag">names them${p.namesYou ? ", and you" : ", not you"}</span>` : p.type === "Forum" ? '<span class="st-tag">forum thread</span>' : '<span class="st-tag">not read yet</span>');
+function ciStories(d) {
+  const M = d.M, pages = {};
+  for (const p of Object.values(M.inspections || {})) if (p && p.features) { pages[p.url] = p.features; if (p.final) pages[p.final] = p.features; }
+  const yours = (M.audit?.pages || []).filter((p) => p.features).map((p) => ({ url: p.url, features: p.features }));
+  const cands = [...d.P.rivals.filter((r) => r.tracked), ...d.P.rivals.filter((r) => !r.tracked && r.mentions >= 2 && !isAssistant(r.name))].slice(0, 8);
+  const lim = PLANL.rivals(), nTracked = d.P.all.filter((r) => r.tracked).length;
+  const choose = canEdit() ? `<button type="button" class="st-choose" data-gomanage>${icon("plus", 13)}Choose competitors <span>${nTracked}${lim === Infinity ? "" : ` of ${lim}`} tracked</span></button>` : "";
+  if (!cands.length) return `<div class="st-chips">${choose}</div><p class="muted pad">No rival was named in these answers yet. Choose the competitors you want to follow.</p>`;
+  const main = RV.mainRival(d.P, d.prefs).rival, pick = cands.find((r) => r.key === DASH.story) || cands.find((r) => r.key === main?.key) || cands[0];
+  const s = STORY.rivalStory(M, pick.name, { isYou: (b) => isYou(b, M), prefs: d.prefs, pages, yours });
+  const chips = `<div class="st-chips" role="tablist" aria-label="Choose a rival">${cands.map((r) => `<button type="button" role="tab" data-story="${esc(r.key)}" aria-selected="${r.key === pick.key}"><i style="background:${d.colorOf(r.key)}"></i>${esc(r.name)}<span>${r.mentions || "not named"}</span></button>`).join("")}${choose}</div>`;
+  if (!s) return chips + '<p class="muted pad">Not enough answers about this rival yet.</p>';
+  if (s.notNamed) {
+    const rowsN = s.checks.filter((c) => c.they || c.you), tbl = s.siteRead ? `<table class="tbl st-vs"><thead><tr><th>What AI can quote</th><th>${esc(host(s.site))}</th><th>Your site</th></tr></thead><tbody>${rowsN.map((c) => `<tr><td title="${esc(c.why)}">${esc(c.label)}</td><td>${c.they ? `<span class="st-y">✓</span> ${c.they.sample ? `<span class="muted sm">“${esc(c.they.sample)}”</span>` : ""}` : '<span class="muted">–</span>'}</td><td>${c.you ? `<span class="st-y">✓</span> <span class="muted sm">${esc(c.you.short)}</span>` : s.yoursRead ? '<span class="st-n">✗ missing</span>' : '<span class="muted sm">not read yet</span>'}</td></tr>`).join("") || '<tr><td colspan="3" class="muted">Neither site shows any of these yet.</td></tr>'}</tbody></table>`
+      : s.siteUnreadable ? `<p class="muted sm">${esc(host(s.site))} blocks readers or needs JavaScript, so its content couldn't be read.</p>`
+      : s.site ? `<p class="muted sm">${esc(host(s.site))} will be read on the next check.</p>` : `<p class="muted sm">Add ${esc(s.rival)}'s website in <button type="button" class="lnk" data-gomanage>Choose competitors</button> (paste the address) and the next check compares their site with yours.</p>`;
+    return chips + `<article class="st-card"><header class="st-head"><h3>AI didn't name ${esc(s.rival)} in any of the ${s.of} answers</h3><p>So there's nothing to copy from the answers yet.${s.leaders.length ? ` For these prompts AI recommends ${esc(s.leaders.join(", "))} instead: neither you nor ${esc(s.rival)} is in the answers.` : ""} It stays tracked, so the next check shows it if AI starts naming it.</p></header>
+      <div class="st-cols"><div class="st-why"><h4>${esc(s.rival)}'s site vs yours</h4>${tbl}</div><div class="st-do"><h4>What this means</h4><ol class="st-moves"><li><h5>Compete for the same prompts first</h5><p class="muted sm">${s.leaders.length ? `Open ${esc(s.leaders[0])}'s card above to see what AI rewards for these questions.` : "Run more prompts to see who AI recommends."}</p></li>${s.siteRead ? `<li><h5>Close the site gaps before ${esc(s.rival)} does</h5><p class="muted sm">Anything their site has and yours is missing is a head start they could use.</p></li>` : ""}</ol></div></div></article>`;
+  }
+  const eng = s.engines.map((e) => `${ciEng(e.e)} ${pct(e.vis, 0)}`).join(", ");
+  const summary = `AI names ${esc(s.rival)} in ${s.named} of ${s.of} answers (${eng})${s.leads.length ? ` and puts it first for ${s.leads.length} prompt${s.leads.length === 1 ? "" : "s"}` : ""}. ${s.absent.length ? `It's named in ${s.absent.length} prompt${s.absent.length === 1 ? "" : "s"} where you never are.` : "You're named wherever it is."}`;
+  const rows = s.checks.filter((c) => c.they || c.you);
+  const table = !s.read ? `<p class="muted sm">None of the pages behind ${esc(s.rival)}'s answers were read in this check. Run again and Perfstaq reads them, then compares them with yours.</p>`
+    : `<table class="tbl st-vs"><thead><tr><th>What AI can quote</th><th>${esc(s.rival)}'s pages <span class="muted sm">(${s.read} of ${s.pages.filter((p) => !p.unreadable && p.type !== "Forum").length} read)</span></th><th>Your site <span class="muted sm">(${s.yoursRead} read)</span></th></tr></thead><tbody>${rows.map((c) => `<tr><td title="${esc(c.why)}">${esc(c.label)}</td><td>${c.they ? `<span class="st-y">✓</span> ${c.they.sample ? `<span class="muted sm">“${esc(c.they.sample)}”</span>` : `<span class="muted sm">${esc(c.they.short)}</span>`}` : '<span class="muted">–</span>'}</td><td>${c.you ? `<span class="st-y">✓</span> <span class="muted sm">${esc(c.you.short)}</span>` : s.yoursRead ? '<span class="st-n">✗ missing</span>' : '<span class="muted sm">not read yet</span>'}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Neither side's pages show any of these yet.</td></tr>`}</tbody></table>`;
+  const go = (m) => (m.go ? `<button type="button" class="btn sm" data-page="${m.go[0]}">${m.go[1]} ${icon("chev", 12)}</button>` : (m.urls || []).map((u) => `<a class="btn ghost sm" href="${esc(u)}" target="_blank" rel="noopener noreferrer">Open thread</a>`).slice(0, 1).join(""));
+  return chips + `<article class="st-card"><header class="st-head"><h3>How ${esc(s.rival)} wins</h3><p>${summary}</p></header><div class="st-cols">
+    <div class="st-why"><h4>Why AI picks ${esc(s.rival)}</h4>
+      ${s.says.length ? `<div class="st-block"><b>What the answers say</b>${s.says.map((x) => `<blockquote>“${esc(x.text)}”<cite>${ciEng(x.engine)}</cite></blockquote>`).join("")}</div>` : ""}
+      <div class="st-block"><b>What AI read</b>${s.pages.length ? `<ul class="st-pages">${s.pages.map((p) => `<li><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.short.length > 64 ? p.short.slice(0, 63) + "…" : p.short)}</a> ${stTag(p)} <span class="muted sm">used in ${p.n} answer${p.n === 1 ? "" : "s"}</span></li>`).join("")}</ul>` : '<p class="muted sm">No page that is theirs or names them.</p>'}</div>
+      <div class="st-block"><b>Their pages vs yours</b>${table}</div></div>
+    <div class="st-do"><h4>What you change</h4><ol class="st-moves">${s.moves.map((m) => `<li><h5>${esc(m.title)}</h5><p class="muted sm">${esc(m.why)}</p><ul>${m.steps.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>${go(m)}</li>`).join("") || '<li class="muted">Nothing to change for this rival yet.</li>'}</ol></div>
+  </div></article>`;
+}
+
+function ciDashboard(M) {
+  const d = ciData(M), P = d.P, you = P.you, led = d.bg.filter((p) => p.status === "led"), open = d.bg.filter((p) => p.status === "open" || p.status === "contested");
+  const hubs = d.src.filter((s) => !s.owner && s.youIn === 0 && s.brands.length >= 3 && s.answers >= 2), lead = d.mx.leader, share = ciShare(d);
+  const sec = (n, h, p, body) => `<section class="ci-sec"><div class="ci-sh"><span class="n">${n}</span><h2>${h}</h2><p>${p}</p></div>${body}</section>`;
+  const kpi = (big, lab, sub, cls = "") => `<div class="ci-kpi ${cls}"><span class="kl">${lab}</span><b>${big}</b><span class="ks">${sub}</span></div>`;
+  return `<div class="ci">
+    <div class="ci-hero"><div><span class="eyebrow">Competitive intelligence · ${esc(M.profile.name)}${M.profile.market ? " · " + esc(M.profile.market) : ""}</span>
+      <h1>${you?.mentions ? `You're #${P.rank} of ${P.of} in AI recommendations` : "AI recommends your rivals, not you, yet"}</h1>
+      <p>${esc(RV.verdict(P, RV.mainRival(P, d.prefs)))} Across ${P.n} live answers from ${d.mx.engines.map(ciEng).join(", ")}, ${led.length} of ${d.bg.length} buyer prompts are led by a rival and ${open.length} are still up for grabs.</p></div>
+      <div class="vs"><div class="vbox you"><span>Your AI visibility score</span><b>${you?.score ?? 0}</b><span>named in ${you?.mentions || 0} of ${P.n} answers</span></div><div class="vmid">vs</div><div class="vbox"><span>${esc(lead?.name || "Leader")}</span><b>${lead?.score ?? 0}</b><span>named in ${pct(lead?.vis || 0, 0)} of answers</span></div></div></div>
+    <div class="ci-kpis">${kpi(`${led.length} / ${d.bg.length}`, "Prompts led by a rival", "named first in most answers", "alert")}${kpi(open.length, "Prompts up for grabs", "no clear winner yet", "good")}${kpi(hubs.length, "Shared pages to get onto", "rivals listed there, you're not")}${kpi(d.pb.length, "Moves in your playbook", "ranked by evidence")}</div>
+    ${sec("", "How each rival wins", "Pick a rival: why AI recommends it, the pages behind that, and what you change to compete.", `<div id="ciStories">${ciStories(d)}</div>`)}
+    <details class="ci-more"><summary><b>Charts and numbers</b><span class="muted">Share of voice, the landscape, the buyer journey, the pages behind the answers and the effort map</span></summary>
+    ${sec("01", "Share of AI recommendations", "Of every brand mention in the answers, how much each brand gets, on each engine.", `<div class="card ci-pad">${share.svg}${share.line ? `<p class="ci-insight">${share.line}</p>` : ""}</div>`)}
+    ${sec("02", "The competitive landscape", "Further right: named in more answers. Higher: named earlier in them. Bigger: more of the conversation. Click a brand for its full breakdown.", `<div class="ci-g2"><div class="card ci-pad">${ciLandscape(d)}</div><div class="card ci-pad">${ciMatrix(d)}</div></div>`)}
+    ${sec("03", "The buyer journey", "Every prompt where buyers learn, compare and choose, and who AI puts in front of them.", ciJourney(d))}
+    ${sec("04", "The pages behind the answers", "Pages the engines read when they answered, wired to the brands those answers named. Thicker wire: more answers.", `<div class="card ci-pad">${ciWires(d)}</div>`)}
+    ${sec("05", "Your playbook", "What AI rewards in this category, turned into moves. Top left of the matrix: do first.", ciPlaybook(d))}
+    </details>
+    <p class="ci-foot">Based on ${P.n} live AI answers to ${M.questions.length} buyer prompts that never name ${esc(M.profile.name)}. Scores use your visibility-score formula. Wires and "backed by" are associations seen in the answers, not proof of cause. A difference between engines is shown only when it is bigger than run-to-run noise.</p>
+  </div>`;
+}
+(() => { const tip = document.createElement("div"); tip.className = "ci-tip"; tip.setAttribute("role", "tooltip"); document.body.append(tip);
+  document.addEventListener("mousemove", (e) => { const t = e.target.closest?.(".ci [data-tip]"); if (!t) { tip.style.opacity = 0; return; } tip.textContent = t.getAttribute("data-tip"); tip.style.opacity = 1;
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = e.clientY + 14 + "px"; }); })();
+
+const rvList = (items, empty) => (items.length ? `<ul class="rv-ul">${items.slice(0, 5).map((i) => `<li>${esc(i.text)}${(i.prompts || []).length ? `<div class="rv-pr">${i.prompts.map((p) => { const a = Object.values(M0().answers).find((x) => x.qid === p.id && finished(x)); return `<button type="button" class="rv-p" ${a ? `data-chat="${esc(a.qid + "|" + a.engine)}"` : ""}>${esc(p.text)}</button>`; }).join("")}</div>` : ""}${(i.sources || []).length ? `<div class="rv-pr">${i.sources.map((s) => `<a class="rv-p" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.domain || host(s.url))}${s.you ? " · you're on it" : ""}</a>`).join("")}</div>` : ""}</li>`).join("")}</ul>` : `<p class="muted pad">${empty}</p>`);
+const M0 = () => APP.M;
+PAGE.rival = function (M) {
+  const prefs = rvPrefs(M), P = rvProfiles(M), r = P.all.find((x) => x.key === DASH.rival && !x.you);
+  const back = `<button type="button" class="lnk" data-page="rivals">${icon("chev", 12)} All competitors</button>`;
+  if (!r) return `<div class="pg-hd"><h2>Competitor not found</h2><p>${back}</p></div>`;
+  const main = RV.mainRival(P, prefs), isMain = main.rival?.key === r.key, x = RV.strengthsAndWeaknesses(M, r.name, { isYou: (b) => isYou(b, M), engine: DASH.eng });
+  const box = (t, sub, items, empty) => `<div class="card"><div class="card-h"><b>${t}</b><span class="muted">${sub}</span></div>${rvList(items, empty)}</div>`;
+  return `<div class="pg-hd"><p>${back}</p><h2 class="rv-h">${letterAv(r.name)}${esc(r.name)}${isMain ? ' <span class="tagx">Main rival</span>' : ""}${r.tracked ? "" : ' <span class="tagx dim">Discovered</span>'}${r.ignored ? ' <span class="tagx dim">Hidden</span>' : ""}</h2>
+      <p>Score <b>${r.score}</b> vs your <b>${P.you?.score ?? 0}</b>. Named in ${pct(r.vis, 0)} of answers, you in ${pct(P.you?.vis || 0, 0)}. ${rvActions(r, isMain)}${r.ignored && canEdit() ? `<button type="button" class="btn ghost sm" data-rvact="restore" data-name="${esc(r.name)}">Show again</button>` : ""}</p></div>`
+    + (x.enough ? "" : `<div class="card note"><div class="pad muted">${icon("info", 14)} Only ${x.n} answer${x.n === 1 ? "" : "s"} so far. Strengths and weaknesses need ${RV.MIN_ANSWERS}+ answers, so none are claimed yet.</div></div>`)
+    + `<div class="grid2">${box("Where you win", "Protect these", x.youWin, "Nothing stands out yet.")}${box("Where you're weak", "Biggest first", x.youWeak, "Nothing stands out yet.")}
+      ${box("Where they're strong", "Why they're hard to beat", x.theyStrong, "Nothing stands out yet.")}${box("Where they're vulnerable", "Where you can overtake", x.theyVulnerable, "Nothing stands out yet.")}</div>`
+    + `<p class="muted rv-foot">Based on ${x.n} AI answers in this view. A strength or weakness is shown only when the gap is bigger than run-to-run noise. These are counts of what AI said, not proof of why.</p>`;
+};
+
 function trendHtml(M) {
   const pts = trendPoints(M);
   if (pts.length < 2) return `<div class="card note"><div class="pad">${icon("rank", 16)} <b>Trends start with your second check.</b> <span class="muted">${DATA.server() ? `Turn on weekly checks in <button type="button" class="lnk" data-page="settings">Settings</button> and Perfstaq re-runs every prompt on its own.` : "Run the check again next week to see what moved."}</span></div></div>`;
@@ -2167,6 +2527,7 @@ Object.assign(PAGE, {
       <p class="st-foot">Each check collects about ${prompts * M.engines.length * samples} AI answers: ${prompts} prompts × ${M.engines.length} engine${M.engines.length === 1 ? "" : "s"} (${M.engines.map((e) => ENG[e]).join(", ")}) × ${samples}.</p>`;
     if (tab === "tracked") body = `<div class="card st-card">
         ${row("Prompts", "The buyer questions we ask AI for you.", `<span class="st-v">${prompts}${(c.topics || []).length ? ` <span class="muted">in ${(c.topics || []).length} topics</span>` : ""}</span>`)}
+        ${row("Who you sell to", esc(SEG_LABEL[M.profile.segment] || "All sizes"), "")}
         ${row("Competitors", esc((M.profile.competitors || []).slice(0, 6).join(", ")) || "None yet", `<span class="st-v">${(M.profile.competitors || []).length}</span>`)}
         ${row("Website", esc(host(M.profile.site || "")), `<button type="button" class="btn ghost sm" data-editsetup>Edit prompts and competitors</button>`)}
       </div>`;
@@ -2812,6 +3173,7 @@ async function openTeam(focus) {
     TEAM.bill = await api("GET", "/api/billing"); if (!BILL.cat) BILL.cat = await fetch("/api/billing/plans").then((r) => r.json());
     if (!BILL.ccy || !BILL.cat.currencies.includes(BILL.ccy)) BILL.ccy = BILL.cat.currencies.includes(guessCcy()) ? guessCcy() : BILL.cat.currencies[0];
     TEAM.audit = canAdmin() ? (await api("GET", "/api/org/audit")).log : null;
+    if (canAdmin() && !DATA.list.length) await DATA.refresh();
   } catch (e) { $("#teamBody").innerHTML = `<p class="err pad">${esc(e.message)}</p>`; return; }
   paintTeam();
   if (focus) setTimeout(() => $(focus)?.scrollIntoView({ behavior: "smooth", block: "start" }), 60);
@@ -2823,12 +3185,16 @@ function paintTeam() {
     const self = m.id === d.me, editable = admin && m.role !== "owner" && !self;
     const roleCell = editable ? `<select class="sel" data-role="${esc(m.id)}">${["admin", "editor", "viewer"].map((r) => `<option value="${r}" ${m.role === r ? "selected" : ""}>${ROLE_LABEL[r]}</option>`).join("")}${owner ? `<option value="owner">Make owner…</option>` : ""}</select>` : `<span class="pillx ${m.role === "owner" ? "ok" : ""}">${ROLE_LABEL[m.role]}</span>`;
     const act = editable ? `<button type="button" class="lnk sm" data-remove="${esc(m.id)}">Remove</button>` : self && m.role !== "owner" ? `<button type="button" class="lnk sm" data-remove="${esc(m.id)}" data-self="1">Leave</button>` : "";
-    return `<tr><td><b>${esc(m.name || m.email.split("@")[0])}</b>${self ? ' <span class="tagx">You</span>' : ""}<div class="muted sm">${esc(m.email)}</div></td><td>${roleCell}</td><td class="muted sm hide-sm">${fmtDay(m.joined_at)}</td><td class="muted sm hide-sm">${m.last_login_at ? fmtDay(m.last_login_at) : "never"}</td><td class="r">${act}</td></tr>`;
+    const canLimit = admin && !self && ["editor", "viewer"].includes(m.role);
+    const brandsCell = `${accessText(m)}${canLimit ? ` <button type="button" class="lnk sm" data-access="${esc(m.id)}">Change</button>` : ""}`;
+    const editor = TEAM.editAccess === m.id ? `<tr class="acc-row"><td colspan="6">${accessPicker("acc", m.allBrands === false ? (m.brands || []).map((b) => b.slug) : null)}<div class="srow"><span class="muted sm">${esc(m.email)} will only see the brands you pick. Admins always see every brand.</span><span><button type="button" class="btn ghost sm" data-accesscancel>Cancel</button> <button type="button" class="btn sm" data-accesssave="${esc(m.id)}">Save access</button></span></div></td></tr>` : "";
+    return `<tr><td><b>${esc(m.name || m.email.split("@")[0])}</b>${self ? ' <span class="tagx">You</span>' : ""}<div class="muted sm">${esc(m.email)}</div></td><td>${roleCell}</td><td class="sm">${brandsCell}</td><td class="muted sm hide-sm">${fmtDay(m.joined_at)}</td><td class="muted sm hide-sm">${m.last_login_at ? fmtDay(m.last_login_at) : "never"}</td><td class="r">${act}</td></tr>${editor}`;
   }).join("");
   const invites = admin ? `<div class="card" id="teamInvite"><div class="card-h"><b>Invite someone</b><span class="muted">The link works for 7 days, once</span></div><div class="pad set">
-      <form class="team-inv" id="inviteForm"><input class="inp" id="invEmail" type="email" placeholder="name@company.com" required autocomplete="off"><select class="sel" id="invRole">${["editor", "viewer", "admin"].map((r) => `<option value="${r}">${ROLE_LABEL[r]}: ${ROLE_HELP[r]}</option>`).join("")}</select><button class="btn sm" type="submit">Send invite</button></form>
+      <form class="team-inv" id="inviteForm"><input class="inp" id="invEmail" type="email" placeholder="name@company.com" required autocomplete="off"><select class="sel" id="invRole">${["editor", "viewer", "admin"].map((r) => `<option value="${r}">${ROLE_LABEL[r]}: ${ROLE_HELP[r]}</option>`).join("")}</select><select class="sel" id="invAccess" aria-label="Which brands they see"><option value="all">Every brand</option><option value="some">Only some brands…</option></select><button class="btn sm" type="submit">Send invite</button></form>
+      <div id="invBrands" hidden>${accessPicker("inv", [])}<p class="muted sm">Inviting a client? Pick only their brand: they won't see your other brands or your team.</p></div>
       ${TEAM.lastLink ? `<div class="team-link"><span class="muted sm">${TEAM.lastLink.emailed ? `Emailed to ${esc(TEAM.lastLink.email)}. You can also share this link:` : `Email isn't set up yet, so share this link with ${esc(TEAM.lastLink.email)} yourself:`}</span><div class="srow"><code class="ell">${esc(TEAM.lastLink.link)}</code><button type="button" class="btn ghost sm" data-copy="${esc(TEAM.lastLink.link)}">Copy link</button></div></div>` : ""}
-      ${d.invites.length ? `<table class="tbl"><thead><tr><th>Waiting for</th><th>Role</th><th>Expires</th><th></th></tr></thead><tbody>${d.invites.map((i) => `<tr><td>${esc(i.email)}<div class="muted sm">invited by ${esc(i.invited_by || "–")}</div></td><td><span class="pillx">${ROLE_LABEL[i.role]}</span></td><td class="muted sm">${fmtDay(i.expires_at)}</td><td class="r"><button type="button" class="lnk sm" data-revoke="${esc(i.id)}">Cancel</button></td></tr>`).join("")}</tbody></table>` : ""}
+      ${d.invites.length ? `<table class="tbl"><thead><tr><th>Waiting for</th><th>Role</th><th>Brands</th><th>Expires</th><th></th></tr></thead><tbody>${d.invites.map((i) => `<tr><td>${esc(i.email)}<div class="muted sm">invited by ${esc(i.invited_by || "–")}</div></td><td><span class="pillx">${ROLE_LABEL[i.role]}</span></td><td class="sm">${accessText({ role: i.role, allBrands: !i.brands, brands: i.brands })}</td><td class="muted sm">${fmtDay(i.expires_at)}</td><td class="r"><button type="button" class="lnk sm" data-revoke="${esc(i.id)}">Cancel</button></td></tr>`).join("")}</tbody></table>` : ""}
     </div></div>` : "";
   const keys = d.keys ? `<div class="card" id="teamKeys"><div class="card-h">${icon("key", 15)}<b>AI keys</b><span class="muted">${o.allowPlatformKeys ? "Keys you add here are used first; the rest fall back to Perfstaq's" : "Checks run on these keys only, so the spend is on your accounts"}</span></div><div class="pad set">
       <table class="tbl"><thead><tr><th>Service</th><th>Status</th><th>New value</th><th></th></tr></thead><tbody>${d.keys.map((k) => `<tr><td><b>${esc(k.label)}</b><div class="muted sm"><code>${esc(k.name)}</code></div></td><td>${k.set ? `<span class="pillx ok">Set ${esc(k.hint)}</span>` : k.platform ? `<span class="pillx">Using Perfstaq's</span>` : `<span class="pillx no">Not set</span>`}</td><td><input class="inp" type="password" autocomplete="off" data-key="${esc(k.name)}" placeholder="${k.set ? "Paste to replace" : "Paste key"}"></td><td class="r">${k.set ? `<button type="button" class="lnk sm" data-clearkey="${esc(k.name)}">Remove</button>` : ""}</td></tr>`).join("")}</tbody></table>
@@ -2844,11 +3210,24 @@ function paintTeam() {
     </div></div>` : `<div class="card"><div class="card-h"><b>Budget</b></div><div class="pad set">${cap.cap ? meter : `<p class="muted sm">No monthly limit set.</p>`}</div></div>`;
   const audit = TEAM.audit ? `<div class="card"><div class="card-h"><b>Activity</b><span class="muted">Who changed what</span></div><table class="tbl"><thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead><tbody>${TEAM.audit.slice(0, 60).map((a) => `<tr><td class="muted sm">${fmtWhen(a.at)}</td><td class="sm">${esc(a.who || "Perfstaq")}</td><td class="sm">${esc(auditWords(a))}</td></tr>`).join("") || `<tr><td colspan="3" class="muted">Nothing yet.</td></tr>`}</tbody></table></div>` : "";
   const verify = APP.user && !APP.user.verified ? `<div class="card note"><div class="pad">${icon("info", 16)} <b>Confirm your email.</b> <span class="muted">We sent a link to ${esc(APP.user.email)} when you signed up. Some things, like operator access, wait for it.</span><button type="button" class="btn ghost sm" data-sendverify>Send it again</button></div></div>` : "";
-  $("#teamBody").innerHTML = verify + `<div class="team-head"><div><span class="lp-kicker">Organisation</span><h1>${esc(o.name)}</h1><p class="muted">You're ${o.operatorVisit ? "visiting as a Perfstaq operator (logged)" : `${{ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[o.role]}`} · ${d.members.length} ${d.members.length === 1 ? "person" : "people"}</p></div>${switcher}</div>
-    <div class="card"><div class="card-h">${icon("team", 15)}<b>People</b><span class="muted">Owner and admins manage people and keys; editors do the work; viewers watch</span></div><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th class="hide-sm">Joined</th><th class="hide-sm">Last sign-in</th><th></th></tr></thead><tbody>${memberRows}</tbody></table></div>
+  $("#teamBody").innerHTML = verify + `<div class="team-head"><div><span class="lp-kicker">Organisation</span><h1>${esc(o.name)}</h1><p class="muted">You're ${o.operatorVisit ? "visiting as a Perfstaq operator (logged)" : `${{ owner: "the owner", admin: "an admin", editor: "an editor", viewer: "a viewer" }[o.role]}`} · ${d.access === "some" ? `you see ${esc(((d.members.find((m) => m.id === d.me) || {}).brands || []).map((b) => b.name).join(", ") || "no brands yet")}` : `${d.members.length} ${d.members.length === 1 ? "person" : "people"}`}</p></div>${switcher}</div>
+    <div class="card"><div class="card-h">${icon("team", 15)}<b>People</b><span class="muted">Owner and admins manage people and keys; editors do the work; viewers watch</span></div><table class="tbl"><thead><tr><th>Person</th><th>Role</th><th>Brands</th><th class="hide-sm">Joined</th><th class="hide-sm">Last sign-in</th><th></th></tr></thead><tbody>${memberRows}</tbody></table></div>
     ${billingLink()}${invites}${keys}${budget}${audit}`;
 }
-const AUDIT_WORDS = { "org.created": "created the organisation", "invite.sent": "invited", "invite.accepted": "joined", "invite.revoked": "cancelled the invite for", "role.changed": "changed the role of", "owner.transferred": "handed ownership to", "member.removed": "removed", "member.left": "left", "keys.changed": "changed AI keys:", "org.updated": "changed settings", "brand.deleted": "deleted the brand", "brand.moved_in": "moved in the brand", "brand.moved_out": "moved out the brand", "integration.saved": "connected", "integration.removed": "disconnected", "check.queued": "queued a check of", "check.skipped": "skipped a scheduled check of", "operator.visit": "opened the organisation as an operator" };
+// Brand access (who sees which brands): text for a person or an invite, and the brand picker used by both.
+function accessText(m) {
+  if (["owner", "admin"].includes(m.role) || m.allBrands !== false) return '<span class="muted">All brands</span>';
+  return (m.brands || []).length ? m.brands.map((b) => `<span class="tagx">${esc(b.name)}</span>`).join(" ") : '<span class="pillx no">No brands</span>';
+}
+function accessPicker(id, chosen) {
+  const brands = DATA.list.filter((w) => !w.parent);
+  if (!brands.length) return '<p class="muted sm">Add a brand first.</p>';
+  const all = chosen === null;
+  return `<div class="acc" data-picker="${id}"><label class="tgl"><input type="radio" name="${id}-mode" value="all" ${all ? "checked" : ""}>Every brand</label><label class="tgl"><input type="radio" name="${id}-mode" value="some" ${all ? "" : "checked"}>Only these brands</label>
+    <div class="acc-list" ${all ? "hidden" : ""}>${brands.map((w) => `<label class="tgl"><input type="checkbox" value="${esc(w.slug)}" ${chosen && chosen.includes(w.slug) ? "checked" : ""}>${esc(w.name)}</label>`).join("")}</div></div>`;
+}
+const pickedBrands = (id) => { const box = $(`[data-picker="${id}"]`); if (!box) return null; return box.querySelector(`input[name="${id}-mode"]:checked`)?.value === "all" ? null : [...box.querySelectorAll(".acc-list input:checked")].map((x) => x.value); };
+const AUDIT_WORDS = { "access.changed": "changed which brands this person sees:", "org.created": "created the organisation", "invite.sent": "invited", "invite.accepted": "joined", "invite.revoked": "cancelled the invite for", "role.changed": "changed the role of", "owner.transferred": "handed ownership to", "member.removed": "removed", "member.left": "left", "keys.changed": "changed AI keys:", "org.updated": "changed settings", "brand.deleted": "deleted the brand", "brand.moved_in": "moved in the brand", "brand.moved_out": "moved out the brand", "integration.saved": "connected", "integration.removed": "disconnected", "check.queued": "queued a check of", "check.skipped": "skipped a scheduled check of", "operator.visit": "opened the organisation as an operator" };
 function auditWords(a) {
   const d = a.detail || {};
   const extra = a.action === "role.changed" ? ` (${ROLE_LABEL[d.from] || d.from} → ${ROLE_LABEL[d.to] || d.to})` : a.action === "invite.sent" || a.action === "invite.accepted" ? ` as ${ROLE_LABEL[d.role] || d.role || ""}` : a.action === "check.skipped" ? ": monthly budget reached" : a.action === "org.updated" ? `: ${Object.keys(d).join(", ").replace("monthly_cap_usd", "monthly budget")}` : "";
@@ -2868,6 +3247,13 @@ $("#team").addEventListener("click", async (e) => {
     if (await billAction(t)) return;
     if (t.closest("[data-sendverify]")) { const r = await api("POST", "/api/auth/verify/send"); return toast(r.already ? "Your email is already confirmed." : r.emailed ? `Sent to ${esc(APP.user.email)}.` : "Email isn't set up on this server yet, so the link is in the server log."); }
     const cp = t.closest("[data-copy]"); if (cp) { await navigator.clipboard.writeText(cp.dataset.copy).catch(() => {}); return toast("Link copied."); }
+    const ac = t.closest("[data-access]"); if (ac) { TEAM.editAccess = TEAM.editAccess === ac.dataset.access ? null : ac.dataset.access; return paintTeam(); }
+    if (t.closest("[data-accesscancel]")) { TEAM.editAccess = null; return paintTeam(); }
+    const as = t.closest("[data-accesssave]"); if (as) {
+      const brands = pickedBrands("acc"); if (brands && !brands.length) return toast("Pick at least one brand, or choose every brand.");
+      TEAM.d.members = (await api("PATCH", `/api/org/members/${as.dataset.accesssave}`, { brands })).members; TEAM.editAccess = null;
+      TEAM.audit = (await api("GET", "/api/org/audit")).log; paintTeam(); return toast(brands ? `Access limited to ${brands.length} brand${brands.length === 1 ? "" : "s"}.` : "Access set to every brand.");
+    }
     const rv = t.closest("[data-revoke]"); if (rv) { TEAM.d.invites = (await api("DELETE", `/api/org/invitations/${rv.dataset.revoke}`)).invites; return paintTeam(); }
     const rm = t.closest("[data-remove]");
     if (rm) {
@@ -2887,6 +3273,13 @@ $("#team").addEventListener("click", async (e) => {
   } catch (err) { toast(esc(err.message)); }
 });
 $("#team").addEventListener("change", async (e) => {
+  const pick = e.target.closest("[data-picker]"); if (pick && e.target.type === "radio") { pick.querySelector(".acc-list").hidden = e.target.value === "all"; return; }
+  if (e.target.id === "invAccess" || e.target.id === "invRole") {
+    const admin = $("#invRole").value === "admin"; if (admin) $("#invAccess").value = "all"; $("#invAccess").disabled = admin;
+    const some = $("#invAccess").value === "some"; $("#invBrands").hidden = !some;
+    if (some) { const r = $('#invBrands input[value="some"]'); if (r) { r.checked = true; $("#invBrands .acc-list").hidden = false; } }
+    return;
+  }
   const sel = e.target.closest("[data-role]"); if (!sel) return;
   const to = sel.value, m = TEAM.d.members.find((x) => x.id === sel.dataset.role);
   if (to === "owner" && !confirmOwner(m)) { sel.value = m.role; return; }
@@ -2899,7 +3292,9 @@ $("#team").addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
     if (e.target.id === "inviteForm") {
-      const r = await api("POST", "/api/org/invitations", { email: $("#invEmail").value, role: $("#invRole").value });
+      const brands = $("#invAccess").value === "some" ? pickedBrands("inv") : null;
+      if (brands && !brands.length) return toast("Pick at least one brand, or choose every brand.");
+      const r = await api("POST", "/api/org/invitations", { email: $("#invEmail").value, role: $("#invRole").value, ...(brands ? { brands } : {}) });
       TEAM.lastLink = { link: r.invite.link, email: r.invite.email, emailed: r.invite.emailed }; TEAM.d.invites = r.invites;
       TEAM.audit = (await api("GET", "/api/org/audit")).log; paintTeam();
       return toast(r.invite.emailed ? `Invite emailed to ${esc(r.invite.email)}.` : "Invite created. Copy the link and send it.");

@@ -68,20 +68,43 @@ export async function createOrg({ name, by, role = "owner", allowPlatformKeys = 
 }
 
 // ── people ────────────────────────────────────────────────────────────────────
+// Brand access. null = every brand. Otherwise the workspace ids this member may see: the brands they were given and
+// those brands' markets, still in this organisation. A limited member with nothing left sees nothing ([]), never everything.
+export async function brandScope(orgId, userId) {
+  const m = await one(`select all_brands from memberships where org_id = $1 and user_id = $2`, [orgId, userId]);
+  if (!m || m.all_brands) return null;
+  return (await q(`select w.id from workspaces w where w.org_id = $1 and (w.id in (select workspace_id from member_brands where org_id = $1 and user_id = $2)
+                     or w.parent_id in (select workspace_id from member_brands where org_id = $1 and user_id = $2))`, [orgId, userId])).map((r) => r.id);
+}
+// Top-level brands (not markets) of this organisation named by slug, for an invite or a member's access. Unknown slugs fail.
+export async function brandIdsFor(orgId, slugs, c = null) {
+  const want = [...new Set((Array.isArray(slugs) ? slugs : []).map((s) => String(s || "").trim().toLowerCase()).filter(Boolean))].slice(0, 200);
+  if (!want.length) fail(400, "Pick at least one brand, or give access to every brand.");
+  const run = c ? (sql, v) => c.query(sql, v).then((r) => r.rows) : q;
+  const rows = await run(`select id, slug from workspaces where org_id = $1 and parent_id is null and slug = any($2)`, [orgId, want]);
+  if (rows.length !== want.length) fail(400, "One of those brands isn't in this organisation.");
+  return rows.map((r) => r.id);
+}
+const BRANDS_OF = (mb) => `(select coalesce(json_agg(json_build_object('slug', w.slug, 'name', w.name) order by w.name), '[]') from workspaces w where ${mb})`;
 export async function members(orgId) {
-  return q(`select u.id, u.email, u.name, m.role, m.created_at as joined_at, u.last_login_at from memberships m join users u on u.id = m.user_id
+  return q(`select u.id, u.email, u.name, m.role, m.created_at as joined_at, u.last_login_at, m.all_brands as "allBrands",
+              case when m.all_brands then null else ${BRANDS_OF("w.id in (select workspace_id from member_brands b where b.org_id = m.org_id and b.user_id = m.user_id)")} end as brands
+            from memberships m join users u on u.id = m.user_id
             where m.org_id = $1 order by case m.role when 'owner' then 0 when 'admin' then 1 when 'editor' then 2 else 3 end, u.email`, [orgId]);
 }
 export async function pendingInvites(orgId) {
-  return q(`select i.id, i.email, i.role, i.created_at, i.expires_at, u.email as invited_by from invitations i left join users u on u.id = i.invited_by
+  return q(`select i.id, i.email, i.role, i.created_at, i.expires_at, u.email as invited_by,
+              case when i.brand_ids is null then null else ${BRANDS_OF("w.id = any(i.brand_ids) and w.org_id = i.org_id")} end as brands
+            from invitations i left join users u on u.id = i.invited_by
             where i.org_id = $1 and i.accepted_at is null and i.revoked_at is null and i.expires_at > now() order by i.created_at desc`, [orgId]);
 }
 export const INVITE_DAYS = 7;
-export async function createInvite({ orgId, email, role, by }) {
+export async function createInvite({ orgId, email, role, by, brandIds = null }) {
+  if (brandIds && !["editor", "viewer"].includes(role)) fail(400, "Admins and owners always see every brand. Limit an editor or a viewer instead.");
   const token = newToken();
   await q(`update invitations set revoked_at = now() where org_id = $1 and lower(email) = $2 and accepted_at is null and revoked_at is null`, [orgId, normEmail(email)]);
-  const inv = await one(`insert into invitations (org_id, email, role, token_hash, invited_by, expires_at) values ($1, $2, $3, $4, $5, now() + interval '${INVITE_DAYS} days') returning id, email, role, expires_at`,
-    [orgId, normEmail(email), role, tokenId(token), by || null]);
+  const inv = await one(`insert into invitations (org_id, email, role, token_hash, invited_by, expires_at, brand_ids) values ($1, $2, $3, $4, $5, now() + interval '${INVITE_DAYS} days', $6) returning id, email, role, expires_at, brand_ids`,
+    [orgId, normEmail(email), role, tokenId(token), by || null, brandIds]);
   return { invite: inv, token };
 }
 export async function findInvite(token) {
@@ -95,19 +118,25 @@ export async function findInvite(token) {
 export async function acceptInvite(inv, user, c = null) {
   if (normEmail(inv.email) !== normEmail(user.email)) fail(403, `This invite is for ${inv.email}. Sign in with that email to accept it.`, { code: "invite_email" });
   const run = async (c) => {
-    const open = (await c.query(`update invitations set accepted_at = now() where id = $1 and accepted_at is null and revoked_at is null and expires_at > now() returning org_id, role`, [inv.id])).rows[0];
+    const open = (await c.query(`update invitations set accepted_at = now() where id = $1 and accepted_at is null and revoked_at is null and expires_at > now() returning org_id, role, brand_ids`, [inv.id])).rows[0];
     if (!open) fail(400, "This invite link has expired or was already used. Ask for a new one.", { code: "invite_gone" });
     if (open.role === "owner") {
       const cur = (await c.query(`select user_id from memberships where org_id = $1 and role = 'owner' for update`, [open.org_id])).rows[0];
       if (cur && cur.user_id !== user.id) fail(409, "This organisation already has an owner. Ask them to hand over ownership instead.");
     }
-    const have = (await c.query(`select role from memberships where org_id = $1 and user_id = $2 for update`, [open.org_id, user.id])).rows[0];
-    if (!have) await c.query(`insert into memberships (org_id, user_id, role) values ($1, $2, $3)`, [open.org_id, user.id, open.role]);
-    else if (rank(open.role) > rank(have.role)) await c.query(`update memberships set role = $3 where org_id = $1 and user_id = $2`, [open.org_id, user.id, open.role]);
+    const have = (await c.query(`select role, all_brands from memberships where org_id = $1 and user_id = $2 for update`, [open.org_id, user.id])).rows[0];
+    // Brand access: a new member gets exactly what the invite gives. An existing member only ever gains access: an invite
+    // for every brand (or to admin) opens everything; a limited invite adds its brands to a limited member's list.
+    // A limited invite is always for an editor or a viewer, and a limited member is one too, so the role stays editor or viewer.
+    const role = have && rank(have.role) >= rank(open.role) ? have.role : open.role;
+    const keepLimited = !!open.brand_ids && (!have || !have.all_brands) && ["editor", "viewer"].includes(role);
+    if (!have) await c.query(`insert into memberships (org_id, user_id, role, all_brands) values ($1, $2, $3, $4)`, [open.org_id, user.id, open.role, !keepLimited]);
+    else await c.query(`update memberships set role = $3, all_brands = $4 where org_id = $1 and user_id = $2`, [open.org_id, user.id, role, !keepLimited]);
+    if (keepLimited) await c.query(`insert into member_brands (org_id, user_id, workspace_id) select $1, $2, w.id from workspaces w where w.org_id = $1 and w.id = any($3) on conflict do nothing`, [open.org_id, user.id, open.brand_ids]);
     // Opening the emailed link proves the address.
     await c.query(`update users set email_verified_at = coalesce(email_verified_at, now()) where id = $1`, [user.id]);
-    await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'invite.accepted', $3, $4)`, [open.org_id, user.id, user.email, { role: open.role }]);
-    return { orgId: open.org_id, role: have && rank(have.role) >= rank(open.role) ? have.role : open.role };
+    await c.query(`insert into audit_log (org_id, user_id, action, target, detail) values ($1, $2, 'invite.accepted', $3, $4)`, [open.org_id, user.id, user.email, { role: open.role, brands: keepLimited ? open.brand_ids.length : "all" }]);
+    return { orgId: open.org_id, role };
   };
   return c ? run(c) : tx(run);
 }

@@ -1,6 +1,7 @@
 // Read a website the way an AI crawler does: robots.txt, llms.txt, the sitemap and up to 9 scored pages. No AI calls, so a
 // scheduled check can re-read the site every time and a fix can be re-checked for free. api/site.js streams it during setup.
 import { fetchPage, parsePage, scorePage, robotsAccess, hostOf, AI_BOTS } from "./_lib.js";
+import "../public/page-features.js"; // globalThis.WP_PAGE
 import { localePath, localeSignals, detectCountry, siblingMarkets } from "./_markets.js";
 
 const noop = () => {};
@@ -8,9 +9,11 @@ export const isText = (r) => r.ok && !/<html/i.test(r.body.slice(0, 500));
 export const ORG_TYPES = /Organization|Corporation|ProfessionalService|LocalBusiness/;
 
 // A page row as the report shows it.
-export function pageRow(url, p) {
+export function pageRow(url, p, html = "") {
   const s = scorePage(p, null);
-  return { url, title: p.title, score: s.score, fails: s.checks.filter((c) => !c.pass).map((c) => c.label), checks: s.checks, words: p.words, schema: p.schema, jsOnly: p.jsOnly, author: p.author };
+  // features: the same checklist rivals' pages are read with, so the playbooks compare like with like.
+  return { url, title: p.title, score: s.score, fails: s.checks.filter((c) => !c.pass).map((c) => c.label), checks: s.checks, words: p.words, schema: p.schema, jsOnly: p.jsOnly, author: p.author,
+    ...(html ? { features: globalThis.WP_PAGE.pageFeatures(html) } : {}) };
 }
 
 // url: what the person typed (a /in or /en-gb path keeps the crawl inside that country's pages).
@@ -64,19 +67,21 @@ export async function auditSite(url, send = noop, { pagesMax = 8 } = {}) {
   const links = [...home.body.matchAll(/href=["']([^"'#]+)/gi)].map((m) => { try { return new URL(m[1], home.url).href; } catch { return ""; } });
   const same = (u) => { try { return new URL(u).host === final.host && inScope(u) && !/\.(pdf|jpg|png|gif|svg|zip|xml|css|js)$/i.test(u) && !/privacy|terms|cookie|legal|login|signin|cart|\/tag\/|\/author\/|wp-json|feed/i.test(u); } catch { return false; } };
   const important = /about|service|solution|product|pricing|platform|case|customer|blog|guide|compare|vs|alternative|deal|categor/i;
-  const pool = [...new Set([...scoped, ...links].filter(same).map((u) => u.split("#")[0].replace(/\/$/, "")))].filter((u) => u !== home.url.replace(/\/$/, ""));
+  // One page per path: /signup?from=hero and /signup?from=footer are the same page and must not be scored twice.
+  const byPath = new Map(); for (const x of [...scoped, ...links].filter(same)) { const k = x.split(/[?#]/)[0].replace(/\/$/, ""); if (!byPath.has(k)) byPath.set(k, x.split("#")[0].replace(/\/$/, "")); }
+  const pool = [...byPath.values()].filter((u) => u.split(/[?#]/)[0].replace(/\/$/, "") !== home.url.split(/[?#]/)[0].replace(/\/$/, ""));
   pool.sort((a, b) => (important.test(b) ? 1 : 0) - (important.test(a) ? 1 : 0) || a.split("/").length - b.split("/").length);
   const picks = pool.slice(0, pagesMax);
 
   send("step", { id: "pages", text: `Scoring ${picks.length + 1} pages for AI-readiness`, why: "AI quotes pages that answer fast, show numbers and sources, and use question headings." });
-  const pages = [pageRow(home.url, hp)];
+  const pages = [pageRow(home.url, hp, home.body)];
   send("page", pages[0]);
   const parsed = [hp];
   await Promise.all(picks.map(async (u) => {
     const r = await fetchPage(u, { timeout: 9000 });
     if (!r.ok || !/<html|<body/i.test(r.body.slice(0, 4000))) return;
     const p = parsePage(r.url, r.body); parsed.push(p);
-    const row = pageRow(r.url, p); pages.push(row); send("page", row);
+    const row = pageRow(r.url, p, r.body); pages.push(row); send("page", row);
   }));
   const avg = Math.round(pages.reduce((s, p) => s + p.score, 0) / pages.length);
   send("done", { id: "pages", ok: avg >= 60, text: `Average AI-readiness ${avg}/100 across ${pages.length} pages` });
